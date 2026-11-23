@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 )
 
 // TestResolveServicePaths_SurvivesAMissingBinary: uninstall and status are what you
@@ -13,7 +15,7 @@ import (
 // Refusing to resolve paths then would leave a loaded unit with no way to remove it.
 func TestResolveServicePaths_SurvivesAMissingBinary(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testhome.Set(t, home)
 	t.Setenv("PATH", filepath.Join(home, "nowhere")) // no cortex anywhere
 	cfgDir := filepath.Join(home, ".cortex")
 	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
@@ -39,7 +41,7 @@ func TestResolveServicePaths_SurvivesAMissingBinary(t *testing.T) {
 // "running".
 func TestServiceInstall_RefusesABrokenConfig(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testhome.Set(t, home)
 	cfgDir := filepath.Join(home, ".cortex")
 	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
 		t.Fatal(err)

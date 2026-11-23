@@ -27,6 +27,16 @@ curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh -s -- --yes
 
 When setup is done, open a new terminal. The new terminal reads the new `PATH`.
 
+### Windows (preview)
+
+`install.sh` and `agentop setup` don't run on Windows yet (#1520). In PowerShell, run:
+
+```powershell
+irm https://www.rossoctl.dev/cortex/install.ps1 | iex
+```
+
+Then follow [Cortex on Windows](windows.md): the first run (`cortex --local` in its own terminal), connecting your agent, updating, uninstalling, what is not on Windows yet, and troubleshooting.
+
 ## Connect your agent
 
 Connect each agent that you use. Do this one time per agent.
@@ -125,5 +135,7 @@ To remove Cortex, run `agentop uninstall`. It asks once.
 
 Uninstall disconnects Claude Code, OpenCode, IBM Bob and Pi.
 It does not disconnect Codex. If you use Codex, run `agentop configure codex disable` first.
+
+On Windows, `agentop uninstall` is not supported yet (#1520). Remove Cortex by hand: see [Uninstall](windows.md#uninstall) in the Windows guide.
 
 For more detail, read [Remove it](laptop-service.md#remove-it).

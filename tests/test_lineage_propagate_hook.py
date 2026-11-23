@@ -72,14 +72,31 @@ def start_session(tg, client):
     return write_w, read_r
 
 
-async def call_tools(values, delay=0.0):
+def in_flight(n):
+    """A wait that returns once n handlers are waiting on it."""
+    arrived = 0
+    every = anyio.Event()
+
+    async def wait():
+        nonlocal arrived
+        arrived += 1
+        if arrived == n:
+            every.set()
+        await every.wait()
+
+    return wait
+
+
+async def call_tools(values):
     """One held session per value; each sends a request while the caller's
-    OTel context carries that value. Returns {value: context seen at POST}."""
+    OTel context carries that value. Every POST is answered once all of them
+    are in flight. Returns {value: context seen at POST}."""
     seen = {}
+    all_in = in_flight(len(values))
 
     async def handler(request: httpx.Request) -> httpx.Response:
         tag = JSONRPCRequest.model_validate_json(request.read()).params["tag"]
-        await anyio.sleep(delay)  # let the sessions' POSTs overlap
+        await all_in()
         seen[tag] = otel_context.get_value(KEY)
         return json_result(request)
 
@@ -92,9 +109,8 @@ async def call_tools(values, delay=0.0):
                 await write_w.send(SessionMessage(message=JSONRPCMessage(request)))
             finally:
                 otel_context.detach(token)
-        with anyio.fail_after(5):
-            for _, _, read_r in sessions:
-                await read_r.receive()  # the response made it back through the transport
+        for _, _, read_r in sessions:
+            await read_r.receive()  # the response made it back through the transport
         tg.cancel_scope.cancel()
     return seen
 
@@ -110,7 +126,7 @@ def test_the_bridge_carries_the_callers_context_to_the_post():
 
 def test_concurrent_requests_on_different_sessions_keep_their_own_context():
     load_hook().bridge_mcp_context()
-    assert anyio.run(call_tools, ["a", "b", "c"], 0.05) == {"a": "a", "b": "b", "c": "c"}
+    assert anyio.run(call_tools, ["a", "b", "c"]) == {"a": "a", "b": "b", "c": "c"}
 
 
 def test_a_request_sent_through_client_session_is_stamped_in_the_callers_task():
@@ -130,8 +146,7 @@ def test_a_request_sent_through_client_session_is_stamped_in_the_callers_task():
                 ping = types.ClientRequest(types.PingRequest(method="ping"))
                 token = otel_context.attach(otel_context.set_value(KEY, "turn"))
                 try:
-                    with anyio.fail_after(5):
-                        await session.send_request(ping, types.EmptyResult)
+                    await session.send_request(ping, types.EmptyResult)
                 finally:
                     otel_context.detach(token)
             tg.cancel_scope.cancel()
@@ -146,9 +161,12 @@ def test_the_post_task_keeps_no_context_after_the_post():
     message carries no stamp, so the POST sees whatever the writer task itself holds."""
     load_hook().bridge_mcp_context()
     seen = []
+    both = anyio.Event()
 
     async def handler(request: httpx.Request) -> httpx.Response:
         seen.append(otel_context.get_value(KEY))
+        if len(seen) == 2:
+            both.set()
         return httpx.Response(202)
 
     async def scenario():
@@ -163,9 +181,7 @@ def test_the_post_task_keeps_no_context_after_the_post():
             unstamped = SessionMessage(message=notification)
             del unstamped._lineage_otel_context
             await write_w.send(unstamped)
-            with anyio.fail_after(5):
-                while len(seen) < 2:
-                    await anyio.sleep(0.01)
+            await both.wait()
             tg.cancel_scope.cancel()
 
     anyio.run(scenario)
@@ -199,8 +215,7 @@ def test_an_empty_stamp_does_not_replace_a_post_task_that_has_context():
                 otel_context.detach(token)
             request = JSONRPCRequest(jsonrpc="2.0", id=1, method="tools/call", params={})
             await write_w.send(SessionMessage(message=JSONRPCMessage(request)))  # stamped with the empty context
-            with anyio.fail_after(5):
-                await read_r.receive()
+            await read_r.receive()
             tg.cancel_scope.cancel()
 
     anyio.run(scenario)
@@ -211,13 +226,15 @@ def test_two_requests_in_flight_on_one_session_keep_their_own_context():
     load_hook().bridge_mcp_context()
     seen = {}
 
-    async def handler(request: httpx.Request) -> httpx.Response:
-        tag = JSONRPCRequest.model_validate_json(request.read()).params["tag"]
-        await anyio.sleep(0.05)
-        seen[tag] = otel_context.get_value(KEY)
-        return json_result(request)
-
     async def scenario():
+        all_in = in_flight(2)  # both POSTs are answered once both are in flight
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            tag = JSONRPCRequest.model_validate_json(request.read()).params["tag"]
+            await all_in()
+            seen[tag] = otel_context.get_value(KEY)
+            return json_result(request)
+
         async with anyio.create_task_group() as tg, httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             write_w, read_r = start_session(tg, client)
             for i, value in enumerate(("x", "y"), start=1):
@@ -227,9 +244,8 @@ def test_two_requests_in_flight_on_one_session_keep_their_own_context():
                     await write_w.send(SessionMessage(message=JSONRPCMessage(request)))
                 finally:
                     otel_context.detach(token)
-            with anyio.fail_after(5):
-                await read_r.receive()
-                await read_r.receive()
+            await read_r.receive()
+            await read_r.receive()
             tg.cancel_scope.cancel()
 
     anyio.run(scenario)

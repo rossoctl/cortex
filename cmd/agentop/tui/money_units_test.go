@@ -73,16 +73,16 @@ func TestSessionMoneyCellIn_AMixedSessionShowsNoAmount(t *testing.T) {
 // and an agent that itself spans units withheld.
 func TestAgentCostCellIn_UsesTheAgentsOwnUnits(t *testing.T) {
 	c := usage.Counts{PricedRequests: 2, CostMicros: 7_800}
-	if got, want := agentCostCellIn(c, nil, agentsCostWidth), agentCostCell(c); got != want {
+	if got, want := agentCostCellIn(c, nil, nil, agentsCostWidth), agentCostCell(c); got != want {
 		t.Errorf("dollars = %q, want %q unchanged", got, want)
 	}
-	if got := agentCostCellIn(c, []string{"Bobcoins"}, agentsCostWidth); got != "0.01 Bobcoi…" {
+	if got := agentCostCellIn(c, []string{"Bobcoins"}, nil, agentsCostWidth); got != "0.01 Bobcoi…" {
 		t.Errorf("Bobcoins = %q, want 0.01 Bobcoi…", got)
 	}
-	if got := agentCostCellIn(c, []string{"Bobcoins", "USD"}, agentsCostWidth); got != "(mixed)" {
+	if got := agentCostCellIn(c, []string{"Bobcoins", "USD"}, nil, agentsCostWidth); got != "(mixed)" {
 		t.Errorf("mixed agent = %q, want (mixed)", got)
 	}
-	if got := agentCostCellIn(usage.Counts{}, []string{"Bobcoins"}, agentsCostWidth); got != emptyCell {
+	if got := agentCostCellIn(usage.Counts{}, []string{"Bobcoins"}, nil, agentsCostWidth); got != emptyCell {
 		t.Errorf("unpriced = %q, want the empty cell whatever the unit", got)
 	}
 }
@@ -101,7 +101,7 @@ func TestAgentRowsFromSnapshot_LabelsEachAgentWithItsOwnUnits(t *testing.T) {
 		}}},
 	}
 	for _, r := range agentRowsFromSnapshot(snap) {
-		cell := agentCostCellIn(r.Counts, r.units, agentsCostWidth)
+		cell := agentCostCellIn(r.Counts, r.units, nil, agentsCostWidth)
 		switch r.label {
 		case "claude-code/2.1.284":
 			if cell != "$6.20" {
@@ -116,7 +116,7 @@ func TestAgentRowsFromSnapshot_LabelsEachAgentWithItsOwnUnits(t *testing.T) {
 	// An older server sends no cross-tabulation: a mixed window withholds every row.
 	snap.SeriesCurrencies = nil
 	for _, r := range agentRowsFromSnapshot(snap) {
-		if cell := agentCostCellIn(r.Counts, r.units, agentsCostWidth); cell != money.Mixed {
+		if cell := agentCostCellIn(r.Counts, r.units, nil, agentsCostWidth); cell != money.Mixed {
 			t.Errorf("%s from an older server = %q, want (mixed)", r.label, cell)
 		}
 	}
@@ -380,7 +380,7 @@ func TestFetchAgentRows_CarriesEachAgentsUnits(t *testing.T) {
 	}
 	seen := 0
 	for _, r := range msg.rows {
-		cell := agentCostCellIn(r.Counts, r.units, agentsCostWidth)
+		cell := agentCostCellIn(r.Counts, r.units, nil, agentsCostWidth)
 		switch r.label {
 		case "claude-code/2.1.284":
 			seen++

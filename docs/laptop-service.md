@@ -149,8 +149,9 @@ agentop uninstall --purge
 ```
 
 `agentop uninstall` lists what it will remove and asks once; `--yes` skips the question.
-It unroutes Claude Code, OpenCode, IBM Bob, the `bob` and `pi` shell functions and Pi's
-session extension where Cortex routed them, restarting OpenCode's background service when it finds it running. It
+It unroutes Claude Code, OpenCode, Codex, IBM Bob, the `bob` and `pi` shell functions and Pi's
+session extension where Cortex routed them, restarting OpenCode's background service and
+Codex's app-server when it finds them running. It
 stops and removes the service, or the background proxy. It removes the PATH lines setup
 added, unless other tools in `~/.local/bin` still need them, and removes `agentop`,
 `cortex`, `cortex-session-dump` and `cortex-gateway` from `~/.local/bin`. A step that fails is reported
@@ -332,12 +333,12 @@ To restart deliberately: `agentop service restart`.
 
 A service install (launchd or systemd) updates itself:
 
-- The proxy starts the updater unit at most once every 6 hours (`update.check_every`).
+- The proxy starts the updater unit at most once every 3 hours (`update.check_every`).
   The first start is 10 minutes after the proxy starts. The unit is
   `io.rossoctl.cortex.update` on macOS and `cortex-update.service` on Linux.
 - The updater runs `agentop update --yes --auto`.
 - It installs the release that GitHub marks Latest, but only when that release was
-  published at least 24 hours ago (`update.wait`). The publication time is the upload
+  published at least 6 hours ago (`update.wait`). The publication time is the upload
   time of the release's `checksums.txt`.
 - Then it restarts the proxy. Attached sessions lose the request in flight and retry it.
 
@@ -369,17 +370,17 @@ To change the timing, set one or both of these. The values here are the defaults
 
 ```yaml
 update:
-  wait: 24h          # how long after its publication a release installs; "0" installs at once
-  check_every: 6h    # how often the proxy starts the updater; from 1h to 24h
+  wait: 6h           # how long after its publication a release installs; "0" installs at once
+  check_every: 3h    # how often the proxy starts the updater; from 1h to 24h
 ```
 
 | Field | Default | Range | Who reads it | When a change applies |
 |---|---|---|---|---|
-| `wait` | `24h` | `0` or more | `agentop update --auto` | at the next check |
-| `check_every` | `6h` | `1h` to `24h` | the proxy, at boot | after `agentop service restart`. A hot reload refuses the change |
+| `wait` | `6h` | `0` or more | `agentop update --auto` | at the next check |
+| `check_every` | `3h` | `1h` to `24h` | the proxy, at boot | after `agentop service restart`. A hot reload refuses the change |
 
 The values are Go durations, for example `90m` or `12h`. With the defaults, a laptop
-that is on installs a new release from 24 to about 30 hours after it is published. The
+that is on installs a new release from 6 to about 9 hours after it is published. The
 proxy refuses to start when a value is not valid, and `agentop doctor` names it on the
 `updates` row.
 

@@ -19,7 +19,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -225,7 +224,7 @@ func loadService(goos string, p servicePaths, progress io.Writer) error {
 			if attempt >= 3 || !strings.Contains(string(out), "Input/output error") {
 				return fmt.Errorf("launchctl bootstrap failed: %v: %s", err, strings.TrimSpace(string(out)))
 			}
-			time.Sleep(time.Duration(attempt) * time.Second)
+			time.Sleep(time.Duration(attempt) * bootstrapRetryDelay)
 			if !waitBootedOutf(target, serviceBootoutTimeout, progress) {
 				return fmt.Errorf("launchctl bootstrap failed and the label is still "+
 					"registered: %v: %s", err, strings.TrimSpace(string(out)))
@@ -585,11 +584,11 @@ func resolvePath(p string) (string, error) {
 // before giving up rather than reporting success on a process that still holds the
 // ports. A current one is gone in well under a second.
 func stopPID(pid int) error {
-	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+	if err := terminate(pid); err != nil {
 		return err
 	}
 	for i := 0; i < 90; i++ {
-		if err := syscall.Kill(pid, 0); err != nil {
+		if !processAlive(pid) {
 			return nil
 		}
 		time.Sleep(200 * time.Millisecond)
@@ -601,10 +600,18 @@ func stopPID(pid int) error {
 // in agentop. Tests set it, so that a stub that answers soon is seen soon.
 var healthPollDivisor time.Duration = 1
 
+// healthFirstAnswer makes waitHealthy take the first answer, whatever its window. It
+// is false in agentop. A test whose stubs answer at once sets it, so that a stub that
+// never answers 2xx is not waited out.
+var healthFirstAnswer bool
+
+// waitHealthy reports whether url answers 2xx within the window. It always asks once,
+// so a window that is already over takes the first answer, which can take the 2s
+// request timeout. Every caller in agentop passes a positive window.
 func waitHealthy(url string, within time.Duration) bool {
 	c := &http.Client{Timeout: 2 * time.Second}
 	deadline := time.Now().Add(within)
-	for time.Now().Before(deadline) {
+	for {
 		resp, err := c.Get(url) //nolint:noctx // bounded by Timeout
 		if err == nil {
 			_ = resp.Body.Close()
@@ -612,9 +619,14 @@ func waitHealthy(url string, within time.Duration) bool {
 				return true
 			}
 		}
+		if healthFirstAnswer || !time.Now().Before(deadline) {
+			return false
+		}
 		time.Sleep(500 * time.Millisecond / healthPollDivisor)
+		if !time.Now().Before(deadline) {
+			return false
+		}
 	}
-	return false
 }
 
 func lastLines(path string, n int) []string {
@@ -831,10 +843,8 @@ func launchdJobState() launchdState {
 		// No desktop session, or a sandbox that cannot see one. Only the first is a
 		// fact worth reporting, and the console's owner tells them apart: the login
 		// window leaves /dev/console to root, and another user's login to them.
-		if fi, err := os.Stat("/dev/console"); err == nil {
-			if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Getuid() {
-				return launchdState{known: true}
-			}
+		if owner, ok := fileOwner("/dev/console"); ok && owner != os.Getuid() {
+			return launchdState{known: true}
 		}
 		return launchdState{}
 	}
@@ -1166,6 +1176,10 @@ func serviceManagerUsable(goos string) (bool, string) {
 	return systemdUsable()
 }
 
+// waitGoneAnnounceAfter is how long waitGone waits before it says it is waiting. A
+// var so a test can set when the line shows.
+var waitGoneAnnounceAfter = time.Second
+
 // waitGone polls gone() until it reports true, or d elapses.
 //
 // Split from waitBootedOutf so the progress behaviour is testable without launchd. The
@@ -1182,7 +1196,7 @@ func waitGone(d time.Duration, progress io.Writer, gone func() bool) bool {
 			}
 			return true
 		}
-		if !announced && progress != nil && time.Since(start) > time.Second {
+		if !announced && progress != nil && time.Since(start) > waitGoneAnnounceAfter {
 			fmt.Fprintf(progress, "  Waiting for the previous Cortex to stop (up to %s)...\n", d)
 			announced = true
 		}

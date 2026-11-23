@@ -458,7 +458,7 @@ func (m *model) syncSpendScope() tea.Cmd {
 // does not blink through an empty frame — it is a breakdown of the same traffic either way.
 func (m *model) cycleSpendAxis() tea.Cmd {
 	axes := m.spendAxes()
-	// A project scope has no axes, and `a` does nothing.
+	// The project Other has no axes, and `a` does nothing.
 	if len(axes) == 0 {
 		return nil
 	}
@@ -1167,9 +1167,13 @@ func drawerHints(axis usage.Group, axes []usage.Group, windowLabel string) []str
 }
 
 // drawerScopeNote is the series column's line when a scoped reply came back without the breakdown
-// it was asked for, or "". A reply narrowed to a project never has a breakdown.
+// it was asked for, or "". A project reply has none when an older proxy or the window could not
+// break it down, and agentop narrowed it to one series.
 func drawerScopeNote(snap *usage.Snapshot, asked usage.Group, windowLabel, project string) string {
-	if project != "" && snap != nil {
+	if project != "" {
+		if snap == nil || snap.Group != usage.GroupNone || asked == "" || asked == usage.GroupNone {
+			return ""
+		}
 		return "no breakdown for this scope in " + windowLabel
 	}
 	if snap == nil || snap.Agent == "" || snap.Group != usage.GroupNone || asked == "" || asked == usage.GroupNone {

@@ -20,7 +20,7 @@ stats:
   address: 127.0.0.1:47602
 tls_bridge:
   mode: enabled
-  ca_dir: "CADIR"
+  ca_dir: 'CADIR'
   generate_ca: true
 pipeline:
   outbound:
@@ -42,7 +42,7 @@ const indentedConfig = `  mode: proxy-sidecar
     address: 127.0.0.1:47602
   tls_bridge:
     mode: enabled
-    ca_dir: "CADIR"
+    ca_dir: 'CADIR'
     generate_ca: true
   pipeline:
     outbound:

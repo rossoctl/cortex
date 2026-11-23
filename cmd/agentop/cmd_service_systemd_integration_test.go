@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 )
 
 // This file's two tests deliberately don't mirror TestWaitBootedOut_RealLaunchd's
@@ -73,6 +75,9 @@ func requireRealSystemd(t *testing.T) {
 		skip("no reachable systemd --user session: %v: %s", err, strings.TrimSpace(string(out)))
 		return
 	}
+	// These tests act on the real account: the user manager searches the real
+	// ~/.config/systemd/user, not the temporary home the rest of the package uses.
+	testhome.Real(t)
 }
 
 // slowScript writes a throwaway script that mimics a proxy that takes a moment to
@@ -239,7 +244,7 @@ func TestSupervisorRestartsAfterCrash_RealSystemd(t *testing.T) {
 	// on a slim image missing /bin/kill, that would surface as a failed test with
 	// AGENTOP_SYSTEMD_TESTS=required set, rather than the environment-problem skip it
 	// actually is.
-	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+	if err := killPID(pid, syscall.SIGKILL); err != nil {
 		t.Fatalf("kill -9 %d: %v", pid, err)
 	}
 
@@ -506,7 +511,7 @@ func TestServiceLifecycle_RealSystemd(t *testing.T) {
 	if !ok {
 		t.Fatalf("no MainPID to kill; systemd says %+v", unit())
 	}
-	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+	if err := killPID(pid, syscall.SIGKILL); err != nil {
 		t.Fatalf("kill -9 %d: %v", pid, err)
 	}
 	if !waitUntil(3*time.Second, func() bool { return unit().sub == "auto-restart" }) {

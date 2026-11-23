@@ -393,6 +393,7 @@ detect_platform() {
 	case "$os" in
 		Darwin) os=darwin ;;
 		Linux) os=linux ;;
+		MINGW* | MSYS* | CYGWIN*) die "Windows: this installer does not run there; in PowerShell, run: irm https://www.rossoctl.dev/cortex/install.ps1 | iex (docs/windows.md)" ;;
 		*) die "unsupported OS: $os (the installer supports macOS and Linux)" ;;
 	esac
 	arch=$(uname -m)

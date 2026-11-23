@@ -333,16 +333,16 @@ func (m *model) rebuildSessionsTable() {
 			continue
 		}
 		b := newRowBuilder(q != "")
-		// An imported session's title starts with "(*) ", and a session that another session
-		// started with "↳ ". Plain text, not dim: the table cuts a cell by its bytes, and a
-		// style's escape bytes would mangle it (see cachedMarker). With no TITLE column, the
-		// SESSION cell has the mark.
+		// A session that asked not to be recorded starts with "(not recorded) ", an imported
+		// session's title with "(*) ", and a session that another session started with "↳ ".
+		// Plain text, not dim: the table cuts a cell by its bytes, and a style's escape bytes
+		// would mangle it (see cachedMarker). With no TITLE column, the SESSION cell has the
+		// mark, in its short form (sessionIDMark).
 		mark := sessionMark(s)
-		markW := lipgloss.Width(mark) // columns, not bytes: "↳" is 3 bytes and 1 column
-		if showTitle || mark == "" {
+		if idMark := sessionIDMark(s); showTitle || idMark == "" {
 			b.cut(sessionIDCell(s.ID, idW), func() string { return sessionIDSearch(s.ID) })
 		} else {
-			b.cut(mark+sessionIDCell(s.ID, idW-markW), func() string { return sessionIDSearch(s.ID) })
+			b.cut(idMark+sessionIDCell(s.ID, idW-lipgloss.Width(idMark)), func() string { return sessionIDSearch(s.ID) })
 		}
 		// s.Title straight off the summary, where sessionLabel reaches the same value by id
 		// through m.servedTitle. Two routes, equal only because they read the same slice —
@@ -351,7 +351,8 @@ func (m *model) rebuildSessionsTable() {
 		// path has only an id and cannot avoid one.
 		title := func() string { return mark + m.sessionTitleCell(s.ID, s.Title, noLimit) }
 		if showTitle {
-			b.cut(mark+m.sessionTitleCell(s.ID, s.Title, titleW-markW), title)
+			cellMark := titleCellMark(s, titleW)
+			b.cut(cellMark+m.sessionTitleCell(s.ID, s.Title, titleW-lipgloss.Width(cellMark)), title)
 		} else {
 			// TITLE is the column a narrow terminal gives up; it is still searched.
 			b.dropped(title)
@@ -528,9 +529,13 @@ func (m *model) cachedOnlySessionIDs() []string {
 	return out
 }
 
-// sessionMark is the plain-text mark before a session's title: imported, or started by another
-// session. With no TITLE column, the SESSION cell has it.
+// sessionMark is the plain-text mark before a session's title: not recorded, imported, or started
+// by another session, in that order: not recorded is the one that changes what is kept. With no
+// TITLE column, the SESSION cell has it.
 func sessionMark(s session.SessionSummary) string {
+	if s.NoRecord {
+		return noRecordMarker
+	}
 	if strings.HasPrefix(s.Source, coremodel.ImportedSourcePrefix) {
 		return importedMarker
 	}
@@ -538,6 +543,32 @@ func sessionMark(s session.SessionSummary) string {
 		return childMarker
 	}
 	return ""
+}
+
+// titleRoomAfterMark is the fewest title columns a TITLE cell keeps after its mark. A TITLE
+// column too narrow for the full mark and that many columns gets the short mark instead.
+const titleRoomAfterMark = 4
+
+// titleCellMark is the mark in a TITLE cell of titleW columns: sessionMark, or its short form
+// (sessionIDMark) when the full mark would leave fewer than titleRoomAfterMark columns of title.
+// At TITLE's floor, "(not recorded) " alone is wider than the column. Widths are in columns,
+// not bytes: "↳" is 3 bytes and 1 column.
+func titleCellMark(s session.SessionSummary, titleW int) string {
+	mark := sessionMark(s)
+	if titleW-lipgloss.Width(mark) < titleRoomAfterMark {
+		return sessionIDMark(s)
+	}
+	return mark
+}
+
+// sessionIDMark is sessionMark in the SESSION cell, used when there is no TITLE column: the
+// not-recorded mark is the short noRecordIDMarker there, so the id after it still fits. The
+// session's header still says "not recorded" in full.
+func sessionIDMark(s session.SessionSummary) string {
+	if s.NoRecord {
+		return noRecordIDMarker
+	}
+	return sessionMark(s)
 }
 
 // sessionsIDWidth is SESSION's width for the listed rows: the widest SESSION cell, an id counted
@@ -551,7 +582,7 @@ func (m *model) sessionsIDWidth(scope, project string, showTitle bool) int {
 		}
 		cell := sessionIDCell(s.ID, noLimit)
 		if !showTitle {
-			cell = sessionMark(s) + cell
+			cell = sessionIDMark(s) + cell
 		}
 		w = max(w, lipgloss.Width(cell))
 	}

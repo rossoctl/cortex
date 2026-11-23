@@ -1140,7 +1140,7 @@ func TestShutdown_DoubleCloseSafe(t *testing.T) {
 	}
 	rec := &closeRecordingStore{Store: newMemStore()}
 	p.store = rec
-	go p.refreshLoop(30 * time.Millisecond)
+	go p.refreshLoop(time.Hour)
 
 	if err := p.Shutdown(context.Background()); err != nil {
 		t.Fatalf("first Shutdown: %v", err)

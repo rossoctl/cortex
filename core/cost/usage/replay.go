@@ -31,7 +31,8 @@ func (a *Aggregator) BeginReplay() *Aggregator {
 // merges slot by slot as mergeRing does for a rename: the same minute sums, the newer minute wins
 // a slot, so a replayed minute that aged out meanwhile cannot overwrite a live one. Session rings
 // beyond the cap go coldest first, which is a replayed one before any session live traffic has
-// touched. r's unpaired requests are dropped: their process is gone, and no response will come.
+// touched. Project rings beyond maxProjectRings go the same way. r's unpaired requests are
+// dropped: their process is gone, and no response will come.
 func (a *Aggregator) FinishReplay(r *Aggregator) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -60,6 +61,20 @@ func (a *Aggregator) FinishReplay(r *Aggregator) {
 	}
 	for len(a.sessions) > a.maxSess {
 		a.evictColdestLocked()
+	}
+	for key, ring := range r.projects {
+		into, ok := a.projects[key]
+		if !ok {
+			a.projects[key] = ring
+			continue
+		}
+		mergeRing(into.buckets, ring.buckets)
+		if ring.lastSeen.After(into.lastSeen) {
+			into.lastSeen = ring.lastSeen
+		}
+	}
+	for len(a.projects) > maxProjectRings {
+		a.evictColdestProjectLocked()
 	}
 }
 

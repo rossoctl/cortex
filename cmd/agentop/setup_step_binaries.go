@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 
 	"github.com/rossoctl/cortex/cmd/agentop/checklist"
 	"github.com/rossoctl/cortex/cmd/agentop/updatestatus"
@@ -249,8 +248,7 @@ func checkWritable(env *setupEnv, path string) *problem {
 		}
 		p = parent
 	}
-	const wOK = 0x2
-	if err := syscall.Access(p, wOK); err != nil {
+	if err := writable(p); err != nil {
 		return &problem{reason: env.tilde(p) + " is not writable (" + err.Error() + ")"}
 	}
 	return nil

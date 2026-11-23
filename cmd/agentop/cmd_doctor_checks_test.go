@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -224,11 +223,8 @@ func TestDoctorChecksABackgroundInstallWhoseProxyIsGone(t *testing.T) {
 			if pid = readPIDFile(pidFile); pid == 0 {
 				t.Fatal("setup --no-service left no proxy.pid")
 			}
-			_ = syscall.Kill(pid, syscall.SIGKILL)
-			for i := 0; i < 50 && alive(pid); i++ {
-				time.Sleep(100 * time.Millisecond)
-			}
-			if alive(pid) {
+			killAndReap(pid)
+			if processAlive(pid) {
 				t.Fatalf("fixture: pid %d is still alive", pid)
 			}
 			writeHomeFile(t, pidFile, c.pidfile(pid))

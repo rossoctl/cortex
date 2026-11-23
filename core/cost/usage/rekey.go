@@ -33,6 +33,9 @@ func (a *Aggregator) Rekeyed(oldID, newID string) {
 	for _, ring := range a.agents {
 		relabelSession(ring, oldID, newID)
 	}
+	for _, ring := range a.projects {
+		relabelSession(ring.buckets, oldID, newID)
+	}
 }
 
 func relabelSession(ring []bucket, oldID, newID string) {

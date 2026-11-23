@@ -27,6 +27,31 @@ import (
 	"github.com/rossoctl/cortex/core/session"
 )
 
+// The CA dir in the generated config reads back exactly, on every OS: a Windows path holds
+// backslashes, and in a double-quoted YAML scalar \U and \. are escapes, so a fresh install on
+// Windows wrote a config it could not load (#1520). A quote in the path is kept too.
+func TestDemoConfig_CADirRoundTrips(t *testing.T) {
+	for _, caDir := range []string{
+		`C:\Users\me\.cortex\ca`,
+		`C:\Users\new\dir\notes\x\nca`, // \n, \x and \U are escapes in double quotes
+		`/home/me/.cortex/ca`,
+		`/home/o'brien/.cortex/ca`,
+	} {
+		cortexDir := t.TempDir()
+		p, err := writeBuiltinConfig(cortexDir, caDir)
+		if err != nil {
+			t.Fatalf("%s: writeBuiltinConfig: %v", caDir, err)
+		}
+		cfg, err := config.Load(p)
+		if err != nil {
+			t.Fatalf("%s: Load: %v", caDir, err)
+		}
+		if cfg.TLSBridge.CADir != caDir {
+			t.Errorf("CADir = %q, want %q", cfg.TLSBridge.CADir, caDir)
+		}
+	}
+}
+
 // writeBuiltinConfig must produce a config file in cortexDir that loads, presets,
 // and validates cleanly and describes a forward-only TLS-bridge observe
 // pipeline pointed at caDir — otherwise --local would fail at boot instead of

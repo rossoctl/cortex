@@ -129,8 +129,9 @@ jobs:
   # Windows (#1520): core and the laptop proxy must keep building, and the session archive and
   # cost ledger must keep writing where a directory is flushed only through a write handle and
   # cannot be renamed with a file open in it. Only those packages' tests run: the rest of core
-  # and cmd/cortex still have Unix-only tests (Setpgid, SIGUSR1), and agentop does not build
-  # yet. No -race: the race detector needs cgo and a C toolchain on the runner.
+  # and cmd/cortex still have Unix-only tests (Setpgid, SIGUSR1). agentop builds, but most of
+  # its tests need a Unix shell or service manager, so only a named set runs (see its step).
+  # No -race: the race detector needs cgo and a C toolchain on the runner.
   go-ci-windows:
     name: Go CI (Windows build, archive and ledger)
     runs-on: windows-latest
@@ -177,6 +178,49 @@ jobs:
         run: |
           TAGS=$(go -C ../../scripts/profile-tags run . local)
           go build -tags "${TAGS}" ./...
+
+      # agentop builds on Windows (#1520). Most of its tests drive a Unix shell, a service
+      # manager or signals, so only the tests of the Windows-specific code and of commands
+      # that work there run here for now. `go test -run` passes when a name matches nothing,
+      # so each listed name must also have run: a renamed test fails the step instead of
+      # silently dropping out. Every entry is a full test name, matched exactly, not a prefix
+      # that stands for several tests.
+      - name: Build, vet and test cmd/agentop
+        working-directory: cmd/agentop
+        run: |
+          set -euo pipefail
+          go build ./...
+          go vet ./...
+          tests="TestRefuseUnsupported TestProcessAlive TestLockFile TestWritable TestTerminateRefusesOnWindows
+            TestNoRecordWanted TestWithRecordOff
+            TestAddRecordOff_RefusesASettingsOverride TestAddRecordOff_AppendsToTheEnvironment
+            TestAddRecordOff_RefusesAnUnreadableSettingsFile TestAddRecordOff_ChecksClaudeConfigDir
+            TestAddRecordOff_RefusesAChildThatIsNotClaudeCode
+            TestHomeIsIsolated"
+          go test -v -run "^($(echo ${tests} | tr ' ' '|'))\$" . | tee "${RUNNER_TEMP}/agentop-tests.txt"
+          for t in ${tests}; do
+            grep -qE "^--- (PASS|SKIP): ${t} \(" "${RUNNER_TEMP}/agentop-tests.txt" \
+              || { echo "::error::${t} did not run"; exit 1; }
+          done
+          # The tests' home isolation itself (USERPROFILE as well as HOME), where it matters most.
+          go test -v ./internal/testhome/
+
+      # release-binaries.yaml builds every platform in one loop, so a Windows build break would
+      # stop the Linux and macOS releases too, and main-latest on every merge. Build exactly its
+      # Windows targets here: cortex with the release's proxy variant (the full profile) and
+      # agentop, for amd64 and arm64, with cgo off as the release does. Keep the tags in step
+      # with proxy_variants there.
+      - name: Build the release's Windows targets
+        run: |
+          set -euo pipefail
+          full_tags=$(go -C scripts/profile-tags run . full)
+          for arch in amd64 arm64; do
+            echo "==> windows/${arch}"
+            ( cd cmd/cortex && CGO_ENABLED=0 GOOS=windows GOARCH="${arch}" \
+              go build -trimpath -tags "${full_tags}" -o /dev/null . )
+            ( cd cmd/agentop && CGO_ENABLED=0 GOOS=windows GOARCH="${arch}" \
+              go build -trimpath -o /dev/null . )
+          done
 
   # The cpex plugin's FFI-backed code sits behind the `cpex` build tag and needs
   # cgo plus the pinned libcpex_ffi.a, so no other job compiles or tests it. It
@@ -540,6 +584,37 @@ jobs:
 
       - name: Run install.sh tests
         run: sh scripts/install_test.sh
+
+  # install.ps1 is the Windows one-liner (irm | iex), so it gets the same
+  # care. The tests install a pinned release into temporary folders with
+  # -NoPath, in both shells a Windows user has: Windows PowerShell 5.1
+  # (from a local mirror, including a tampered zip that must stop the
+  # install) and PowerShell 7 (from GitHub, as the one-liner does).
+  install-ps1:
+    name: install.ps1 tests
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      # .claude/skills/ has directory names with ':' in them, which NTFS cannot hold: leave
+      # .claude/ out, as go-ci-windows does.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: core.protectNTFS
+          GIT_CONFIG_VALUE_0: "false"
+        with:
+          sparse-checkout: |
+            /*
+            !/.claude/
+          sparse-checkout-cone-mode: false
+
+      - name: Run install.ps1 tests (Windows PowerShell 5.1)
+        shell: powershell
+        run: .\scripts\install_test.ps1
+
+      - name: Run install.ps1 tests (PowerShell 7)
+        shell: pwsh
+        run: .\scripts\install_test.ps1
 
   # release_notes.sh runs once per release, on the tag push, so a regression
   # would otherwise surface as a release page missing its change list.

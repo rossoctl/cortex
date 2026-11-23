@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"sync"
 	"syscall"
@@ -166,13 +165,12 @@ func TestArchive_ANewProcessOpensANewSegment(t *testing.T) {
 // than wait, and it may only fill the queue up to the reserve.
 func TestRecord_NeverBlocksAndCountsDropsWhenFull(t *testing.T) {
 	a := openTest(t, t.TempDir(), newClock(), WithQueueDepth(reserve+6))
+	a.held = make(chan struct{}, 1)
 	a.gate = make(chan struct{})
 	// The writer takes a rename and is held at the gate with it, so the events
 	// below see the queue empty.
 	a.Rekeyed("filler", "filler2")
-	for len(a.ops) > 0 {
-		runtime.Gosched()
-	}
+	<-a.held
 	evs := synthSession(45, 34, 512) // 102 events
 	newRecorder(a).record("s1", evs...)
 	// Six fit below the reserve.

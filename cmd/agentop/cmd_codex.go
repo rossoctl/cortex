@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -162,7 +163,8 @@ refuses rather than pick a side if a key is defined more than once. Codex
 parses this file with dotenvy, whose precedence is last-wins, so appending
 would quietly beat an earlier definition — including a corporate proxy
 someone set deliberately. The first run copies the original file to .env.bak
-and never overwrites that copy. disable removes only the keys it added.
+and never overwrites that copy. disable removes the keys it added, and leaves
+one you changed since enable, naming it.
 
 Codex's background app-server, which makes the model calls for every codex
 window, reads the file only when it starts, and so does its auto-updater. So
@@ -198,6 +200,13 @@ func runCodex(args []string, stdout, stderr io.Writer) int {
 	if *envPath == "" {
 		*envPath = defaultCodexEnvPath(home)
 	}
+	// Absolute, so enable's record names the file from any directory. A relative --env,
+	// or a relative CODEX_HOME, is relative to this one, and uninstall reads the record
+	// from wherever it runs: opened from there, the path names some other file (#1781
+	// review). configure claude-code makes --settings absolute for the same reason.
+	if abs, err := filepath.Abs(*envPath); err == nil {
+		*envPath = abs
+	}
 	if *cortexCfgPath == "" {
 		*cortexCfgPath = filepath.Join(home, cortexCfgRel)
 	}
@@ -228,6 +237,32 @@ func codexWanted(cortexCfgPath string) (map[string]string, error) {
 		return nil, fmt.Errorf("%s has no tls_bridge.ca_dir, so Codex has no CA to trust;\n"+
 			"  requests would fail certificate verification. Enable the TLS bridge first.", cortexCfgPath)
 	}
+	return codexValuesFrom(want), nil
+}
+
+// codexValues is Cortex's values for the five managed keys, for telling them from the
+// user's: what codexWanted gives, without enable's refusals. A bridge turned off since
+// enable changes nothing about the values enable wrote, and without them codexIsOurs
+// falls back to their shape, which a custom forward_proxy_addr or ca_dir does not have:
+// disable and uninstall would then call Cortex's own values the user's (#1783 review).
+// OpenCode reads its values the same way. nil when the config cannot be read; a value
+// the config does not give is left out, so it matches nothing.
+func codexValues(cortexCfgPath string) map[string]string {
+	want, _, err := wantedFromConfig(cortexCfgPath)
+	if err != nil {
+		return nil
+	}
+	out := map[string]string{}
+	for k, v := range codexValuesFrom(want) {
+		if v != "" {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// codexValuesFrom puts the values wantedFromConfig derived under Codex's five keys.
+func codexValuesFrom(want map[string]string) map[string]string {
 	proxy := want[envProxy]
 	return map[string]string{
 		"HTTP_PROXY":  proxy,
@@ -238,7 +273,7 @@ func codexWanted(cortexCfgPath string) (map[string]string, error) {
 		// vars resolve to — not the bare ca.crt envCACerts names. See the comment
 		// at the top of this file for why SSL_CERT_FILE and not Codex's own name.
 		envSSLCert: want[envSSLCert],
-	}, nil
+	}
 }
 
 // codexEnvLineRe matches a dotenv assignment as DOTENVY parses it, which is what
@@ -319,6 +354,43 @@ func (f *codexEnvFile) get(key string) (string, bool) {
 	}
 	m := codexEnvLineRe.FindStringSubmatch(f.lines[i])
 	return m[2], true
+}
+
+// all returns every value the file defines key as, in file order: one for a key defined
+// once, more for a duplicate, of which Codex uses the last (dotenvy is last-wins). get
+// gives only the first.
+func (f *codexEnvFile) all(key string) []string {
+	var vals []string
+	for _, line := range f.lines {
+		if m := codexEnvLineRe.FindStringSubmatch(line); m != nil && m[1] == key {
+			vals = append(vals, m[2])
+		}
+	}
+	return vals
+}
+
+// codexEnvValue is a dotenv value as Codex's loader, dotenvy, reads it, for the shapes a
+// path or a proxy URL takes: one pair of single or double quotes stripped, or an unquoted
+// value as it stands, surrounding space trimmed. ok is false for a value it might read
+// otherwise, one with an escape, a $ substitution, a stray quote or a # that may start a
+// comment, so a caller can take the safe side instead of misjudging it. get and all give
+// values raw, quotes and all, as the file holds them (#1783 review).
+func codexEnvValue(raw string) (string, bool) {
+	v := strings.TrimSpace(raw)
+	if n := len(v); n >= 2 && (v[0] == '"' || v[0] == '\'') && v[n-1] == v[0] {
+		inner, unsafe := v[1:n-1], `"\$`
+		if v[0] == '\'' {
+			unsafe = `'` // single quotes are literal to dotenvy
+		}
+		if strings.ContainsAny(inner, unsafe) {
+			return "", false
+		}
+		return inner, true
+	}
+	if strings.ContainsAny(v, `"'\$#`) {
+		return "", false
+	}
+	return v, true
 }
 
 // ambiguous names every key in keys defined more than once in the file.
@@ -476,13 +548,15 @@ func planCodexEnable(envPath, cortexCfgPath string) (codexPlan, error) {
 	return pl, nil
 }
 
-// applyCodexEnable records what the managed keys held, then writes the plan's
-// values. Failing to record is a warning on stderr, as it is for claude-code:
-// the write still happens, and disable then deletes the keys rather than
-// restoring them.
+// applyCodexEnable records what the managed keys held and what it is about to set
+// them to, then writes the plan's values. Written is what lets disable tell Cortex's
+// own value from one changed since enable, as it does for claude-code (#1289).
+// Failing to record is a warning on stderr, as it is for claude-code: the write still
+// happens, and disable then deletes the keys rather than restoring or keeping any.
 func applyCodexEnable(pl codexPlan, statePath string, stderr io.Writer) error {
-	st := managedState{Settings: pl.envPath, Prior: map[string]*string{}}
+	st := managedState{Settings: pl.envPath, Prior: map[string]*string{}, Written: map[string]string{}}
 	for _, k := range codexKeys {
+		st.Written[k] = pl.want[k]
 		// A Cortex-shaped prior is recorded as absent, the same filtered capture
 		// applyOpenCodeEnable makes: it is ours already, from an earlier enable,
 		// and restoring it on disable would leave Codex on some earlier Cortex
@@ -494,8 +568,8 @@ func applyCodexEnable(pl codexPlan, statePath string, stderr io.Writer) error {
 		}
 	}
 	if werr := writeState(statePath, st); werr != nil {
-		fmt.Fprintf(stderr, "agentop: could not record Codex's prior values (%v); disable will\n"+
-			"  delete these keys rather than restore any you had set yourself\n", werr)
+		fmt.Fprintf(stderr, "agentop: could not record what Codex's keys held and what enable sets (%v);\n"+
+			"  disable will delete these keys rather than restore or keep any you set yourself\n", werr)
 	}
 
 	commented := false
@@ -522,6 +596,7 @@ func codexEnable(envPath, cortexCfgPath, statePath string, yes bool, stdout, std
 		// to be going through Cortex, and a daemon older than the file is the usual
 		// reason. Reported, not restarted: there was nothing to apply.
 		reportCodexDaemon(codexHome, pl.want["HTTPS_PROXY"], true, false, stdout)
+		topUpCodexWritten(pl, statePath, stderr)
 		return 0
 	}
 	fmt.Fprintf(stdout, "Sets in %s:\n%s\n", envPath, strings.Join(pl.changes, "\n"))
@@ -541,15 +616,56 @@ func codexEnable(envPath, cortexCfgPath, statePath string, yes bool, stdout, std
 	return 0
 }
 
+// topUpCodexWritten records what enable would set on a file that is already enabled,
+// so disable can tell a later edit from Cortex's own value on an install enabled before
+// enable recorded Written, as topUpWritten does for claude-code. A re-run of enable that
+// finds nothing to change is how most of those installs reach it.
+//
+// It never creates a record. The file already holds Cortex's values here, so a Prior
+// taken from them would be Cortex's own, and disable would "restore" those instead of
+// removing the keys. A record of another file, or one that cannot be read, is not this
+// file's to rewrite. writeState skips the write when Written already matches, so the
+// usual re-run touches nothing.
+func topUpCodexWritten(pl codexPlan, statePath string, stderr io.Writer) {
+	st, err := readState(statePath)
+	if err != nil || st == nil || !codexRecordNames(st, pl.envPath) {
+		return
+	}
+	written := map[string]string{}
+	for _, k := range codexKeys {
+		written[k] = pl.want[k]
+	}
+	if werr := writeState(statePath, managedState{Settings: st.Settings, Prior: st.Prior, Written: written}); werr != nil {
+		fmt.Fprintf(stderr, "agentop: could not record the values now set (%v); disable will not be\n"+
+			"  able to tell a later edit of yours from Cortex's own value, and may remove it.\n", werr)
+	}
+}
+
+// codexRecordNames reports whether enable's record is envPath's: the same text, or an
+// absolute path that resolves to the same file.
+func codexRecordNames(st *managedState, envPath string) bool {
+	return st != nil && (st.Settings == envPath || (filepath.IsAbs(st.Settings) && samePath(st.Settings, envPath)))
+}
+
 // codexDisablePlan is what disable would remove, worked out without touching
 // anything.
 type codexDisablePlan struct {
 	envPath string
 	f       *codexEnvFile
-	present []string // managed keys set in the file, in codexKeys order; none = nothing to do
+	present []string      // managed keys holding Cortex's values, in codexKeys order; none = nothing to do
+	left    []string      // managed keys changed since enable, which disable leaves
+	st      *managedState // enable's record of this file; nil when there is none
 }
 
-func planCodexDisable(envPath string) (codexDisablePlan, error) {
+// planCodexDisable is what disable would change in envPath, judged by enable's record at
+// statePath ("" for none), as claude-code's disable judges by its own (#1289). A managed
+// key whose value is not the one enable recorded writing was changed since enable — a
+// corporate proxy, a CA bundle — and goes in left, untouched. Every other key is
+// Cortex's, and so is every key when nothing records writing it: an install enabled
+// before enable recorded Written, or a record that is gone. Removing a value of the
+// user's then is the lesser harm, for the reason changedSinceEnable gives. Cortex's
+// config is not read, so this works the same when Cortex is gone.
+func planCodexDisable(envPath, statePath string) (codexDisablePlan, error) {
 	f, err := parseCodexEnv(envPath)
 	if err != nil {
 		return codexDisablePlan{}, err
@@ -560,18 +676,84 @@ func planCodexDisable(envPath string) (codexDisablePlan, error) {
 			envPath, strings.Join(dup, ", "))
 	}
 	pl := codexDisablePlan{envPath: envPath, f: f}
+	if statePath != "" {
+		// An unreadable record leaves st nil, so every key is removed;
+		// applyCodexDisable says so when it reads the record again.
+		if st, _ := readState(statePath); codexRecordNames(st, envPath) {
+			pl.st = st
+		}
+	}
 	for _, k := range codexKeys {
-		if _, ok := f.get(k); ok {
+		v, ok := f.get(k)
+		switch {
+		case !ok:
+		case changedSinceEnable(pl.st, k, codexAsRead(v)):
+			pl.left = append(pl.left, k)
+		default:
 			pl.present = append(pl.present, k)
 		}
 	}
 	return pl, nil
 }
 
-// applyCodexDisable puts back what enable recorded, removes what it added, and
-// deletes the record. It returns the keys restored to a value the user had
-// set. It restores Prior unconditionally, with no check on whether the value
-// changed since enable.
+// codexAsRead is v as Codex reads it, quotes stripped, or v as it stands when
+// codexEnvValue cannot be sure. Compared with what enable wrote, which carries no quotes,
+// a quoted copy of Cortex's own value is still Cortex's, and a value that may read
+// otherwise is not: it is left, the safe side (#1783 review).
+func codexAsRead(v string) string {
+	if d, ok := codexEnvValue(v); ok {
+		return d
+	}
+	return v
+}
+
+// codexCortexProxy is the proxy the processes restarted after disable are compared with:
+// the value of HTTPS_PROXY, else https_proxy, among the keys the plan removes. A proxy
+// left in place is not Cortex's. With neither removed, enable's record says what
+// Cortex's proxy was, if there is a record (#1783 review); "" means there is nothing
+// to compare with.
+func codexCortexProxy(pl codexDisablePlan) string {
+	for _, k := range []string{"HTTPS_PROXY", "https_proxy"} {
+		if v, ok := pl.f.get(k); ok && slices.Contains(pl.present, k) {
+			return codexAsRead(v)
+		}
+	}
+	if pl.st != nil {
+		return pl.st.Written["HTTPS_PROXY"]
+	}
+	return ""
+}
+
+// noteCodexDaemonOnCortex names an app-server still on Cortex's proxy when disable has
+// nothing of Cortex's to take out of the file. One started before the user changed the
+// file keeps the proxy it started with, and drops it only when it restarts. Nothing is
+// restarted here, since nothing was asked (#1783 review).
+func noteCodexDaemonOnCortex(codexHome, cortexProxy string, stdout io.Writer) {
+	d, ok := runningCodexDaemon(codexHome)
+	if !ok || d.EnvErr != nil || cortexProxy == "" || !sameProxy(d.Proxy, cortexProxy) {
+		return
+	}
+	fmt.Fprintf(stdout, "\nCodex's background app-server (pid %d%s) still uses Cortex's proxy, from before\n"+
+		"  these changes. It picks up the file when it restarts:\n"+
+		"    %s   # open Codex windows reconnect\n", d.PID, startedSuffix(d), codexDaemonRestartCmd)
+}
+
+// printCodexLeft names the keys disable leaves because they changed since enable, in
+// claude-code's words (printClaudeCodeLeft), before the question they bear on.
+func printCodexLeft(pl codexDisablePlan, stdout io.Writer) {
+	if len(pl.left) == 0 {
+		return
+	}
+	fmt.Fprintf(stdout, "Leaving these alone — changed since Cortex set them:\n")
+	for _, k := range pl.left {
+		fmt.Fprintf(stdout, "  %s\n", k)
+	}
+	fmt.Fprintf(stdout, "Removing them would lose that edit; edit %s by hand if you want them gone.\n", pl.envPath)
+}
+
+// applyCodexDisable puts back what enable recorded for the plan's present keys, removes
+// the rest of them, and deletes the record. It returns the keys restored to a value the
+// user had set. A key in pl.left, changed since enable, is not touched.
 //
 // IN PRACTICE THE RESTORE BRANCH IS UNREACHABLE TODAY, and it is worth knowing
 // that before reading the warning below as a live case. planCodexEnable refuses
@@ -625,27 +807,40 @@ func applyCodexDisable(pl codexDisablePlan, statePath string, stderr io.Writer) 
 }
 
 func codexDisable(envPath, statePath string, yes bool, stdout, stderr io.Writer) int {
-	pl, err := planCodexDisable(envPath)
+	pl, err := planCodexDisable(envPath, statePath)
 	if err != nil {
 		fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
 	if len(pl.present) == 0 {
-		fmt.Fprintf(stdout, "Nothing to do: none of the Cortex variables are set in %s.\n", envPath)
+		// None of Cortex's own values is left in the file, so Cortex does not route it,
+		// and the record must not go on saying it does (removeDisabledRecord says why
+		// for claude-code). applyCodexDisable, which would have deleted it, is not reached.
+		if pl.st != nil {
+			_ = os.Remove(statePath)
+		}
+		if len(pl.left) == 0 {
+			fmt.Fprintf(stdout, "Nothing to do: none of the Cortex variables are set in %s.\n", envPath)
+			return 0
+		}
+		// Every managed key the file holds was changed after enable: nothing of ours to
+		// take out, and nothing to ask about.
+		fmt.Fprintf(stdout, "Nothing to remove from %s.\n\n", envPath)
+		printCodexLeft(pl, stdout)
+		noteCodexDaemonOnCortex(filepath.Dir(envPath), codexCortexProxy(pl), stdout)
 		return 0
 	}
 	fmt.Fprintf(stdout, "This will remove from %s: %s\n", envPath, strings.Join(pl.present, ", "))
+	// Before the question, not after it: what is left behind is part of what the
+	// answer is about.
+	printCodexLeft(pl, stdout)
 	codexHome := filepath.Dir(envPath)
 	was := noteCodexDaemonRestart(codexHome, stdout)
 	fmt.Fprintln(stdout)
 	// The proxy the restarted daemon is compared with, read before the file loses it.
 	// Disable has to work when Cortex is gone, so this is what the file held, not
-	// Cortex's config; want is nil for the same reason, and codexIsOurs falls back to
-	// the value's shape.
-	cortexProxy, _ := pl.f.get("HTTPS_PROXY")
-	if cortexProxy == "" {
-		cortexProxy, _ = pl.f.get("https_proxy")
-	}
+	// Cortex's config, and only a value it removes: a proxy left in place is not Cortex's.
+	cortexProxy := codexCortexProxy(pl)
 	if !yes && !codexConfirm(stdout) {
 		fmt.Fprintln(stdout, "Not changed.")
 		return exitDeclined
@@ -658,7 +853,13 @@ func codexDisable(envPath, statePath string, yes bool, stdout, stderr io.Writer)
 	if len(restored) > 0 {
 		fmt.Fprintf(stdout, "\nRestored to the value(s) you had before: %s\n", strings.Join(restored, ", "))
 	}
-	fmt.Fprintf(stdout, "\nDisabled. Codex no longer routes through Cortex.\n")
+	if len(pl.left) > 0 {
+		// Not "no longer routes through Cortex": a left HTTPS_PROXY still points somewhere,
+		// as claude-code's disable says for the same reason.
+		fmt.Fprintf(stdout, "\nRemoved what Cortex set. The key(s) listed above are still in %s.\n", envPath)
+	} else {
+		fmt.Fprintf(stdout, "\nDisabled. Codex no longer routes through Cortex.\n")
+	}
 	finishCodexChange(codexHome, cortexProxy, nil, false, was, stdout, stderr)
 	return 0
 }

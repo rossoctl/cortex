@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -11,8 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 	"github.com/rossoctl/cortex/cmd/agentop/tui"
 )
 
@@ -508,15 +507,6 @@ const (
 // an env var, is what it means, and cannot appear in a flag or path anyone would type.
 const argSep = "\x1f"
 
-// childTimeout bounds a re-exec'd child.
-//
-// Needed because not every argv exits on its own. `observe --help` does, through
-// flag.ExitOnError, which is the only reason CombinedOutput did not hang before — but an argv
-// that reaches tui.Run leaves the child blocking on TTY acquisition, and an unbounded
-// CombinedOutput would then hang the whole package to its test timeout with no clue why.
-// Generous enough that a slow machine does not flake, short enough to fail fast.
-const childTimeout = 30 * time.Second
-
 // runAgentopChild re-execs this test binary as agentop with the given argv, returning its combined
 // output.
 //
@@ -528,17 +518,16 @@ const childTimeout = 30 * time.Second
 // inherits through os.Environ() below. An extraEnv parameter existed and every caller passed nil.
 func runAgentopChild(t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), childTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, os.Args[0])
+	cmd := exec.Command(os.Args[0])
 	cmd.Env = append(os.Environ(),
 		childSentinel+"=1",
 		childArgs+"="+strings.Join(args, argSep),
 	)
+	// Not every argv exits on its own: one that reaches tui.Run opens the terminal. In
+	// a session of its own the child has no controlling terminal, so that open fails
+	// and the child exits.
+	cmd.SysProcAttr = sessionAttr()
 	out, err := cmd.CombinedOutput()
-	if ctx.Err() != nil {
-		t.Fatalf("child did not exit within %s; argv=%q output:\n%s", childTimeout, args, out)
-	}
 	return string(out), err
 }
 
@@ -566,11 +555,21 @@ func TestMain(m *testing.M) {
 		main()
 		return
 	}
-	// Poll a stub's health 10 times as often. The windows stay real: a shorter
-	// window made tests fail on a loaded machine, where a stub can need more than
-	// 1s to answer or to exit.
+	// Poll a stub's health 10 times as often. A test that calls readyOnFirstAnswer
+	// takes the first answer; the rest keep real windows, because a shorter window
+	// made tests fail on a loaded machine, where a stub can need more than 1s to
+	// answer or to exit.
+	//
+	// Tests set package variables like this one, so tests in this package run
+	// sequentially: none calls t.Parallel.
 	healthPollDivisor = 10
-	os.Exit(m.Run())
+	// The home directory is a temporary one for the whole run, so no test can read or write
+	// the real profile, even one that sets no home of its own (see testhome). The children
+	// above inherit it.
+	cleanup := testhome.Isolate()
+	code := m.Run()
+	cleanup()
+	os.Exit(code)
 }
 
 // The child argv round-trips an argument containing a space, ACROSS the process boundary.

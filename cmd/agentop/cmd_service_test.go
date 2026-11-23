@@ -3,12 +3,15 @@ package main
 import (
 	"bytes"
 	"encoding/xml"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -226,8 +229,8 @@ const (
 
 func init() {
 	if os.Getenv(sleeperEnv) == "1" {
-		if ready := os.Getenv(sleeperReadyEnv); ready != "" {
-			_ = os.WriteFile(ready, nil, 0o600)
+		if os.Getenv(sleeperReadyEnv) == "1" {
+			_, _ = os.NewFile(3, "ready").Write([]byte{1})
 		}
 		time.Sleep(time.Minute)
 		os.Exit(0)
@@ -252,9 +255,10 @@ func startSleeperAt(t *testing.T, path string) int {
 	if err := os.WriteFile(path, b, 0o755); err != nil { //nolint:gosec // an executable fixture
 		t.Fatal(err)
 	}
-	ready := filepath.Join(t.TempDir(), "ready")
+	ready, waitReady := readyPipe(t)
 	cmd := exec.Command(path)
-	cmd.Env = append(os.Environ(), sleeperEnv+"=1", sleeperReadyEnv+"="+ready)
+	cmd.Env = append(os.Environ(), sleeperEnv+"=1", sleeperReadyEnv+"=1")
+	cmd.ExtraFiles = []*os.File{ready}
 	if err := cmd.Start(); err != nil {
 		t.Skipf("cannot start the fixture process: %v", err)
 	}
@@ -262,15 +266,27 @@ func startSleeperAt(t *testing.T, path string) int {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	})
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		if _, err := os.Stat(ready); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the fixture process at %s never started", path)
+	waitReady()
+	return cmd.Process.Pid
+}
+
+// readyPipe is the pipe a child marks itself ready on, as its fd 3, and the wait
+// for that mark. The read ends at the mark, or at EOF once the child and everything
+// it started exit without making it.
+func readyPipe(t *testing.T) (*os.File, func()) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Close(); _ = w.Close() })
+	return w, func() {
+		t.Helper()
+		_ = w.Close() // the child holds the only write end now
+		if _, err := r.Read(make([]byte, 1)); err != nil {
+			t.Fatalf("the child exited before it was ready: %v", err)
 		}
 	}
-	return cmd.Process.Pid
 }
 
 // TestServiceStatus_ReportsTheV070ProxyInThePidfile: v0.7.0's installer ran
@@ -474,6 +490,7 @@ func TestServiceUsage_NamesTheAgentsThatDependOnTheProxy(t *testing.T) {
 // for: running, yet silent. Asking the real systemd made the verdict depend on the
 // machine the test ran on (a CI runner reported "stopped, but still enabled").
 func TestServiceStatus_NotAnsweringNamesTheAgentsThatFail(t *testing.T) {
+	readyOnFirstAnswer(t)
 	saved, savedJob := unitStateOf, jobStateOf
 	unitStateOf = func() unitState {
 		return unitState{known: true, load: "loaded", active: "active", sub: "running", enabled: "enabled", result: "success"}
@@ -499,13 +516,60 @@ func TestServiceStatus_NotAnsweringNamesTheAgentsThatFail(t *testing.T) {
 
 // TestWaitHealthy_TimesOut: install claims success only after the health endpoint
 // answers, because a supervisor reports "loaded" for a proxy that is crash-looping.
+// Within its window it asks again, past a dropped connection and a 503, until the
+// answer is 2xx. A window already over takes the first answer.
 func TestWaitHealthy_TimesOut(t *testing.T) {
-	start := time.Now()
-	if waitHealthy("http://127.0.0.1:1/healthz", 1200*time.Millisecond) {
-		t.Error("reported healthy against a closed port")
+	if waitHealthy("http://127.0.0.1:1/healthz", time.Nanosecond) {
+		t.Error("reported healthy with nothing listening")
 	}
-	if elapsed := time.Since(start); elapsed < 900*time.Millisecond {
-		t.Errorf("returned after %s; it should have used the timeout", elapsed)
+	var status atomic.Int32
+	var asks atomic.Int32
+	once := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		asks.Add(1)
+		w.WriteHeader(int(status.Load()))
+	}))
+	t.Cleanup(once.Close)
+	for _, tc := range []struct {
+		status int32
+		want   bool
+	}{{http.StatusServiceUnavailable, false}, {http.StatusOK, true}} {
+		status.Store(tc.status)
+		asks.Store(0)
+		if got := waitHealthy(once.URL+"/healthz", time.Nanosecond); got != tc.want || asks.Load() != 1 {
+			t.Errorf("an over window against %d: waitHealthy = %v after %d asks, want %v after 1", tc.status, got, asks.Load(), tc.want)
+		}
+	}
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		switch calls.Add(1) {
+		case 1:
+			c, _, err := http.NewResponseController(w).Hijack()
+			if err == nil {
+				_ = c.Close()
+			}
+		case 2:
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	if ok := waitHealthy(srv.URL+"/healthz", time.Hour); !ok || calls.Load() != 3 {
+		t.Errorf("waitHealthy = %v after %d asks, want true after 3", ok, calls.Load())
+	}
+}
+
+// A window that ends during the wait between asks sends no more: the 503 is the
+// answer, and the 2xx a later ask would get is past the window.
+func TestWaitHealthy_NoAskPastTheWindow(t *testing.T) {
+	var asks atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if asks.Add(1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	within := 500 * time.Millisecond / healthPollDivisor / 2 // half the wait between asks
+	if ok := waitHealthy(srv.URL+"/healthz", within); ok || asks.Load() != 1 {
+		t.Errorf("waitHealthy = %v after %d asks, want false after 1", ok, asks.Load())
 	}
 }
 

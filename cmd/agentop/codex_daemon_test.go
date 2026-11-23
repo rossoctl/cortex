@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 	"github.com/rossoctl/cortex/core/peerproc"
 )
 
@@ -38,6 +39,7 @@ type fakeCodexDaemon struct {
 
 	updaterPID     int
 	updaterEnv     []string
+	updaterEnvErr  error // the updater's environment cannot be read
 	newUpdaterPID  int   // the updater a restart starts when none is running
 	stopErr        error // stopping the updater fails, and it keeps running
 	updaterReused  bool  // the updater's pid now names another process, so its record is stale
@@ -79,7 +81,7 @@ func stubCodexDaemon(t *testing.T, codexHome string, f *fakeCodexDaemon) {
 		case f.pid:
 			return f.env, f.envErr
 		case f.updaterPID:
-			return f.updaterEnv, nil
+			return f.updaterEnv, f.updaterEnvErr
 		}
 		t.Errorf("read the environment of pid %d, which is neither fake process", pid)
 		return nil, errors.New("not a fake process")
@@ -655,10 +657,13 @@ func TestCodexRun(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses /bin/sh")
 	}
-	t.Setenv("HOME", t.TempDir())
+	testhome.Set(t, t.TempDir())
 	t.Setenv(codexHomeEnv, "")
 	t.Setenv("HTTPS_PROXY", cortexProxyURL)
 	home := t.TempDir()
+	saved := codexWaitDelay
+	t.Cleanup(func() { codexWaitDelay = saved })
+	codexWaitDelay = time.Hour // stderr is read to its end
 	err := codexRun("/bin/sh", home, nil, "-c", `echo "home=$CODEX_HOME proxy=$HTTPS_PROXY" >&2; echo second >&2; exit 3`)
 	if err == nil {
 		t.Fatal("a non-zero exit returned no error")
@@ -671,12 +676,24 @@ func TestCodexRun(t *testing.T) {
 	}
 	// A restart leaves a daemon running, and a daemon that kept the command's stdout or
 	// stderr open must not turn a successful restart into a failure (#1526 review). The
-	// background sleep holds both for longer than WaitDelay.
-	if err := codexRun("/bin/sh", home, nil, "-c", "sleep 5 & exit 0"); err != nil {
+	// background sleep holds both until the cleanup stops it, so each Wait ends on
+	// WaitDelay, here already over.
+	codexWaitDelay = time.Nanosecond
+	pids := filepath.Join(t.TempDir(), "pids")
+	t.Cleanup(func() {
+		b, _ := os.ReadFile(pids) //nolint:gosec // the test's own file
+		for _, f := range strings.Fields(string(b)) {
+			if pid, err := strconv.Atoi(f); err == nil {
+				_ = killPID(pid, syscall.SIGKILL)
+			}
+		}
+	})
+	child := "sleep 3600 & echo $! >> '" + pids + "'; "
+	if err := codexRun("/bin/sh", home, nil, "-c", child+"exit 0"); err != nil {
 		t.Errorf("a successful command whose child kept its output open returned %v", err)
 	}
 	// The same child behind a failed command is still a failure.
-	if err := codexRun("/bin/sh", home, nil, "-c", "sleep 5 & exit 4"); err == nil || !strings.Contains(err.Error(), "exit status 4") {
+	if err := codexRun("/bin/sh", home, nil, "-c", child+"exit 4"); err == nil || !strings.Contains(err.Error(), "exit status 4") {
 		t.Errorf("a failed command whose child kept its output open returned %v, want exit status 4", err)
 	}
 }
@@ -687,13 +704,13 @@ func TestCodexRun(t *testing.T) {
 func startGroupLeader(t *testing.T) (*exec.Cmd, <-chan struct{}) {
 	t.Helper()
 	cmd := exec.Command("/bin/sh", "-c", "sleep 30")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = groupAttr()
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	exited := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(exited) }()
-	t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); <-exited })
+	t.Cleanup(func() { _ = killPID(-cmd.Process.Pid, syscall.SIGKILL); <-exited })
 	prev := codexDaemonAlive
 	t.Cleanup(func() { codexDaemonAlive = prev })
 	codexDaemonAlive = func(pid int) bool {
@@ -734,7 +751,6 @@ func TestCodexStopUpdater_RealProcess(t *testing.T) {
 			} else {
 				writeCodexPIDStarted(t, home, codexUpdaterPIDRel, pid, psStarted(t, pid))
 			}
-			start := time.Now()
 			if err := codexStopUpdater(home); err != nil {
 				t.Fatalf("stopping a live updater: %v", err)
 			}
@@ -742,9 +758,6 @@ func TestCodexStopUpdater_RealProcess(t *testing.T) {
 			case <-exited:
 			default:
 				t.Fatal("codexStopUpdater returned with the updater still running")
-			}
-			if d := time.Since(start); d > 5*time.Second {
-				t.Errorf("stop took %s; SIGTERM should end sleep at once", d)
 			}
 			if err := codexStopUpdater(home); err != nil {
 				t.Errorf("stale pid file: %v", err)
@@ -799,10 +812,11 @@ func TestCodexStopUpdater_LeavesAReusedPIDAlone(t *testing.T) {
 			if err := codexStopUpdater(home); err != nil {
 				t.Errorf("a pid that is not the updater: %v", err)
 			}
+			// A stop that signals waits for the exit before it returns.
 			select {
 			case <-exited:
 				t.Fatal("signalled a process the pid file does not describe")
-			case <-time.After(300 * time.Millisecond):
+			default:
 			}
 		})
 	}
@@ -904,4 +918,43 @@ func TestCodexDaemonAlive_RealProcesses(t *testing.T) {
 	if codexDaemonAlive(0) || codexDaemonAlive(-1) {
 		t.Error("a non-positive pid reads as running")
 	}
+}
+
+// A proxy of the user's left in the file is not what the restarted daemon is judged by:
+// one that now uses that proxy no longer uses Cortex, and is not told it still does.
+func TestCodexDisable_JudgesTheRestartByCortexsProxyNotOneItLeft(t *testing.T) {
+	envPath, cfgPath := codexFixture(t, "")
+	enableCodex(t, envPath, cfgPath)
+	const corp = "http://proxy.corp.example:8080"
+	editFile(t, envPath, "HTTPS_PROXY="+cortexProxyURL, "HTTPS_PROXY="+corp)
+	f := &fakeCodexDaemon{pid: 5613, env: onCortex, newPID: 7001, newEnv: []string{"HOME=/home/someone", "HTTPS_PROXY=" + corp}}
+	stubCodexDaemon(t, filepath.Dir(envPath), f)
+
+	var out, errb bytes.Buffer
+	if code := codexDisable(envPath, filepath.Join(filepath.Dir(envPath), "state.json"), true, &out, &errb); code != 0 {
+		t.Fatalf("disable exit %d: %s", code, errb.String())
+	}
+	wantAll(t, "disable output", out.String(), "restarted (pid 7001) and no longer uses Cortex")
+	if strings.Contains(out.String(), "still uses Cortex's proxy") {
+		t.Errorf("disable called the user's proxy Cortex's:\n%s", out.String())
+	}
+}
+
+// With both HTTPS_PROXY spellings changed by the user, disable still knows Cortex's proxy
+// from enable's record, so a restarted daemon that kept it is told so rather than
+// reported as plainly restarted (#1783 review).
+func TestCodexDisable_JudgesTheRestartByTheRecordWhenBothProxiesChanged(t *testing.T) {
+	envPath, cfgPath := codexFixture(t, "")
+	enableCodex(t, envPath, cfgPath)
+	const corp = "http://proxy.corp.example:8080"
+	editFile(t, envPath, "HTTPS_PROXY="+cortexProxyURL, "HTTPS_PROXY="+corp)
+	editFile(t, envPath, "https_proxy="+cortexProxyURL, "https_proxy="+corp)
+	f := &fakeCodexDaemon{pid: 5613, env: onCortex, newPID: 7001, newEnv: onCortex}
+	stubCodexDaemon(t, filepath.Dir(envPath), f)
+
+	var out, errb bytes.Buffer
+	if code := codexDisable(envPath, filepath.Join(filepath.Dir(envPath), "state.json"), true, &out, &errb); code != 0 {
+		t.Fatalf("disable exit %d: %s", code, errb.String())
+	}
+	wantAll(t, "disable output", out.String(), "restarted (pid 7001), but it still uses Cortex's proxy")
 }

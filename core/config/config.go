@@ -412,8 +412,8 @@ type UpdateConfig struct {
 
 // The defaults for update.wait and update.check_every.
 const (
-	DefaultUpdateWait       = 24 * time.Hour
-	DefaultUpdateCheckEvery = 6 * time.Hour
+	DefaultUpdateWait       = 6 * time.Hour
+	DefaultUpdateCheckEvery = 3 * time.Hour
 )
 
 // Times resolves update.wait and update.check_every. Nil-safe on u. On an

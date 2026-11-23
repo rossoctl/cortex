@@ -6,10 +6,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
 )
@@ -667,6 +669,41 @@ func TestGetJSON_ServerThinkTimeInsideTheCallersBudgetSucceeds(t *testing.T) {
 // lasts until the client gives up. The error has to come from the body read: a default that
 // ends at the headers fails a call only before they arrive.
 func TestGetBody_ADeadlinelessCallerIsBoundedMidBody(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(stallMidBody(`{"id":"s1","events":[`)))
+	defer ts.Close()
+
+	c := New(ts.URL)
+	given := expireStreamDeadlineOnHeaders(t, c)
+	// No deadline, exactly as the TUI's root context has none.
+	_, err := c.GetSessionPage(context.Background(), "s1", 0, 10)
+	if err == nil {
+		t.Fatal("GetSessionPage returned no error against a server that stalled mid-body")
+	}
+	if !strings.Contains(err.Error(), ": decode: ") {
+		t.Errorf("failed with %v, want a failed body read: the call ended before the body", err)
+	}
+	if *given != streamDefaultTimeout {
+		t.Errorf("the call was bounded by %v, want streamDefaultTimeout (%v)", *given, streamDefaultTimeout)
+	}
+}
+
+// stallMidBody sends the headers and the start of a body, then nothing until the client gives up.
+func stallMidBody(start string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		// Headers are out, so the header bound is satisfied and no longer applies.
+		w.(http.Flusher).Flush()
+		_, _ = w.Write([]byte(start))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}
+}
+
+// expireStreamDeadlineOnHeaders makes streamDeadline end c's call as soon as its response
+// headers arrive, until the test ends. The returned duration is the bound the call was given.
+func expireStreamDeadlineOnHeaders(t *testing.T, c *Client) *time.Duration {
+	t.Helper()
 	var given time.Duration
 	var expire context.CancelFunc
 	streamDeadline = func(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
@@ -676,35 +713,12 @@ func TestGetBody_ADeadlinelessCallerIsBoundedMidBody(t *testing.T) {
 		return ctx, cancel
 	}
 	t.Cleanup(func() { streamDeadline = context.WithTimeout })
-
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		// Headers are out, so the header bound is satisfied and no longer applies.
-		w.(http.Flusher).Flush()
-		_, _ = w.Write([]byte(`{"id":"s1","events":[`))
-		w.(http.Flusher).Flush()
-		<-r.Context().Done() // and then nothing, until the client gives up
-	}))
-	defer ts.Close()
-
-	c := New(ts.URL)
 	c.http.Transport = expireAfterHeaders{c.http.Transport, func() {
 		if expire != nil {
 			expire()
 		}
 	}}
-	// No deadline, exactly as the TUI's root context has none.
-	_, err := c.GetSessionPage(context.Background(), "s1", 0, 10)
-	if err == nil {
-		t.Fatal("GetSessionPage returned no error against a server that stalled mid-body")
-	}
-	if !strings.Contains(err.Error(), ": decode: ") {
-		t.Errorf("failed with %v, want a failed body read: the call ended before the body", err)
-	}
-	if given != streamDefaultTimeout {
-		t.Errorf("the call was bounded by %v, want streamDefaultTimeout (%v)", given, streamDefaultTimeout)
-	}
+	return &given
 }
 
 // expireAfterHeaders runs expire once a response's headers have arrived.
@@ -837,5 +851,21 @@ func TestPipelinePluginDecodesOnError(t *testing.T) {
 	}
 	if got := view.Outbound[1].OnError; got != pipeline.ErrorPolicyObserve {
 		t.Errorf("inference-router OnError = %q, want observe", got)
+	}
+}
+
+// GetUsageWindowScoped puts project= and agent= on the query.
+func TestGetUsageWindowScoped_SendsProject(t *testing.T) {
+	var got url.Values
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.Query()
+		_, _ = w.Write([]byte(`{"window":"today","totals":{}}`))
+	}))
+	defer ts.Close()
+	if _, err := New(ts.URL).GetUsageWindowScoped(context.Background(), "today", 0, "", "claude-code", "/repo/a", usage.GroupModel); err != nil {
+		t.Fatal(err)
+	}
+	if got.Get("project") != "/repo/a" || got.Get("agent") != "claude-code" || got.Get("group") != "model" {
+		t.Errorf("query = %v, want project=/repo/a, agent=claude-code and group=model", got)
 	}
 }

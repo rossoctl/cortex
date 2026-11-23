@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 )
 
 // fakeHome points os.UserHomeDir at a scratch directory. USERPROFILE as well as
@@ -18,8 +20,7 @@ import (
 func fakeHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	testhome.Set(t, home)
 	return home
 }
 
@@ -1075,8 +1076,7 @@ func TestBobShellEnableQuotesThePathItTellsYouToSource(t *testing.T) {
 	if err := os.Mkdir(home, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	testhome.Set(t, home)
 	t.Setenv("SHELL", "/bin/zsh")
 
 	var out, errb bytes.Buffer
@@ -1383,7 +1383,7 @@ func TestBobShellUnreadableRCFileIsAFailureNotAdvice(t *testing.T) {
 			// failure against this test.
 			t.Cleanup(func() { _ = os.Chmod(home, 0o755) })
 
-			t.Setenv("HOME", home)
+			testhome.Set(t, home)
 			t.Setenv("SHELL", "/bin/zsh")
 
 			var out, errb bytes.Buffer
@@ -1475,7 +1475,7 @@ func TestBobShellWriteFailureIsExit1AndLeavesNoLitter(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = os.Chmod(home, 0o755) })
 
-			t.Setenv("HOME", home)
+			testhome.Set(t, home)
 			t.Setenv("SHELL", "/bin/zsh")
 
 			var out, errb bytes.Buffer

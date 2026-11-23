@@ -149,6 +149,9 @@ func TestServiceInstallWritesUpdaterUnit(t *testing.T) {
 // must go with it, or nothing removes it.
 func TestServiceInstallFailedLoadRemovesUpdaterUnit(t *testing.T) {
 	fakeSupervisor(t)
+	saved := bootstrapRetryDelay
+	bootstrapRetryDelay = 0
+	t.Cleanup(func() { bootstrapRetryDelay = saved })
 	sc := newServiceScene(t)
 	// Only the proxy's load fails, so install gets past its preflight and writes both files.
 	installStub(t, "launchctl", `#!/bin/sh

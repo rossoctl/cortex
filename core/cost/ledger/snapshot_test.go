@@ -34,7 +34,7 @@ func TestSnapshot_ShapeAgentAndGroupInEffect(t *testing.T) {
 	}
 	spec := usage.Spec{Label: usage.WindowToday, From: usage.StartOfLocalDay(at), To: at.Add(time.Minute)}
 
-	snap, err := w.Snapshot(context.Background(), spec, usage.GroupStatus, "")
+	snap, err := w.Snapshot(context.Background(), spec, usage.GroupStatus, "", "")
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestSnapshot_ShapeAgentAndGroupInEffect(t *testing.T) {
 		t.Errorf("snapshot = %+v, want $0.35 priced under %q", snap, spec.Label)
 	}
 
-	one, err := w.Snapshot(context.Background(), spec, usage.GroupAgent, "opencode")
+	one, err := w.Snapshot(context.Background(), spec, usage.GroupAgent, "opencode", "")
 	if err != nil {
 		t.Fatalf("Snapshot(agent): %v", err)
 	}
@@ -69,7 +69,7 @@ func TestSnapshot_RefusesADurationWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseWindowSpec: %v", err)
 	}
-	if _, err := w.Snapshot(context.Background(), spec, usage.GroupNone, ""); err == nil {
+	if _, err := w.Snapshot(context.Background(), spec, usage.GroupNone, "", ""); err == nil {
 		t.Error("Snapshot served a duration window")
 	}
 }
@@ -111,7 +111,7 @@ func TestSnapshot_CarriesTheCoverageShortfallMeasuredAtTheWindowsOwnInstant(t *t
 			}
 
 			snap, err := w.Snapshot(context.Background(),
-				usage.Spec{Label: usage.WindowMonth, From: from, To: windowEnd}, usage.GroupModel, "")
+				usage.Spec{Label: usage.WindowMonth, From: from, To: windowEnd}, usage.GroupModel, "", "")
 			if err != nil {
 				t.Fatalf("Snapshot: %v", err)
 			}
@@ -160,7 +160,7 @@ func TestSnapshot_ADayReportedOutsideRetentionCanStillBeInTheTotal(t *testing.T)
 
 	from := time.Date(2026, 3, 1, 0, 0, 0, 0, loc)
 	snap, err := w2.Snapshot(context.Background(),
-		usage.Spec{Label: usage.WindowMonth, From: from, To: reopened}, usage.GroupModel, "")
+		usage.Spec{Label: usage.WindowMonth, From: from, To: reopened}, usage.GroupModel, "", "")
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestSnapshot_TheDropWarningFiresOnChangeNotPerRead(t *testing.T) {
 
 	spec := usage.Spec{Label: usage.WindowToday, From: usage.StartOfLocalDay(at), To: at}
 	for i := 0; i < 3; i++ {
-		snap, err := w.Snapshot(context.Background(), spec, usage.GroupNone, "")
+		snap, err := w.Snapshot(context.Background(), spec, usage.GroupNone, "", "")
 		if err != nil {
 			t.Fatalf("read %d: %v", i, err)
 		}

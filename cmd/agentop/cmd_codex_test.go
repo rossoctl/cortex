@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 )
 
 // codexFixture writes a Cortex config under its own temp dir and returns the
@@ -485,7 +488,7 @@ func TestCodexDeclining(t *testing.T) {
 // the real ~/.codex/.env out of reach. HOME is pointed at a temp dir anyway, so a case
 // added later that does reach the dispatch cannot touch the real file either.
 func TestCodex_Usage(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	testhome.Set(t, t.TempDir())
 	for _, tc := range []struct {
 		name     string
 		args     []string
@@ -658,5 +661,256 @@ func TestConfigureUsage_CodexPersists(t *testing.T) {
 		if strings.Contains(prose, stale) {
 			t.Errorf("configureUsage still says %q", stale)
 		}
+	}
+}
+
+// enable records its dotenv file as an absolute path, so the record names the file from
+// any directory: a relative --env, or a relative CODEX_HOME, is relative to the one enable
+// runs in, and uninstall reads the record from wherever it runs (#1781 review).
+func TestCodexEnable_RecordsAnAbsolutePath(t *testing.T) {
+	for name, args := range map[string][]string{
+		"--env .env":          {"enable", "--yes", "--env", ".env"},
+		"relative CODEX_HOME": {"enable", "--yes"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			testhome.Set(t, home)
+			t.Setenv(codexHomeEnv, "")
+			cfg := filepath.Join(home, cortexCfgRel)
+			if err := os.MkdirAll(filepath.Dir(cfg), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(cfg, []byte(strings.Replace(cortexCfg, "CADIR", filepath.Join(home, ".cortex", "ca"), 1)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			dir := filepath.Join(home, "codexhome")
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Chdir(home)
+			want := filepath.Join(dir, ".env")
+			if name == "--env .env" {
+				t.Chdir(dir)
+			} else {
+				t.Setenv(codexHomeEnv, "codexhome")
+			}
+			stubCodexDaemon(t, dir, &fakeCodexDaemon{})
+			var out, errb bytes.Buffer
+			if code := runCodex(args, &out, &errb); code != 0 {
+				t.Fatalf("enable exit %d:\n%s%s", code, out.String(), errb.String())
+			}
+			st, err := readState(filepath.Join(home, codexStateRel))
+			if err != nil || st == nil {
+				t.Fatalf("enable's record: %v, %v", st, err)
+			}
+			if !filepath.IsAbs(st.Settings) || !samePath(st.Settings, want) {
+				t.Errorf("the record names %q, want the absolute %s", st.Settings, want)
+			}
+		})
+	}
+}
+
+// readCodexRecord reads enable's record at path, failing the test when there is none.
+func readCodexRecord(t *testing.T, path string) *managedState {
+	t.Helper()
+	st, err := readState(path)
+	if err != nil || st == nil {
+		t.Fatalf("enable's record at %s: %v, %v", path, st, err)
+	}
+	return st
+}
+
+// editFile replaces old with new in path once, and fails the test when old is not there.
+func editFile(t *testing.T, path, old, new string) {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), old) {
+		t.Fatalf("fixture: %s has no %q:\n%s", path, old, b)
+	}
+	if err := os.WriteFile(path, []byte(strings.Replace(string(b), old, new, 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// enable records the five values it writes, which is what lets disable tell Cortex's
+// own value from one changed since, as claude-code's does (#1289).
+func TestCodexEnable_RecordsWhatItWrote(t *testing.T) {
+	envPath, cfgPath := codexFixture(t, "")
+	enableCodex(t, envPath, cfgPath)
+	st := readCodexRecord(t, filepath.Join(filepath.Dir(envPath), "state.json"))
+	if got, want := st.Written, readCodexEnv(t, envPath); len(want) != len(codexKeys) || !maps.Equal(got, want) {
+		t.Errorf("Written = %v, want what enable set: %v", got, want)
+	}
+}
+
+// An install enabled before enable recorded Written gets it from the next enable, which
+// finds nothing to change: the re-run most installs see. One with no record gets none,
+// since a Prior taken from Cortex's own values would make disable restore them.
+func TestCodexEnable_AlreadyEnabledFillsInARecordWithoutWritten(t *testing.T) {
+	envPath, cfgPath := codexFixture(t, "")
+	statePath := filepath.Join(filepath.Dir(envPath), "state.json")
+	enableCodex(t, envPath, cfgPath)
+	st := readCodexRecord(t, statePath)
+	if err := writeStateFile(statePath, managedState{Settings: st.Settings, Prior: st.Prior}); err != nil {
+		t.Fatal(err)
+	}
+	enableCodex(t, envPath, cfgPath)
+	if got := readCodexRecord(t, statePath).Written; !maps.Equal(got, readCodexEnv(t, envPath)) {
+		t.Errorf("Written = %v after a second enable, want what the file holds", got)
+	}
+
+	if err := os.Remove(statePath); err != nil {
+		t.Fatal(err)
+	}
+	enableCodex(t, envPath, cfgPath)
+	if fileExists(statePath) {
+		t.Error("a second enable created a record where there was none")
+	}
+}
+
+// #1289's rule: a managed key set to something else after enable, here a corporate CA
+// bundle, is left and named, and only Cortex's values come out. Before, disable removed
+// all five, losing the user's.
+func TestCodexDisable_LeavesAValueChangedSinceEnable(t *testing.T) {
+	envPath, cfgPath := codexFixture(t, "RUST_LOG=info\n")
+	statePath := filepath.Join(filepath.Dir(envPath), "state.json")
+	enableCodex(t, envPath, cfgPath)
+	const corp = "/etc/ssl/corp.pem"
+	editFile(t, envPath, envSSLCert+"="+readCodexEnv(t, envPath)[envSSLCert], envSSLCert+"="+corp)
+
+	var out, errb bytes.Buffer
+	if code := codexDisable(envPath, statePath, true, &out, &errb); code != 0 {
+		t.Fatalf("disable exit %d: %s", code, errb.String())
+	}
+	wantAll(t, "disable output", out.String(),
+		"This will remove from "+envPath+": HTTP_PROXY, HTTPS_PROXY, http_proxy, https_proxy\n",
+		"Leaving these alone — changed since Cortex set them:\n  "+envSSLCert+"\n",
+		"Removed what Cortex set. The key(s) listed above are still in "+envPath+".\n")
+	if strings.Contains(out.String(), "no longer routes through Cortex") {
+		t.Errorf("disable claimed Codex no longer routes through Cortex with a key left:\n%s", out.String())
+	}
+	if env := readCodexEnv(t, envPath); !maps.Equal(env, map[string]string{envSSLCert: corp}) {
+		t.Errorf("after disable the managed keys are %v, want only the user's %s", env, envSSLCert)
+	}
+}
+
+// disable judges by enable's record, not by Cortex's config, so a config that moved its
+// port since enable, or is gone, still leaves no value of Cortex's behind (#1783 review).
+func TestCodexDisable_JudgesByTheRecordNotTheConfig(t *testing.T) {
+	for name, change := range map[string]func(t *testing.T, cfgPath string){
+		"port moved": func(t *testing.T, cfgPath string) {
+			editFile(t, cfgPath, `forward_proxy_addr: "127.0.0.1:8081"`, `forward_proxy_addr: "127.0.0.1:8082"`)
+		},
+		"config gone": func(t *testing.T, cfgPath string) {
+			if err := os.Remove(cfgPath); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			envPath, cfgPath := codexFixture(t, "")
+			editFile(t, cfgPath, `forward_proxy_addr: "127.0.0.1:47600"`, `forward_proxy_addr: "127.0.0.1:8081"`)
+			enableCodex(t, envPath, cfgPath)
+			change(t, cfgPath)
+			var out, errb bytes.Buffer
+			if code := codexDisable(envPath, filepath.Join(filepath.Dir(envPath), "state.json"), true, &out, &errb); code != 0 {
+				t.Fatalf("disable exit %d: %s", code, errb.String())
+			}
+			if env := readCodexEnv(t, envPath); len(env) != 0 {
+				t.Errorf("after disable the managed keys are %v, want none:\n%s", env, out.String())
+			}
+			wantAll(t, "disable output", out.String(), "Disabled. Codex no longer routes through Cortex.\n")
+		})
+	}
+}
+
+// codexEnvValue reads a value as dotenvy does for a path or a proxy URL, and says when it
+// cannot be sure, so its callers can take the safe side.
+func TestCodexEnvValue(t *testing.T) {
+	for _, tc := range []struct {
+		raw, want string
+		ok        bool
+	}{
+		{"/Users/x/.cortex/ca/bundle.crt", "/Users/x/.cortex/ca/bundle.crt", true},
+		{`"/Users/x/.cortex/my-corp.pem"`, "/Users/x/.cortex/my-corp.pem", true},
+		{`'/Users/x/.cortex/my-corp.pem'`, "/Users/x/.cortex/my-corp.pem", true},
+		{`  "http://127.0.0.1:47600"  `, "http://127.0.0.1:47600", true},
+		{`'$HOME/ca.pem'`, "$HOME/ca.pem", true}, // single quotes are literal
+		{`"$HOME/ca.pem"`, "", false},            // substituted
+		{`"a\"b"`, "", false},                    // an escape
+		{`$HOME/ca.pem`, "", false},
+		{`/a/b # a comment`, "", false},
+		{`"/a/b`, "", false}, // unmatched
+	} {
+		got, ok := codexEnvValue(tc.raw)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("codexEnvValue(%q) = %q, %v, want %q, %v", tc.raw, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+// With no record of what enable wrote, every managed key is Cortex's, as it is for
+// claude-code: removing a value of the user's is the lesser harm than leaving Codex on a
+// Cortex being turned off (changedSinceEnable).
+func TestCodexDisable_WithNoRecordRemovesEveryKey(t *testing.T) {
+	envPath, _ := codexFixture(t, "HTTPS_PROXY=http://127.0.0.1:47600\nSSL_CERT_FILE=/etc/ssl/corp.pem\n")
+	var out, errb bytes.Buffer
+	if code := codexDisable(envPath, filepath.Join(filepath.Dir(envPath), "state.json"), true, &out, &errb); code != 0 {
+		t.Fatalf("disable exit %d: %s", code, errb.String())
+	}
+	if env := readCodexEnv(t, envPath); len(env) != 0 {
+		t.Errorf("after disable the managed keys are %v, want none", env)
+	}
+}
+
+// A file whose managed keys were all changed since enable has nothing of Cortex's to take
+// out: disable names them, asks nothing, changes nothing, restarts nothing, and deletes
+// the record, which would otherwise say Cortex routes a file it does not.
+func TestCodexDisable_ChangesNothingWhenEveryKeyChangedSinceEnable(t *testing.T) {
+	envPath, cfgPath := codexFixture(t, "")
+	statePath := filepath.Join(filepath.Dir(envPath), "state.json")
+	enableCodex(t, envPath, cfgPath)
+	mine := "HTTP_PROXY=http://proxy.corp.example:8080\nHTTPS_PROXY=http://proxy.corp.example:8080\n" +
+		"http_proxy=http://proxy.corp.example:8080\nhttps_proxy=http://proxy.corp.example:8080\nSSL_CERT_FILE=/etc/ssl/corp.pem\n"
+	if err := os.WriteFile(envPath, []byte(mine), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeCodexDaemon{pid: 5613, env: onCortex, newPID: 7001, newEnv: offCortex}
+	stubCodexDaemon(t, filepath.Dir(envPath), f)
+	var out, errb bytes.Buffer
+	if code := codexDisable(envPath, statePath, false, &out, &errb); code != 0 {
+		t.Fatalf("disable exit %d, want 0 with no question asked: %s", code, errb.String())
+	}
+	// The app-server started before the changes still has Cortex's proxy: named, with the
+	// restart that drops it, and not restarted, since nothing was asked (#1783 review).
+	wantAll(t, "disable output", out.String(), "Nothing to remove from "+envPath+".\n", "Leaving these alone — changed since Cortex set them:\n",
+		"Codex's background app-server (pid 5613", "still uses Cortex's proxy, from before\n", codexDaemonRestartCmd)
+	if b, _ := os.ReadFile(envPath); string(b) != mine {
+		t.Errorf("the file is %q, want it untouched", b)
+	}
+	if len(f.steps) != 0 {
+		t.Errorf("the daemon saw %v, want nothing", f.steps)
+	}
+	if fileExists(statePath) {
+		t.Error("enable's record outlived the last of Cortex's values")
+	}
+}
+
+// Codex reads a quoted value with its quotes stripped, so a quoted copy of the value
+// enable wrote is still Cortex's, and disable removes it rather than leave Codex on a
+// Cortex being turned off (#1783 review).
+func TestCodexDisable_ReadsAQuotedValueAsCodexDoes(t *testing.T) {
+	envPath, cfgPath := codexFixture(t, "")
+	enableCodex(t, envPath, cfgPath)
+	editFile(t, envPath, "HTTPS_PROXY="+cortexProxyURL, `HTTPS_PROXY="`+cortexProxyURL+`"`)
+	var out, errb bytes.Buffer
+	if code := codexDisable(envPath, filepath.Join(filepath.Dir(envPath), "state.json"), true, &out, &errb); code != 0 {
+		t.Fatalf("disable exit %d: %s", code, errb.String())
+	}
+	if env := readCodexEnv(t, envPath); len(env) != 0 {
+		t.Errorf("after disable the managed keys are %v, want none:\n%s", env, out.String())
 	}
 }

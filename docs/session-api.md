@@ -1321,8 +1321,11 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   `POST /v1/ingest` have no `project`: only the forward proxy's own rows have it.
   `/v1/usage?group=project` totals cost by this label (by `parentProject`
   when it is set); an event with no
-  `project` is counted under `unknown`. See
-  [pricing.md](pricing.md#reading-usage-over-http).
+  `project` is counted under `unknown`. `/v1/usage?project=<label>` narrows the
+  reply to the project with that `group=project` label, and echoes it in the
+  reply's `project` field (absent means "not applied"). On a ring window the
+  reply has group `none` when the project's ring does not hold the whole window.
+  See [pricing.md](pricing.md#reading-usage-over-http).
 - `parentSession` — the session that the topmost process above this row's
   agent named, when it is not this row's session. Set only by the forward
   proxy, with `session.process_attribution` on. Absent on the VM control path,

@@ -40,11 +40,13 @@ install updates itself.
 
 The title bar shows one of these notices. When more than one applies, it shows the first:
 
-1. `· updated to vX.Y.Z, restart agentop`
-2. `· update to vX.Y.Z failed, see agentop doctor`
-3. `· vX.Y.Z available`: only when vX.Y.Z is newer than the installed release or
+1. `· vX.Y.Z installed, quit and reopen agentop`, in green. The proxy already runs
+   vX.Y.Z. Only the open agentop still runs the old binary, so you do not need
+   `agentop service restart`.
+2. `· update to vX.Y.Z failed, see agentop doctor`, in red.
+3. `· vX.Y.Z available`, in green: only when vX.Y.Z is newer than the installed release or
    release candidate. A `dev` or `main` build shows no notice.
-4. `· no update check since <date>`: service installs only, after 72 hours with no check.
+4. `· no update check since <date>`, in amber: service installs only, after 72 hours with no check.
 
 ## Run
 
@@ -405,12 +407,17 @@ agentop is for, and the others are surfaces you visit and leave.
   unit everywhere — `0.03 Bobcoins`, never `$0.03` — with the same precision rules
   as dollars. Figures in different units are never added: a band span holding
   both prints them side by side (`$6.20 + 0.03 Bobcoins`), and the drawer, the
-  agents pane and the sessions table label each row with its own unit. A row that
-  itself spans units reads `(mixed)`, the drawer's tier column is withheld for a
-  mixed window, and so is the Usage pane's cost chart — scope to one agent (`A`,
-  then `u`) to chart it. Where a column is too narrow for the name it is shortened
-  (`0.03 Bobc…`), down to `¤`. A deployment with no `unit:` configured sees
-  exactly the dollar figures it always did.
+  agents pane and the sessions table label each row with its own unit. In the
+  Agents pane, an agent row or a project row that spans units shows the amount in
+  each unit, dollars first: `$1,065.52 + 0.95 Bobcoins`. The COST column grows
+  into the free width of the pane. When the terminal is too narrow for that cell,
+  the cell reads `(mixed)`. The Other rows, and a sessions table row that spans
+  units, read `(mixed)`. The drawer's tier column is withheld for a mixed window,
+  and so is the Usage pane's cost chart — scope to one agent (`A`, then `u`) to
+  chart it. Where a column is too narrow for the name it is shortened
+  (`0.03 Bobc…`), down to `¤`. In the Agents pane, a single unit is not shortened
+  when the pane has free width (`15.90 Bobcoins`). A deployment with no `unit:`
+  configured sees exactly the dollar figures it always did.
 
   `$` expands the band into two columns — where the money went, by rate tier,
   and who spent it, by model, endpoint or agent:
@@ -988,11 +995,18 @@ drawer follow that project.
 **`↵` on a project sub-row scopes to that project.** The project scope narrows the
 sessions list to the sessions that recorded the project, and narrows the usage pane,
 the spend band and its drawer to the project's figures. Every title then says
-`project=<display name>`, beside `agent=` when an agent is scoped. agentop asks for
-the `group=project` series and narrows the reply itself: the server has no `project=`
-parameter. Under a project scope, `[b]` is inert on the usage pane, latency is not
-available per project, and the drawer shows no breakdown (`no breakdown for this
-scope`). Within one session, the usage pane reads that session's projects without the
+`project=<display name>`, beside `agent=` when an agent is scoped. agentop sends
+`project=<label>`, the label that `group=project` reports, to the server (with `agent=` when an agent is scoped), and
+uses the reply only when the reply echoes `project`. A proxy that does not echo
+`project` (older than #2033) gets the old read: agentop asks for the `group=project`
+series and narrows the reply itself. agentop never sends `project=Other` or
+`project=(other)`: those scopes also use the old read. Under a project scope, `[b]` is
+inert on the usage pane and latency is not available per project. The drawer axes are
+`model` and `endpoint`, and `a` cycles them; the project `Other` has no axes. The
+drawer says `no breakdown for this scope in <window>` only when the reply has no
+breakdown (an older proxy, or a window that the proxy cannot break down). The spend
+band shows each unit, for example `$12.00 + 0.95 Bobcoins`, under a project scope
+too. Within one session, the usage pane reads that session's projects without the
 agent. Against a server that names no session's project, the sessions list stays whole
 and its footer says `list not scoped`. `esc` keeps both scopes; `All projects` clears
 the project scope, and All agents clears both. The project scope is not saved across

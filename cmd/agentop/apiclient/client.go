@@ -595,9 +595,19 @@ func (c *Client) GetUsageWindow(ctx context.Context, window string, resolution t
 // GetUsageWindowForAgent is GetUsageWindow narrowed to one agent's traffic by the server. A server
 // that predates agent= ignores it; Snapshot.Agent is empty then, and the caller must narrow itself.
 func (c *Client) GetUsageWindowForAgent(ctx context.Context, window string, resolution time.Duration, sessionID, agent string, group usage.Group) (*usage.Snapshot, error) {
+	return c.GetUsageWindowScoped(ctx, window, resolution, sessionID, agent, "", group)
+}
+
+// GetUsageWindowScoped is GetUsageWindowForAgent narrowed also to one project by the server. A
+// server that predates project= ignores it; Snapshot.Project is empty then, and the caller must
+// narrow itself.
+func (c *Client) GetUsageWindowScoped(ctx context.Context, window string, resolution time.Duration, sessionID, agent, project string, group usage.Group) (*usage.Snapshot, error) {
 	q := url.Values{}
 	if agent != "" {
 		q.Set("agent", agent)
+	}
+	if project != "" {
+		q.Set("project", project)
 	}
 	q.Set("window", window)
 	if resolution > 0 {

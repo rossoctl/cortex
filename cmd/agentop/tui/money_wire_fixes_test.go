@@ -28,7 +28,7 @@ func TestAgentCostCellIn_MarksAClampedTotal(t *testing.T) {
 		{12_345_678, false, nil},
 	} {
 		c := usage.Counts{Requests: 1, PricedRequests: 1, CostMicros: tc.micros, Saturated: tc.saturated}
-		got := agentCostCellIn(c, tc.units, agentsCostWidth)
+		got := agentCostCellIn(c, tc.units, nil, agentsCostWidth)
 		if got == emptyCell {
 			t.Errorf("agentCostCellIn(%d, %v) = %q, want a figure", tc.micros, tc.units, got)
 		}

@@ -122,6 +122,9 @@ type Writer struct {
 	// restart, so it pins the behaviour that hides money (see Window). Unexported and set
 	// directly by this package's tests, so it is not API; nil on every production path.
 	betweenWindowReads func()
+	// syncQueued is a TEST SEAM like betweenWindowReads: sync calls it, when non-nil, once its
+	// barrier is in ops, so a test can tell a waiting Flush from a returned one.
+	syncQueued func()
 
 	// writeMu serialises write, which is the ONE-WRITER INVARIANT run and drainAndWrite document —
 	// held in code now rather than only in prose.
@@ -1143,6 +1146,9 @@ func (w *Writer) sync() error {
 	case w.ops <- batch{done: done}:
 	case <-w.quit:
 		return errClosedWhileFlushing
+	}
+	if w.syncQueued != nil {
+		w.syncQueued()
 	}
 	select {
 	case err := <-done:

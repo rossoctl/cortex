@@ -3,9 +3,11 @@ package sessionapi
 import (
 	"encoding/json"
 	"maps"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/cost/ledger"
 	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -89,5 +91,56 @@ func TestHandleUsage_AgentAndGroupProject(t *testing.T) {
 			t.Errorf("%s: agent=%q, want claude-code", q, snap.Agent)
 		}
 		checkProjectCosts(t, q, snap, got, map[string]int64{"/repo/a": 250_000, usage.UnknownProjectLabel: 500_000})
+	}
+}
+
+// project= on a ring window keeps the group when the project ring is complete, and echoes it.
+func TestUsage_ProjectOnRingWindow(t *testing.T) {
+	led, agg := projectFixture(t)
+	ts, _ := newTestServer(t, WithUsage(agg), WithCostLedger(led))
+	q := "?window=1h&group=model&agent=claude-code&project=/repo/a"
+	snap, got := fetchProjectSeries(t, ts.URL, q)
+	if snap.Project != "/repo/a" || snap.Agent != "claude-code" || snap.Group != usage.GroupModel {
+		t.Errorf("%s: project=%q agent=%q group=%q, want /repo/a, claude-code, model", q, snap.Project, snap.Agent, snap.Group)
+	}
+	if want := map[string]int64{"opus": 250_000}; !maps.Equal(got, want) {
+		t.Errorf("%s: series %v, want %v", q, got, want)
+	}
+}
+
+func TestUsage_ProjectOnLedgerWindow(t *testing.T) {
+	led, agg := projectFixture(t)
+	ts, _ := newTestServer(t, WithUsage(agg), WithCostLedger(led))
+	q := "?window=today&group=model&project=/repo/a"
+	snap, got := fetchProjectSeries(t, ts.URL, q)
+	if snap.Project != "/repo/a" || snap.Group != usage.GroupModel {
+		t.Errorf("%s: project=%q group=%q, want /repo/a, model", q, snap.Project, snap.Group)
+	}
+	if want := map[string]int64{"opus": 250_000}; !maps.Equal(got, want) {
+		t.Errorf("%s: series %v, want %v", q, got, want)
+	}
+}
+
+// A project label longer than the ring stores cannot match anything, so it is refused with a fixed
+// message that does not reflect the input.
+func TestUsage_ProjectTooLong(t *testing.T) {
+	ts, _ := newTestServer(t, WithUsage(usage.New()))
+	if code, body := fetchUsage(t, ts.URL, "?window=1h&project="+strings.Repeat("a", event.MaxLabelLen)); code != 200 {
+		t.Errorf("project at the limit: %d %s, want 200", code, body)
+	}
+	code, body := fetchUsage(t, ts.URL, "?window=1h&project="+strings.Repeat("a", event.MaxLabelLen+1))
+	if code != 400 || !strings.Contains(body, errProjectLabelTooLong.msg) {
+		t.Errorf("project one byte over the limit: %d %s, want 400 %q", code, body, errProjectLabelTooLong.msg)
+	}
+}
+
+// Without project= the reply carries no project key: absent means "not applied".
+func TestUsage_NoProjectIsUnchanged(t *testing.T) {
+	led, agg := projectFixture(t)
+	ts, _ := newTestServer(t, WithUsage(agg), WithCostLedger(led))
+	for _, window := range []string{"1h", "today"} {
+		if _, body := fetchUsage(t, ts.URL, "?window="+window+"&group=model&agent=claude-code"); strings.Contains(body, `"project"`) {
+			t.Errorf("window=%s without project= carries a project key: %s", window, body)
+		}
 	}
 }

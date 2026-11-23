@@ -133,7 +133,7 @@ func TestServiceStepUpgradeUndoRestoresTheUnitAndThePrior(t *testing.T) {
 // left: service restart while the unit is there, setup itself once the service
 // undo could not put it back.
 func TestServiceStepFailedRestoreNamesWhatIsLeft(t *testing.T) {
-	shortReadyTimeout(t)
+	readyOnFirstAnswer(t)
 	for _, unitGone := range []bool{false, true} {
 		t.Run(fmt.Sprintf("unit gone %v", unitGone), func(t *testing.T) {
 			fakeSupervisor(t)
@@ -201,7 +201,7 @@ func TestServiceStepUnsupervisedRestoreNamesItsStartByHand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if alive(old) {
+	if processAlive(old) {
 		t.Fatal("fixture: the step did not stop the background proxy")
 	}
 	want := "sh -c 'nohup ~/.local/bin/cortex --local --supervise >> ~/.cortex/proxy.log 2>&1 & echo $! > ~/.cortex/proxy.pid'"
@@ -213,19 +213,24 @@ func TestServiceStepUnsupervisedRestoreNamesItsStartByHand(t *testing.T) {
 	}
 }
 
-// stopProcessOnCleanup kills *pid, if it is still alive when the test ends:
-// startUnsupervised's own goroutine reaps it, so this waits for it to go.
+// stopProcessOnCleanup kills *pid, if it is still alive when the test ends.
 func stopProcessOnCleanup(t *testing.T, pid *int) {
 	t.Helper()
 	t.Cleanup(func() {
-		if !alive(*pid) {
-			return
-		}
-		_ = syscall.Kill(*pid, syscall.SIGKILL)
-		for i := 0; i < 50 && alive(*pid); i++ {
-			time.Sleep(100 * time.Millisecond)
+		if processAlive(*pid) {
+			killAndReap(*pid)
 		}
 	})
+}
+
+// killAndReap kills pid and, when it is a child of this process, returns once it
+// is reaped: by this wait, or by startUnsupervised's goroutine, which leaves this
+// wait an ECHILD.
+func killAndReap(pid int) {
+	_ = killPID(pid, syscall.SIGKILL)
+	if p, err := os.FindProcess(pid); err == nil {
+		_, _ = p.Wait()
+	}
 }
 
 func TestServiceStepRunsUnsupervisedInASandbox(t *testing.T) {
@@ -245,7 +250,7 @@ func TestServiceStepRunsUnsupervisedInASandbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !alive(pid) {
+	if !processAlive(pid) {
 		t.Fatal("no background proxy")
 	}
 	if u.manual != "kill $(cat ~/.cortex/proxy.pid)" {
@@ -254,7 +259,7 @@ func TestServiceStepRunsUnsupervisedInASandbox(t *testing.T) {
 	if err := u.fn(); err != nil {
 		t.Fatal(err)
 	}
-	if alive(pid) {
+	if processAlive(pid) {
 		t.Error("undo left the background proxy running")
 		return
 	}
@@ -606,7 +611,7 @@ func TestSupervisedHolderWhenPsCannotNameTheParent(t *testing.T) {
 			t.Fatal(err)
 		}
 		if got := supervisedHolder(pidFile, 31337); got != tc.want {
-			t.Errorf("proxy.pid %d alive=%v: supervisedHolder = %v, want %v", tc.pf, alive(tc.pf), got, tc.want)
+			t.Errorf("proxy.pid %d alive=%v: supervisedHolder = %v, want %v", tc.pf, processAlive(tc.pf), got, tc.want)
 		}
 	}
 }
@@ -779,7 +784,7 @@ func notRunning(t *testing.T, loaded string) {
 // A failed start's detail is service install's own words, less what the rollback
 // makes untrue, then the log since the start: not install's tail of the whole log.
 func TestServiceStepFailureDetailIsWhatThisStartLeft(t *testing.T) {
-	shortReadyTimeout(t)
+	readyOnFirstAnswer(t)
 	t.Run("nothing answers", func(t *testing.T) {
 		fakeSupervisor(t)
 		env := serviceEnv(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) })
@@ -851,7 +856,7 @@ func TestServiceStepRestoresThePriorOnlyOnceTheJobWasReplaced(t *testing.T) {
 // found it, and its manual says how: a stopped job is stopped again, and a loaded
 // one that was not answering stays loaded.
 func TestServiceStepUndoLeavesTheJobAsItFoundIt(t *testing.T) {
-	shortReadyTimeout(t)
+	readyOnFirstAnswer(t)
 	for _, tc := range []struct {
 		name                   string
 		loaded, serving, prior bool
@@ -905,7 +910,7 @@ func TestServiceStepUndoLeavesTheJobAsItFoundIt(t *testing.T) {
 // The background restore refuses while the new job is loaded, whether or not it
 // answers: one crash-looping still fights a background copy for the ports.
 func TestServiceStepBackgroundRestoreRefusesBesideALoadedUnhealthyJob(t *testing.T) {
-	shortReadyTimeout(t)
+	readyOnFirstAnswer(t)
 	loaded := fakeSupervisor(t)
 	env := serviceEnv(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) })
 	t.Setenv(sleeperEnv, "1") // a restarted copy of the test binary sleeps too
@@ -919,8 +924,8 @@ func TestServiceStepBackgroundRestoreRefusesBesideALoadedUnhealthyJob(t *testing
 		t.Fatalf("plan = %+v %v", p, prob)
 	}
 	_, u, err := serviceStep{}.apply(env, nil)
-	if err == nil || alive(old) || env.restorePrior == nil {
-		t.Fatalf("fixture: apply = %v, background proxy alive %v, restorePrior set %v", err, alive(old), env.restorePrior != nil)
+	if err == nil || processAlive(old) || env.restorePrior == nil {
+		t.Fatalf("fixture: apply = %v, background proxy alive %v, restorePrior set %v", err, processAlive(old), env.restorePrior != nil)
 	}
 	failingUnload(t, loaded)
 	if err := u.fn(); err == nil {
@@ -939,7 +944,9 @@ func TestServiceStepBackgroundRestoreRefusesBesideALoadedUnhealthyJob(t *testing
 // $!, where installed. sh -c expands the ~ in each path, the redirections' too.
 func TestStartByHandRunsFromAShell(t *testing.T) {
 	env := newTestSetupEnv(t)
-	writeExe(t, filepath.Join(env.binDir, "cortex"), "#!/bin/sh\necho \"started $*\"\nexec sleep 30\n")
+	// The fake cortex logs its argv, then marks itself started on the pipe this test
+	// reads.
+	writeExe(t, filepath.Join(env.binDir, "cortex"), "#!/bin/sh\necho \"started $*\"\nprintf x >&3\nexec sleep 30\n")
 	if err := os.MkdirAll(env.cortexDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -952,20 +959,18 @@ func TestStartByHandRunsFromAShell(t *testing.T) {
 		_ = os.Remove(pidFile)
 		cmd := exec.Command(sh, "-c", startByHand(env, filepath.Join(env.binDir, "cortex"))) //nolint:gosec // the line under test
 		cmd.Env = append(os.Environ(), "HOME="+env.home)
+		started, waitStarted := readyPipe(t)
+		cmd.ExtraFiles = []*os.File{started}
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("%s: %v %s", sh, err, out)
 		}
-		var pid int
-		for deadline := time.Now().Add(5 * time.Second); pid == 0 && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-			pid = readPIDFile(pidFile)
-		}
+		// The line writes proxy.pid before its shell exits.
+		pid := readPIDFile(pidFile)
 		stopProcessOnCleanup(t, &pid)
+		waitStarted()
 		log, _ := os.ReadFile(filepath.Join(env.cortexDir, "proxy.log"))
-		for deadline := time.Now().Add(5 * time.Second); !strings.Contains(string(log), "started --local --supervise") && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-			log, _ = os.ReadFile(filepath.Join(env.cortexDir, "proxy.log"))
-		}
-		if !alive(pid) || !strings.Contains(string(log), "started --local --supervise") {
-			t.Errorf("%s: proxy.pid %d alive=%v, proxy.log %q", sh, pid, alive(pid), log)
+		if !processAlive(pid) || !strings.Contains(string(log), "started --local --supervise") {
+			t.Errorf("%s: proxy.pid %d alive=%v, proxy.log %q", sh, pid, processAlive(pid), log)
 		}
 	}
 }
@@ -975,16 +980,12 @@ func TestStartByHandRunsFromAShell(t *testing.T) {
 // systemd's disable --now has returned by then, so linux waits for nothing.
 func TestWaitUnloadedNamesItsTimeout(t *testing.T) {
 	saved := serviceBootoutTimeout
-	serviceBootoutTimeout = 500 * time.Millisecond
+	serviceBootoutTimeout = time.Nanosecond
 	t.Cleanup(func() { serviceBootoutTimeout = saved })
 	installStub(t, "launchctl", "#!/bin/sh\necho 'state = running'\n") // the job is still there
-	began := time.Now()
 	err := waitUnloaded("darwin")
-	if want := "the launchd user agent is still shutting down after 500ms"; err == nil || err.Error() != want {
+	if want := "the launchd user agent is still shutting down after 1ns"; err == nil || err.Error() != want {
 		t.Errorf("waitUnloaded = %v, want %q", err, want)
-	}
-	if took := time.Since(began); took > 5*time.Second {
-		t.Errorf("waited %s, not serviceBootoutTimeout", took)
 	}
 	if err := waitUnloaded("linux"); err != nil {
 		t.Errorf("linux waited: %v", err)

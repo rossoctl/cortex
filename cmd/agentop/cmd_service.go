@@ -88,6 +88,10 @@ var serviceReadyTimeout = 15 * time.Second
 // out.
 var serviceBootoutTimeout = 30 * time.Second
 
+// bootstrapRetryDelay is the pause before a retried launchctl bootstrap, times the
+// attempt. A var so a test of a bootstrap that always fails need not wait it out.
+var bootstrapRetryDelay = time.Second
+
 // servicePaths is everything the platform-specific bits need, gathered so tests
 // can point all of it at a temp dir instead of the real ~/Library/LaunchAgents.
 type servicePaths struct {

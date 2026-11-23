@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 )
 
 // These tests pin the output of each `agentop service install|uninstall` path below
@@ -108,7 +110,7 @@ func newServiceSceneServing(t *testing.T, loaded string) serviceScene {
 func newServiceSceneWith(t *testing.T, healthz http.HandlerFunc) serviceScene {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testhome.Set(t, home)
 	health := httptest.NewServer(healthz)
 	t.Cleanup(health.Close)
 	cfgDir := filepath.Join(home, ".cortex")
@@ -441,6 +443,7 @@ const (
 // session-history lines must not print. TestCharacterize_ServiceLifecycle's health
 // endpoint answers from the start, so it pins the other branch.
 func TestCharacterize_ServiceInstall_NothingServingYet(t *testing.T) {
+	readyOnFirstAnswer(t)
 	loaded := fakeSupervisor(t)
 	sc := newServiceSceneServing(t, loaded)
 	r := sc.install(t, true, false)
@@ -466,6 +469,7 @@ const (
 // --restart on an install that is already current must restart rather than report
 // "Already current".
 func TestCharacterize_ServiceInstall_RestartWhenCurrent(t *testing.T) {
+	readyOnFirstAnswer(t)
 	loaded := fakeSupervisor(t)
 	sc := newServiceSceneServing(t, loaded)
 	if r := sc.install(t, true, false); r.code != 0 {

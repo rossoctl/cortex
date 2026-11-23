@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -148,7 +147,7 @@ func TestSessionsPane_ScopedTitleAndTheEmptyScope(t *testing.T) {
 func TestAgentsPane_SessionsColumnOnlyOnceSessionsNameAgents(t *testing.T) {
 	m := &model{agentsTbl: newAgentsTable(), agents: []agentRow{{label: "bob-shell/2.0.5"}, {label: "node"}}}
 	m.rebuildAgentsTable()
-	if !sameColumns(m.agentsTbl.Columns(), fitTableColumns(agentsColumns(m.agentsWindowLabel()), 0)) {
+	if !sameColumns(m.agentsTbl.Columns(), fitTableColumns(agentsColumns(m.agentsWindowLabel(), agentsCostFloor(m.agentsWindowLabel())), 0)) {
 		t.Errorf("no session names an agent and the columns changed: %v", m.agentsTbl.Columns())
 	}
 	m.sessions = sessionsFixture()
@@ -376,9 +375,8 @@ func TestNarrowToProject_OtherFoldsUnknownAndOverflow(t *testing.T) {
 	}
 }
 
-// A project scope asks for the project axis and narrows it here: no project= key goes on the wire
-// (D3). With no project the read is fetchUsageScoped's.
-func TestFetchUsageScopedProject_AsksGroupProjectAndNoProjectKey(t *testing.T) {
+// With no project the read is fetchUsageScoped's: one query, no group=.
+func TestFetchUsageScopedProject_NoProjectIsTheAgentRead(t *testing.T) {
 	var queries []string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		queries = append(queries, r.URL.RawQuery)
@@ -386,18 +384,6 @@ func TestFetchUsageScopedProject_AsksGroupProjectAndNoProjectKey(t *testing.T) {
 	}))
 	defer ts.Close()
 	client := apiclient.New(ts.URL)
-	if _, err := fetchUsageScopedProject(context.Background(), client, "today", 0, "claude-code", "~/a", usage.GroupNone); err != nil {
-		t.Fatal(err)
-	}
-	if len(queries) != 1 || !strings.Contains(queries[0], "agent=claude-code") || !strings.Contains(queries[0], "group=project") {
-		t.Fatalf("queries = %q, want one with agent=claude-code and group=project", queries)
-	}
-	for _, q := range queries {
-		if v, _ := url.ParseQuery(q); v.Has("project") {
-			t.Errorf("query %q has a project key", q)
-		}
-	}
-	queries = nil
 	if _, err := fetchUsageScopedProject(context.Background(), client, "today", 0, "claude-code", "", usage.GroupNone); err != nil {
 		t.Fatal(err)
 	}

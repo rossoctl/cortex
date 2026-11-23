@@ -315,6 +315,9 @@ jq --arg date "${today}" \
     elif $name | test("darwin_amd64") then "darwin_amd64"
     elif $name | test("linux_arm64")  then "linux_arm64"
     elif $name | test("linux_amd64")  then "linux_amd64"
+    # Windows .zip files (#1520), fetched by install.ps1 or downloaded by hand.
+    elif $name | test("windows_arm64") then "windows_arm64"
+    elif $name | test("windows_amd64") then "windows_amd64"
     # Unanchored: v0.1 through v0.4 named this file
     # kagenti-extensions_<ver>_checksums.txt, which an anchored ^checksums missed.
     # Those 24 releases were filed under "other" and read 0 installs apiece -- 79

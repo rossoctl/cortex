@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 )
 
 // launchdSkip is t.Skipf, or t.Fatalf under AGENTOP_LAUNCHD_TESTS=required: the
@@ -43,7 +45,11 @@ func requireRealLaunchd(t *testing.T) {
 	}
 	if ok, why := launchdUsable(); !ok {
 		skip("cannot load a launch agent here (no launchctl, or no desktop session gui/%d): %s", os.Getuid(), why)
+		return
 	}
+	// These tests act on the real account: launchd loads agents from the real
+	// ~/Library/LaunchAgents, not the temporary home the rest of the package uses.
+	testhome.Real(t)
 }
 
 // realCortexBinary is the cortex the launchd lifecycle test installs. Unlike the
@@ -260,7 +266,7 @@ func TestServiceLifecycle_RealLaunchd(t *testing.T) {
 	// pid is the supervisor's, and it stays the same while a new proxy takes over.
 	// syscall.Kill gets a pid from childPID, which never returns one below 2: kill(2)
 	// reads 0 as this process's own group, which holds `go test` too.
-	if err := syscall.Kill(proxy, syscall.SIGKILL); err != nil {
+	if err := killPID(proxy, syscall.SIGKILL); err != nil {
 		t.Fatalf("kill -9 proxy %d: %v", proxy, err)
 	}
 	// The wait follows whatever supervisor launchd reports now, so that a broken
@@ -293,7 +299,7 @@ func TestServiceLifecycle_RealLaunchd(t *testing.T) {
 		t.Error("after stop the label is not disabled, so the next login would start Cortex again")
 	}
 	for _, pid := range []int{sup, newProxy} {
-		if !waitUntil(10*time.Second, func() bool { return syscall.Kill(pid, 0) != nil }) {
+		if !waitUntil(10*time.Second, func() bool { return killPID(pid, 0) != nil }) {
 			t.Errorf("process %d was still running 10s after stop", pid)
 		}
 	}

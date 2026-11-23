@@ -159,10 +159,10 @@ func TestServiceIsCurrent_BothPlatforms(t *testing.T) {
 		t.Run(tc.goos+": a job the supervisor does not report running is not current", func(t *testing.T) {
 			// supervisorRunning's darwin branch POLLS for serviceReadyTimeout before it
 			// will call a job not-running — transient post-kickstart states must not be
-			// read as a verdict. Nothing here is transient, so shorten the wait rather
-			// than spend the real 15s on a stub that answers the same way every time.
+			// read as a verdict. Nothing here is transient, so a window that has ended
+			// takes the stub's first answer.
 			saved := serviceReadyTimeout
-			serviceReadyTimeout = 200 * time.Millisecond
+			serviceReadyTimeout = time.Nanosecond
 			t.Cleanup(func() { serviceReadyTimeout = saved })
 
 			p := currentServiceFixture(t, tc.goos)
