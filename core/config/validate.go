@@ -50,6 +50,9 @@ func Validate(cfg *Config) error {
 	if _, _, err := cfg.Update.Times(); err != nil {
 		return err
 	}
+	if err := cfg.Accounting.Validate(); err != nil {
+		return err
+	}
 	return validatePricing(cfg)
 }
 

@@ -393,6 +393,16 @@ the server must have been built with clearing allowed
 `{"error": ...}`. Each guard is pinned by its own test in
 `core/sessionapi/clear_test.go`. agentop's `X` drives it.
 
+**The accountant's per-session state is not cleared** by either `DELETE` route.
+That is the Tracker state (in memory, and in `~/.cortex/accountant-state.json` on
+a local install) and the billing mode of each thread's last request (in
+`core/accounting.Host`). They hold session and thread ids, content hashes and a
+billing mode, never content. The state has no time bound while the process runs:
+the in-memory maps keep at most 10,000 threads and drop the oldest, and the
+snapshot file, rewritten every 60s, holds what memory holds. A snapshot older than
+1h is not restored at startup, so a proxy stopped for more than an hour starts
+without it. This applies to both `DELETE` routes.
+
 An erased session comes back on the next `agentop import` while its transcript
 is still on disk. It comes back as an imported session. The erase keeps a
 forget record of the session, so the import does not count its cost again.
