@@ -8,6 +8,9 @@ select = ["E", "F", "I", "W"]
 [tool.ruff.lint.per-file-ignores]
 # Verbatim captured prompts; wrapping them would change the reproduction.
 "deploy/sparc-service/tests/test_haiku_empty_response.py" = ["E501"]
+# PromQL expressions and Grafana panel JSON read no better wrapped, and wrapping risks a
+# silent character change in a query string or long doc comment.
+"deploy/central/base/grafana/gen_dashboards.py" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

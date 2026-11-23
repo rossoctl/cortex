@@ -7,6 +7,7 @@ The PromQL behaviour of the ratio queries is tested by promtool in
 prometheus/tests/dashboards_test.yml. These tests keep that file in step with the generator and
 check rules that hold for every panel.
 """
+
 import os
 import re
 import unittest
@@ -27,9 +28,13 @@ def exprs():
 
 def filled(expr, rng="1h", rate_interval="5m", interval="5m"):
     """expr with the Grafana variables replaced the way dashboards_test.yml replaces them."""
-    return (expr.replace('"$proxy"', '".*"').replace('"$machine"', '".*"')
-            .replace("$__range", rng).replace("$__rate_interval", rate_interval)
-            .replace("$__interval", interval))
+    return (
+        expr.replace('"$proxy"', '".*"')
+        .replace('"$machine"', '".*"')
+        .replace("$__range", rng)
+        .replace("$__rate_interval", rate_interval)
+        .replace("$__interval", interval)
+    )
 
 
 class RatioTest(unittest.TestCase):
@@ -50,9 +55,12 @@ class IncTest(unittest.TestCase):
         # timestamps, no new collector or Prometheus flag, no proxy change.
         m = 'm{proxy=~"$proxy", machine=~"$machine"}'
         got = g.inc("m")
-        self.assertEqual(got, f'sum((increase({m}[$__range]) and last_over_time({m}[1d] offset $__range)) '
-                              f'or (increase({m}[$__range]) >= last_over_time({m}[$__range])) '
-                              f'or last_over_time({m}[$__range]))')
+        self.assertEqual(
+            got,
+            f"sum((increase({m}[$__range]) and last_over_time({m}[1d] offset $__range)) "
+            f"or (increase({m}[$__range]) >= last_over_time({m}[$__range])) "
+            f"or last_over_time({m}[$__range]))",
+        )
 
     def test_new_series_fallback_false_keeps_the_plain_query(self):
         # fleet()'s "Net saved per day" bars pick their window by replacing "[$__range]" with
@@ -113,9 +121,13 @@ class MoneyTrendTest(unittest.TestCase):
     def test_no_money_panel_is_a_rate_times_3600(self):
         # A dollar counter moves in steps. rate() * 3600 over a ~1 min window shows one $1.75 ping
         # as a $105/h spike (context-guru #1273). A money trend is bar(): the dollars in each bar.
-        bad = [p["title"] for fn in g.DASHBOARDS.values() for p in fn()["panels"]
-               if p.get("fieldConfig", {}).get("defaults", {}).get("unit") == g.USD
-               and any("* 3600" in t["expr"] for t in p.get("targets", []))]
+        bad = [
+            p["title"]
+            for fn in g.DASHBOARDS.values()
+            for p in fn()["panels"]
+            if p.get("fieldConfig", {}).get("defaults", {}).get("unit") == g.USD
+            and any("* 3600" in t["expr"] for t in p.get("targets", []))
+        ]
         self.assertEqual(bad, [], "show money over time with gen_dashboards.bar(), not rate() * 3600")
 
     def test_the_keepalive_bars_are_tested(self):
@@ -130,9 +142,13 @@ class CountTrendTest(unittest.TestCase):
     def test_no_count_bars_are_a_rate_times_3600(self):
         # rate() over $__rate_interval (~90 s) is wider than a bar (~30 s at 1h), so one miss drew
         # three bars of 40/h (2026-11-22). A count over time is count_bar(): the count in each bar.
-        bad = [p["title"] for fn in g.DASHBOARDS.values() for p in fn()["panels"]
-               if p.get("fieldConfig", {}).get("defaults", {}).get("custom", {}).get("drawStyle") == "bars"
-               and any("$__rate_interval" in t["expr"] for t in p.get("targets", []))]
+        bad = [
+            p["title"]
+            for fn in g.DASHBOARDS.values()
+            for p in fn()["panels"]
+            if p.get("fieldConfig", {}).get("defaults", {}).get("custom", {}).get("drawStyle") == "bars"
+            and any("$__rate_interval" in t["expr"] for t in p.get("targets", []))
+        ]
         self.assertEqual(bad, [], "show a count over time with gen_dashboards.count_bar(), not rate() * 3600")
 
     def test_the_miss_bars_are_tested(self):
@@ -156,8 +172,11 @@ class LegendTest(unittest.TestCase):
         # Older cortex builds push llm_cache_misses_total and llm_keepalive_pings_total with no cause or
         # outcome label. Grafana names such a series "Value". The panel must name it.
         cache = g.cache()
-        for title, label in (("Misses by cause", "cause"), ("Miss cost by cause (USD, selected range)", "cause"),
-                             ("Ping outcomes", "outcome")):
+        for title, label in (
+            ("Misses by cause", "cause"),
+            ("Miss cost by cause (USD, selected range)", "cause"),
+            ("Ping outcomes", "outcome"),
+        ):
             p = next(p for p in cache["panels"] if p["title"] == title)
             self.assertIn(f'"{label}", "unattributed", "{label}", ""', p["targets"][0]["expr"], title)
 
