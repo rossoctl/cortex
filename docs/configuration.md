@@ -28,7 +28,6 @@ effect. The full contract is in [`proxy-contract.md`](proxy-contract.md#hot-relo
 | `memory:` | The Go runtime's soft memory limit for the whole process | both | restart | [`laptop-service.md`](laptop-service.md#the-memory-configuration) |
 | `praxis:` | Praxis mode: the `cortex-gateway` process and its `policy` | data plane | restart | [`praxis-policy.md`](praxis-policy.md) |
 | `accounting:` | The accountant that prices the context operators' savings, and `subscription_weights` | control plane | `subscription_weights`: restart. `enabled`: turning it on needs a restart if the proxy started with it off; turning it off reloads | [`laptop-service.md`](laptop-service.md#the-accounting-configuration) |
-| `metrics_push:` | Pushing the savings counters to an OpenTelemetry collector | control plane | restart | [`laptop-service.md`](laptop-service.md#the-metrics_push-configuration) |
 | `update:` | Automatic updates: `auto`, `wait`, `check_every` | control plane | `check_every`: restart. agentop reads `auto` and `wait` each time it runs | [`laptop-service.md`](laptop-service.md#automatic-updates) |
 
 Two things no config file can answer, because the effective values come from the

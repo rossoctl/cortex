@@ -547,3 +547,20 @@ func TestCurrenciesIn_NamesOnlyUnitsWithAFigure(t *testing.T) {
 		t.Errorf("CurrenciesIn = %v, want [USD credits]: a saving is a figure", got)
 	}
 }
+
+// A row whose only figure is a negative net, or a figure in units, still shows a figure, as the
+// ring counts it (labelOne's hasMoney is !IsZero()). With > 0 here, the ledger and the ring would
+// name different currencies for the same window.
+func TestCurrenciesIn_ASignedOrUnitsOnlyRowIsAFigure(t *testing.T) {
+	for name, c := range map[string]usage.Counts{
+		"negative unknown net":        {Requests: 1, AvoidedUnknownMicros: -50},
+		"negative API-equivalent net": {Requests: 1, AvoidedAPIEquivalentMicros: -50},
+		"units only":                  {Requests: 1, AvoidedUnits: 20},
+		"plugin spend in units only":  {Requests: 1, PluginSpendUnits: 20},
+	} {
+		rows := []Row{{Endpoint: "e", Currency: "credits", Counts: c}}
+		if got := CurrenciesIn(rows); !slices.Equal(got, []string{"credits"}) {
+			t.Errorf("%s: CurrenciesIn = %v, want [credits]", name, got)
+		}
+	}
+}

@@ -13,8 +13,8 @@ import (
 //
 // Only AvoidedMicros, PenaltyMicros and PluginSpendMicros are money in the window's unit. A
 // subscription saving is in usage-limit units, with its API-equivalent dollars beside it and
-// labelled so; a figure whose billing mode is unknown is shown and never added; keep-alive spend
-// has its own line.
+// labelled so; a figure whose billing mode is unknown is shown and never added; the plugins' own
+// model-call spend has its own line.
 
 // NetMicros is saved minus penalty: what the context operators saved net of what they caused. Not
 // floored — a negative net means they cost more than they saved.
@@ -42,7 +42,7 @@ type Line struct {
 
 // AccountantLines is c's accountant figures, one Line per kind that is nonzero, in a fixed order:
 // usd savings (saved, penalty, net), usage-limit units (with "API equivalent"), unknown billing,
-// plugin model calls, keep-alive. Nil when there is none. unit is the window's money unit.
+// plugin model calls. Nil when there is none. unit is the window's money unit.
 func AccountantLines(c usage.Counts, unit string) []Line {
 	var out []Line
 	if c.AvoidedMicros != 0 || c.PenaltyMicros != 0 {

@@ -20,3 +20,15 @@ engine pulls a large transitive dependency set.
 **Under `on_error: observe`, no model is built at all**, static or incoming: every
 model-calling component degrades to deterministic/no-op. `observe` is a shadow pass — nothing it does is supposed to take
 effect — and a real, billed model call on the agent's own credential is the opposite of that.
+
+## Where its own model calls go
+
+The plugin sends its own model calls (summary, extract, and the `model.source: incoming` calls)
+itself, through `llmclient`. They do not pass through the Cortex pipeline, so no pipeline plugin
+sees them, and they are not in `cost_usd` or in any session budget. Their spend reaches the cost
+record as `spends[]` (`pluginSpendMicros`); see [pricing.md](pricing.md#cost-records).
+
+On a local install the calls ignore `HTTPS_PROXY`. A laptop shell that routes agents through
+Cortex sets it to Cortex's own listener, and a call sent back there would be priced once as agent
+traffic and again as the plugin's spend. Anywhere else the calls use `HTTPS_PROXY` as usual,
+because in a cluster an egress proxy may be the only route to the model.

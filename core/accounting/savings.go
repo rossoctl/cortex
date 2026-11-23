@@ -93,7 +93,11 @@ func Savings(res accountant.Result, price func(model, host string, tt accountant
 //     priced, never a saving of its Saved.
 //   - Neither is floored or netted against the other: a negative net is kept as two figures.
 //   - Tier is the tier with the largest Saved; TokensAvoided the sum of its Saved tiers, a size
-//     for display and never priced.
+//     for display and never priced. Its ops' Saved only, plus a rescue's Saved for the keeper,
+//     which has no op: a split or mark effect moves tokens between tiers (a cache read in place
+//     of a write) and removes none, so its dollars are in USD and its tokens are not here.
+//     operatorTokens, which matches the proxy's dashboard, counts both sides of every owned
+//     effect; the two token figures differ by design.
 //   - Estimated is true when any of its ops, its effects or the rates is estimated, and for every
 //     basis but "usd".
 //   - Units and PenaltyUnits are set only on a subscriptionEquivalent saving.
@@ -354,9 +358,10 @@ func (h *Host) Savings(pctx *pipeline.Context) ([]event.Saving, Extras, bool) {
 // tokenFlow is what one operator saved and caused on a request, in tokens by tier.
 type tokenFlow struct{ saved, caused accountant.TierTokens }
 
-// operatorTokens is res in tokens by tier per operator, attributed by SavingsBilled's rule: the
-// Saved and Caused of each applied, non-spend op, and both sides of each cache effect its applied ops own under a
-// ChangeID, a rescue going to KeeperOperator. InBaseline and unowned effects are left out. It is
+// operatorTokens is res in tokens by tier per operator: the Saved and Caused of each applied,
+// non-spend op, and both sides of each cache effect its applied ops own under a ChangeID, a rescue
+// going to KeeperOperator. The owners are SavingsBilled's, but the token rule is not: this counts
+// an owned split or mark effect's tokens, which Saving.TokensAvoided leaves out (see SavingsBilled). InBaseline and unowned effects are left out. It is
 // the form the context-guru proxy's dashboard stores per component (CompRow.Tokens), so the
 // cross-host harness can compare the two hosts token for token.
 func operatorTokens(res accountant.Result) ([]string, map[string]tokenFlow) {
@@ -408,8 +413,8 @@ func logTokens(pctx *pipeline.Context, thread string, res accountant.Result) {
 		f := flows[op]
 		// The session and request ids are attribution keys, not credentials: the harness
 		// matches these lines to its own sessions by them (as in core/session/store.go).
+		// codeql[go/clear-text-logging]
 		slog.Debug("accounting: tokens",
-			// codeql[go/clear-text-logging]
 			"session", pctx.SessionID,
 			"requestId", pctx.RequestID(),
 			"thread", thread,

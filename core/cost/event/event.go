@@ -349,7 +349,9 @@ type Saving struct {
 	// same as Operator on every saving the accountant computed.
 	Component string `json:"component"`
 	// TokensAvoided is the sum of the operator's Saved tokens over every prompt tier: a size for
-	// display, never priced (the tiers differ by 12.5x).
+	// display, never priced (the tiers differ by 12.5x). A cache effect's tokens are not in it,
+	// except a keep-alive rescue's: a split or mark moves tokens between tiers and removes none,
+	// so it is in USD but not here (core/accounting.SavingsBilled).
 	TokensAvoided int `json:"tokensAvoided,omitempty"`
 	// USD is the operator's Saved tokens priced tier by tier, plus every cache effect it owns
 	// that saved, through the same rate table as CostUSD above. Gross: what the operator caused

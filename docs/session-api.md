@@ -84,8 +84,10 @@ knowing by name:
   milli-units, and their API-equivalent dollars, which are not money),
   `avoidedUnknownMicros` for savings whose billing mode is unknown, and
   `pluginSpendMicros`, `pluginSpendUnits`, `pluginSpendUnknownMicros` for the
-  operators' own model calls, which are not in `costMicros`. See
-  [`pricing.md`](pricing.md#cost-records).
+  operators' own model calls, which are not in `costMicros`. The billing mode
+  comes from the shape of the client's credential: a JWT-shaped bearer counts as
+  a subscription login, and an opaque bearer, a Gemini key or no credential as
+  unknown. See [`pricing.md`](pricing.md#cost-records).
 - **`inferenceServer`** — the name of the inference-router server that the
   request which set `inferenceHost` was routed to, from that request's
   `modify/routed` invocation. Empty when that request was not routed. It moves
@@ -407,22 +409,12 @@ the server must have been built with clearing allowed
 **The accountant's per-session state is not cleared** by either `DELETE` route.
 That is the Tracker state (in memory, and in `~/.cortex/accountant-state.json` on
 a local install) and the billing mode of each thread's last request (in
-`core/accounting.Host`). They hold session and thread ids, content hashes and a billing
-mode, never content. The rest has no time bound
-while the process runs: the in-memory maps keep at most 10,000 threads and drop the
-oldest, and the snapshot file, rewritten every 60s, holds what memory holds. A
-snapshot older than 1h is not restored at startup, so a proxy stopped for more than
-an hour starts without it. This applies to both `DELETE` routes.
-
-**The accountant's per-session state is not cleared** by either `DELETE` route.
-That is the Tracker state (in memory, and in `~/.cortex/accountant-state.json` on
-a local install) and the billing mode of each thread's last request (in
-`core/accounting.Host`). They hold session and thread ids, content hashes and a billing
-mode, never content. The rest has no time bound
-while the process runs: the in-memory maps keep at most 10,000 threads and drop the
-oldest, and the snapshot file, rewritten every 60s, holds what memory holds. A
-snapshot older than 1h is not restored at startup, so a proxy stopped for more than
-an hour starts without it. This applies to both `DELETE` routes.
+`core/accounting.Host`). They hold session and thread ids, content hashes and a
+billing mode, never content. The state has no time bound while the process runs:
+the in-memory maps keep at most 10,000 threads and drop the oldest, and the
+snapshot file, rewritten every 60s, holds what memory holds. A snapshot older than
+1h is not restored at startup, so a proxy stopped for more than an hour starts
+without it. This applies to both `DELETE` routes.
 
 An erased session comes back on the next `agentop import` while its transcript
 is still on disk. It comes back as an imported session. The erase keeps a

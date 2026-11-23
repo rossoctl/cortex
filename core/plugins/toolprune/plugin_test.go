@@ -1314,3 +1314,32 @@ func TestPrune_RewriteDoesNotCopyTheBodyPerVictim(t *testing.T) {
 		t.Errorf("pruning 9 of 10 tools allocated %d bytes for a %d-byte body (want <= %d): the rewrite copies the body once per victim", got, len(body), want)
 	}
 }
+
+// A saving on a path without /v1 is still recorded. The accountant is the only producer of
+// avoided[], and it reads only the paths wire.FormatOf knows. An OpenAI-SDK or LiteLLM base URL
+// without /v1 sends /chat/completions, which tool-prune acts on when paths: names it; if FormatOf
+// did not match it, the body would be pruned and no saving recorded.
+func TestEvent_SavingIsRecordedOnAChatPathWithoutV1(t *testing.T) {
+	p := withRates(t, configuredJSON(t, `{"remove":["NotebookEdit"],"paths":["/chat/completions"]}`),
+		anyEndpoint("*", tierRates(1e-05, 1.25e-05, 1e-06)))
+	body := `{"model":"gpt-5","tools":[` +
+		`{"type":"function","function":{"name":"Read","description":"read a file","parameters":{"type":"object"}}},` +
+		`{"type":"function","function":{"name":"NotebookEdit","description":"` + strings.Repeat("edit a notebook ", 40) + `","parameters":{"type":"object"}}}` +
+		`],"messages":[{"role":"user","content":"` + strings.Repeat("please summarise this ", 4490) + `"}]}`
+	pctx := inferenceCtx("/chat/completions", body, "Read", "NotebookEdit")
+	pctx.Host = "litellm.local:4000"
+	p.run(t, pctx)
+	if strings.Contains(string(pctx.Body), "NotebookEdit") {
+		t.Fatalf("the tool was not pruned on /chat/completions: %s", pctx.Body)
+	}
+	pctx.Extensions.Inference.Model = "gpt-5"
+	pctx.Extensions.Inference.InputTokens = 24701
+
+	got := p.avoided(pctx)
+	if len(got) != 1 {
+		t.Fatalf("savings = %+v, want one for tool-prune: the accountant did not read /chat/completions", got)
+	}
+	if got[0].Component != "tool-prune" || got[0].USD <= 0 {
+		t.Errorf("saving = %+v, want a priced tool-prune saving", got[0])
+	}
+}

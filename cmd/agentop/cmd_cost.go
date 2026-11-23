@@ -698,8 +698,8 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string, ownU
 	// the TUI says the same. The saved line carries the penalty and the net beside the gross figure;
 	// the net is not floored, so a negative one means the operators cost more than they saved. A
 	// subscription saving is in usage-limit units with its "API equivalent" labelled, an unknown
-	// one is never added, and the plugins' own model calls and keep-alive pings are spend that is
-	// NOT in the total above, each on its own line.
+	// one is never added, and the plugins' own model calls are spend that is NOT in the total
+	// above, on their own line.
 	if labelled {
 		for _, l := range money.AccountantLines(t, unit) {
 			switch l.Label {
@@ -714,7 +714,7 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string, ownU
 				}
 				fmt.Fprintf(stdout, "  ~%-13s saved   penalty %s   net %s   estimate; gross, penalty beside it; not deducted above\n",
 					money.Signed(t.AvoidedMicros, unit), money.Signed(t.PenaltyMicros, unit), money.Signed(money.NetMicros(t), unit))
-			case "plugin model calls", "keep-alive":
+			case "plugin model calls":
 				fmt.Fprintf(stdout, "  %-18s %s   spend, not in the total above\n", l.Label, l.Figure)
 			default:
 				fmt.Fprintf(stdout, "  %-18s %s\n", l.Label, l.Figure)
