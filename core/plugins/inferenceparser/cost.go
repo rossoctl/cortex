@@ -72,6 +72,10 @@ func (p *InferenceParser) settleCost(pctx *pipeline.Context) {
 	// Every response path ends here exactly once, so the served model is decided here too.
 	inference.SettleServedModel(pctx.Extensions.Inference, pctx.ResponseHeaders)
 
+	// Before the publish gate, with a latch of its own: whether the accountant prices this
+	// request does not depend on whether a cost record is published.
+	p.account(pctx)
+
 	settled := settle.Settle(pctx, p.rates)
 	// Stored even when nothing priced, so a consumer can tell "no figure" from "this pass
 	// never ran" — and so the drift check can see both figures. Unconditional and BEFORE the

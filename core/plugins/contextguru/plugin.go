@@ -21,11 +21,15 @@ package contextguru
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
+	"github.com/rossoctl/accountant"
 	"github.com/rossoctl/cortex/core/llmclient"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins"
@@ -112,10 +116,40 @@ type contextGuruConfig struct {
 }
 
 // cgModel adapts an llmclient.Client to context-guru's components.Model interface
-// (single prompt in, text out).
+// (single prompt in, text out). model/host identify the call for accounting
+// (accountant.ModelCall.Model/Host); report, when set, is the request this call was made
+// for, and Complete reports the call to it as a KindSpend context operation (W4.6) before
+// returning. report is captured at call time because it is per-request while a cgModel
+// wrapping the plugin's static model is shared across requests.
+//
+// The engine calls Complete concurrently (its extract stage runs six calls at once) and
+// sometimes after OnRequest returned (summarize_async, cache_aware_async). So Complete reads
+// nothing of pctx's dispatch state: report is a pipeline.OpReporter, captured on the request
+// goroutine (via pctx.OpReporter(), while the plugin is dispatched) when the model was built, so
+// Report is safe to call later from any goroutine and stamps the op with the plugin's own name
+// and its on_error: observe state without Complete having to know either. A call that returns
+// after the request was accounted has its op dropped by the pipeline and counted in lateDropped.
 type cgModel struct {
-	c         *llmclient.Client
-	maxTokens int
+	c           *llmclient.Client
+	maxTokens   int
+	model       string
+	host        string
+	report      pipeline.OpReporter
+	lateDropped *atomic.Int64
+}
+
+// pluginName is the plugin's registered name, and the Operator of its model-call spend ops.
+const pluginName = "context-guru"
+
+// spend reports one model call as a KindSpend op. A zero usage means the cost is unknown.
+func (m cgModel) spend(usage accountant.CallUsage) {
+	accepted := m.report.Report(accountant.Operation{
+		Kind: accountant.KindSpend,
+		Call: &accountant.ModelCall{Host: m.host, Model: m.model, Usage: usage, Detached: false},
+	})
+	if !accepted && m.lateDropped != nil {
+		m.lateDropped.Add(1)
+	}
 }
 
 func (m cgModel) Complete(ctx context.Context, prompt string) (string, error) {
@@ -125,35 +159,78 @@ func (m cgModel) Complete(ctx context.Context, prompt string) (string, error) {
 		Messages:    []llmclient.ChatMessage{{Role: "user", Content: prompt}},
 	})
 	if err != nil {
+		// The server answered, so the call may be billed: report it with its cost unknown. Any
+		// other error may come before the request was sent, and a call never sent costs nothing.
+		if errors.Is(err, llmclient.ErrResponded) {
+			m.spend(accountant.CallUsage{})
+		}
 		return "", err
 	}
+	var usage accountant.CallUsage
+	if u := resp.Usage; u != nil {
+		// prompt_tokens includes the cached tokens (the OpenAI convention ChatUsage states). A
+		// gateway that counts them apart can report more cached tokens than prompt tokens, and
+		// Input must not go negative.
+		cached := min(u.CachedTokens(), u.PromptTokens)
+		usage = accountant.CallUsage{
+			Usage:  accountant.Usage{Input: u.PromptTokens - cached, CacheRead: cached},
+			Output: u.CompletionTokens,
+		}
+	}
+	// With no usage block, usage stays zero, which the accountant reads as "sent, cost unknown".
+	m.spend(usage)
 	if len(resp.Choices) == 0 {
 		return "", fmt.Errorf("contextguru: model returned no choices")
 	}
 	return resp.Choices[0].Message.Content, nil
 }
 
+// hostOf extracts the host component of a base URL for accountant.ModelCall.Host (the
+// upstream the call went to). Falls back to the raw string when it does not parse as a
+// URL with a host (e.g. just "host:port" with no scheme).
+func hostOf(baseURL string) string {
+	if u, err := url.Parse(baseURL); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return baseURL
+}
+
 // ContextGuru is the plugin. pipe/store are built once at Configure and shared
 // across requests (store is synchronized; the engine holds no mutable pipeline
-// state). static is the configured cheap model (nil when none).
+// state). static is the configured cheap model's template (nil when none); it
+// carries no pctx, since it is shared across requests — OnRequest copies it per
+// request with staticModelFor so Complete can report its spend op to the right one.
 type ContextGuru struct {
 	cfg      contextGuruConfig
 	pipe     *cgcomponents.Pipeline
 	store    cgstore.Store
 	sentinel string // unguessable value carried by our own LLM calls
-	static   cgcomponents.Model
+	static   *cgModel
 	modelTO  time.Duration
 	modelMax int
+	// lateModelCalls counts model calls whose spend op was dropped because the call returned
+	// after its request was accounted (cgModel). Reported by Metrics.
+	lateModelCalls atomic.Int64
+}
+
+// Metrics implements pipeline.MetricsProvider.
+func (p *ContextGuru) Metrics() []pipeline.Metric {
+	return []pipeline.Metric{{
+		Name:  "late_model_calls_dropped",
+		Value: float64(p.lateModelCalls.Load()),
+		Unit:  "count",
+		Note:  "model calls that returned after their request was accounted; their spend reaches no figure",
+	}}
 }
 
 // New returns an unconfigured plugin instance.
 func New() *ContextGuru { return &ContextGuru{} }
 
 func init() {
-	plugins.RegisterPlugin("context-guru", func() pipeline.Plugin { return New() })
+	plugins.RegisterPlugin(pluginName, func() pipeline.Plugin { return New() })
 }
 
-func (p *ContextGuru) Name() string { return "context-guru" }
+func (p *ContextGuru) Name() string { return pluginName }
 
 func (p *ContextGuru) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{
@@ -214,7 +291,7 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 			// would silently disable the cheap model. Fail loud instead.
 			return fmt.Errorf("context-guru model config: base_url and model must both be set (got base_url=%q model=%q)", m.BaseURL, m.Model)
 		default:
-			p.static = cgModel{
+			p.static = &cgModel{
 				c: llmclient.New(llmclient.Options{
 					Endpoint:           m.BaseURL,
 					Model:              m.Model,
@@ -224,6 +301,8 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 					SentinelValue:      p.sentinel,
 				}),
 				maxTokens: p.modelMax,
+				model:     m.Model,
+				host:      hostOf(m.BaseURL),
 			}
 		}
 	}
@@ -255,11 +334,17 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 	}
 	provider := providerFor(pctx.Path)
 	models := cgcomponents.ModelSpec{
-		Static:   p.static,
+		Static:   p.staticModelFor(pctx),
 		Incoming: p.incomingModel(pctx, provider),
 	}
 	before := len(pctx.Body)
-	out, changed := apply.BodyWithModel(ctx, p.pipe, p.store, provider, pctx.Body, sid, false, models)
+	res := apply.BodyOpts(ctx, p.pipe, p.store, apply.Opts{
+		Provider: provider,
+		Body:     pctx.Body,
+		Session:  sid,
+		Models:   models,
+	})
+	out, changed := reportResult(pctx, res)
 	if changed && len(out) > 0 {
 		// Per-request byte-level view (the engine's token-level view is logged by
 		// logEmitter.Run). The framework also emits a body-mutation session event.
@@ -274,6 +359,31 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 			"bytesBefore", before, "bytesAfter", len(out), "pctSaved", pct(before, len(out)))
 	}
 	return cont
+}
+
+// reportResult reports one apply.BodyOpts result to the accountant and returns the body
+// to forward and whether it changed. Split out of OnRequest so the accounting side
+// (what gets reported, and when) is testable directly against a hand-built apply.Result,
+// without re-running the engine — a second apply.BodyOpts call against the same
+// session/store would observe state the first call already mutated, not reproduce it.
+//
+// Thread: names the request's accounting thread from the engine's own thread split
+// (design §5.4/§5.5). res.Trace.Thread.ID is empty with no Opts.ThreadOf wired (unchanged
+// in this task), and SetAccountingThread's empty-id no-op then leaves
+// core/accounting.ThreadOf's default rule ("main" for the primary agent) in place.
+//
+// Ops: reported only when the engine produced a rewrite (changed && non-empty out), and
+// regardless of whether the caller's subsequent SetBody actually applies it — ReportOps
+// itself stamps DryRun when the plugin runs under on_error: observe, so the accountant
+// still sees what the engine WOULD have sent (W5.1/W4.6).
+func reportResult(pctx *pipeline.Context, res apply.Result) (out []byte, changed bool) {
+	threadParent, _ := res.Trace.Thread.InheritsFrom()
+	pctx.SetAccountingThread(res.Trace.Thread.ID, threadParent)
+	out, changed = res.Body, res.Changed
+	if changed && len(out) > 0 {
+		pctx.ReportOps(res.Trace.Ops...)
+	}
+	return out, changed
 }
 
 // OnResponse is a pass-through in v1. The model-driven expand loop (resolve
@@ -291,6 +401,20 @@ func (p *ContextGuru) gated(path string) bool {
 		}
 	}
 	return false
+}
+
+// staticModelFor returns the configured cheap model for one request, carrying pctx so
+// cgModel.Complete can report that model call's spend op to the right request. p.static
+// is a template shared across requests (built once at Configure) and holds no pctx of
+// its own; nil when no static model is configured.
+func (p *ContextGuru) staticModelFor(pctx *pipeline.Context) cgcomponents.Model {
+	if p.static == nil {
+		return nil
+	}
+	m := *p.static
+	m.report = pctx.OpReporter()
+	m.lateDropped = &p.lateModelCalls
+	return m
 }
 
 // providerFor maps the request path to the bifrost provider dialect the engine
@@ -333,7 +457,11 @@ func (p *ContextGuru) incomingModel(pctx *pipeline.Context, provider bschemas.Mo
 			SentinelHeaderName: sentinelHeader,
 			SentinelValue:      p.sentinel,
 		}),
-		maxTokens: p.modelMax,
+		maxTokens:   p.modelMax,
+		model:       model,
+		host:        pctx.Host,
+		report:      pctx.OpReporter(),
+		lateDropped: &p.lateModelCalls,
 	}
 }
 

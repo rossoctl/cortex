@@ -649,7 +649,8 @@ func TestHost_BillingSurvivesAnEarlierInboundRewrite(t *testing.T) {
 	inf.Model = "claude-sonnet-4-5"
 	pctx.Extensions.Inference = &inf
 
-	// Inbound first, outbound second — the same pctx, the same order every listener runs them in.
+	// Inbound first, outbound second — the same pctx, the order a listener sharing one pctx would
+	// run them in.
 	if act := inbound.Run(context.Background(), pctx); act.Type != pipeline.Continue {
 		t.Fatalf("inbound action = %v", act.Type)
 	}

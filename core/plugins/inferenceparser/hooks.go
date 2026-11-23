@@ -27,6 +27,9 @@ type InferenceParser struct {
 	// rather than beside litellm-budget-track's drift reporter because that plugin is opt-in
 	// and this one runs wherever anything is priced — see cacheBlindReporter.
 	blind cacheBlindReporter
+	// acct is the accountant host, injected by plugins.BuildWithDeps on the outbound build when
+	// accounting is on; nil otherwise. See accounting.go.
+	acct accountingComputer
 }
 
 func NewInferenceParser() *InferenceParser { return &InferenceParser{} }

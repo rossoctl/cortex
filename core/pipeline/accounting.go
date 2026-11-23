@@ -1,6 +1,11 @@
 package pipeline
 
-import "github.com/rossoctl/accountant"
+import (
+	"log/slog"
+	"sync/atomic"
+
+	"github.com/rossoctl/accountant"
+)
 
 // RequestAccountant is the per-request hook the accountant host (core/accounting.Host)
 // implements. Pipeline.Run calls RequestStart before the first plugin and RequestEnd after
@@ -48,20 +53,98 @@ func (c *Context) ClientBody() []byte { return c.clientBody }
 // plugin runs under on_error: observe, because its write was computed and not sent. A DryRun the
 // plugin set itself is kept. A plugin whose write did not apply reports the op with DryRun set,
 // or no op.
+//
+// The stamp reads the plugin being dispatched, so ReportOps belongs on the request goroutine,
+// inside OnRequest. A report from any other goroutine uses OpReporter.
 func (c *Context) ReportOps(ops ...accountant.Operation) {
+	if len(ops) == 0 {
+		return
+	}
+	operator, dryRun := c.currentPlugin, c.currentPolicy == ErrorPolicyObserve
+	c.appendOps(operator, dryRun, ops)
+}
+
+// OpReporter is a goroutine-safe handle for reporting context operations under a fixed operator
+// name and dry-run state, captured once on the request goroutine via Context.OpReporter. It is
+// the form for a report that may come from a goroutine other than the request's: an engine's
+// model call, which context-guru makes on goroutines of its own.
+//
+// Keeping operator and dryRun inside OpReporter, rather than accepted as Report arguments, keeps
+// the Operator stamp under the framework's control: a plugin gets a reporter for the plugin
+// dispatching it, and cannot ask to report under another plugin's name (accountant/docs/
+// cortex-wiring.md W5.1: "The framework sets Operator. A plugin cannot report under another
+// plugin's name.").
+type OpReporter struct {
+	c        *Context
+	operator string
+	dryRun   bool
+}
+
+// OpReporter captures the plugin being dispatched and its policy (Observing) now, on the request
+// goroutine, so the returned OpReporter's Report method can be called later from any goroutine.
+func (c *Context) OpReporter() OpReporter {
+	return OpReporter{c: c, operator: c.currentPlugin, dryRun: c.currentPolicy == ErrorPolicyObserve}
+}
+
+// Report records ops like Context.ReportOps, under the operator and dry-run state r was built
+// with.
+//
+// It returns false when the ops were dropped because the request's op list was already sealed:
+// Pipeline.Run seals it right before handing it to the accountant, so an op reported after the
+// request left (a detached model call, design §2 non-goal) reaches no figure. Each dropped op is
+// counted in LateOpsDropped. The zero OpReporter belongs to no request: it reports nothing and
+// returns false.
+func (r OpReporter) Report(ops ...accountant.Operation) bool {
+	if r.c == nil {
+		return false
+	}
+	if len(ops) == 0 {
+		return true
+	}
+	return r.c.appendOps(r.operator, r.dryRun, ops)
+}
+
+func (c *Context) appendOps(operator string, dryRun bool, ops []accountant.Operation) bool {
+	c.opsMu.Lock()
+	defer c.opsMu.Unlock()
+	if c.opsSealed {
+		lateOpsDropped.Add(int64(len(ops)))
+		slog.Debug("pipeline: context operation reported after the request was accounted; dropped",
+			"operator", operator, "ops", len(ops))
+		return false
+	}
 	for _, op := range ops {
 		if op.Operator == "" {
-			op.Operator = c.currentPlugin
+			op.Operator = operator
 		}
-		if c.currentPolicy == ErrorPolicyObserve {
+		if dryRun {
 			op.DryRun = true
 		}
 		c.reportedOps = append(c.reportedOps, op)
 	}
+	return true
 }
+
+// sealOps closes the op list: Run calls it right before RequestEnd reads ReportedOps.
+func (c *Context) sealOps() {
+	c.opsMu.Lock()
+	c.opsSealed = true
+	c.opsMu.Unlock()
+}
+
+// lateOpsDropped counts, per process, the ops reported after their request's list was sealed.
+var lateOpsDropped atomic.Int64
+
+// LateOpsDropped returns how many context operations this process dropped because they were
+// reported after their request was handed to the accountant (OpReporter.Report). Model calls an
+// engine detaches from the request it served land here: they are a non-goal of the accountant
+// integration, and this count says how often they happen.
+func LateOpsDropped() int64 { return lateOpsDropped.Load() }
 
 // ReportedOps returns a copy of the ops reported so far, in the order they were reported.
 func (c *Context) ReportedOps() []accountant.Operation {
+	c.opsMu.Lock()
+	defer c.opsMu.Unlock()
 	if len(c.reportedOps) == 0 {
 		return nil
 	}

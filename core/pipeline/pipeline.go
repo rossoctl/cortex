@@ -223,6 +223,9 @@ func (p *Pipeline) Run(ctx context.Context, pctx *Context) Action {
 		}
 		slog.Debug("pipeline: plugin completed", "plugin", plugin.Name())
 	}
+	// Sealed whether or not an accountant reads the list: a model call an engine detached
+	// from this request must not grow it for the life of the pctx.
+	pctx.sealOps()
 	if p.accountant != nil {
 		p.accountant.RequestEnd(pctx)
 	}
