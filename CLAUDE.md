@@ -305,7 +305,9 @@ latency figure. Plugin spend is not in `costMicros`. What each sums:
 `subscription_weights`) decides whether `core/accounting`'s host runs and how a subscription
 saving is valued in units. `metrics_push:` (`enabled`, `url`, `token`, `interval`; env
 `METRICS_PUSH`, `METRICS_PUSH_URL`, `METRICS_PUSH_TOKEN`, `METRICS_PUSH_INTERVAL`) pushes the
-`llm.savings.*` and Tier 1 `llm.inference.*`/`llm.keepalive.*`/`llm.cache.*` counters over
+`llm.savings.*` and Tier 1 `llm.inference.*`/`llm.keepalive.*`/`llm.cache.*` counters, plus
+Tier 2's transport-level `llm.inference.requests`/`duration_seconds`/`ttfb_seconds`/
+`added_seconds`/`request_bytes`/`response_bytes` (`core/accounting/reqstats`), over
 OTLP/HTTP (`core/accounting/push`). It has **no default URL**, so
 nothing leaves the machine until a user sets one. Its URL must be https, or http to loopback, and
 carry no user info or query string (neither is sent; the credential goes in `token`). The

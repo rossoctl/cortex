@@ -797,6 +797,14 @@ func TestPraxisE2E_SameEventsAsDirect(t *testing.T) {
 			delete(d, k)
 			delete(p, k)
 		}
+		// addedMs is the proxy's own request-side time (listener entry to upstream send). The
+		// Go listeners stamp it; the gateway's Row has nothing to stamp it from (praxis/filters
+		// NOT_SET_IN_PRAXIS_MODE), so it is absent on every praxis row and present on every
+		// direct one whenever that work takes a millisecond or more — which a busy CI runner
+		// hits often. Drop it from both sides before the union comparison below, the same way
+		// ttfbMs/durationMs are handled above, instead of comparing presence.
+		delete(d, "addedMs")
+		delete(p, "addedMs")
 		// This run has no policy, so no sink records a decision and the rows do not
 		// change (praxis/README.md "Gateway decisions" 6).
 		if p["invocations"] != nil {
