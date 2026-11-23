@@ -209,6 +209,10 @@ type ContextGuru struct {
 	modelTO  time.Duration
 	modelMax int
 
+	// localInstall is set by plugins.BuildWithDeps before Configure: on a local install the
+	// model calls bypass HTTPS_PROXY (see localModelTransport).
+	localInstall bool
+
 	// lateModelCalls counts model calls whose spend op was dropped because the call returned
 	// after its request was accounted (cgModel). Reported by Metrics.
 	lateModelCalls atomic.Int64
@@ -241,6 +245,10 @@ func (p *ContextGuru) Capabilities() pipeline.PluginCapabilities {
 		Description:       "Compacts the outbound LLM request context before forwarding (context-guru).",
 	}
 }
+
+// SetLocalInstall is how plugins.BuildWithDeps says whether this is a local install, which decides
+// whether the plugin's model calls may use HTTPS_PROXY.
+func (p *ContextGuru) SetLocalInstall(local bool) { p.localInstall = local }
 
 func (p *ContextGuru) Configure(raw json.RawMessage) error {
 	if len(raw) > 0 {
@@ -300,7 +308,7 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 					Timeout:            p.modelTO,
 					SentinelHeaderName: sentinelHeader,
 					SentinelValue:      p.sentinel,
-					HTTPClient:         modelHTTPClient(p.modelTO),
+					HTTPClient:         modelHTTPClient(p.modelTO, p.localInstall),
 				}),
 				maxTokens: p.modelMax,
 				model:     m.Model,
@@ -511,7 +519,7 @@ func (p *ContextGuru) incomingModel(pctx *pipeline.Context, provider bschemas.Mo
 			Timeout:            p.modelTO,
 			SentinelHeaderName: sentinelHeader,
 			SentinelValue:      p.sentinel,
-			HTTPClient:         modelHTTPClient(p.modelTO),
+			HTTPClient:         modelHTTPClient(p.modelTO, p.localInstall),
 		}),
 		maxTokens:   p.modelMax,
 		model:       model,

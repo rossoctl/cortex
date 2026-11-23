@@ -218,7 +218,9 @@ func (h *Host) RequestStart(pctx *pipeline.Context) {
 // never run on the request goroutine (global constraint).
 //
 // Traffic that is not an inference request, or that has no session to key a thread on, starts
-// nothing and logs nothing (Review Focus 2).
+// nothing and logs nothing (Review Focus 2). The one exception is a request on a path FormatOf does
+// not know that an operator still reported ops on: it gets one DEBUG line, because its saving is
+// lost.
 //
 // A request a plugin asked to translate (pctx.TranslateTarget) also starts nothing: the listener
 // converts the body to the target protocol in startTranslation, which runs after Run returns, so
@@ -237,6 +239,11 @@ func (h *Host) RequestEnd(pctx *pipeline.Context) {
 	}
 	format, ok := wire.FormatOf(pctx.Path)
 	if !ok {
+		// An operator acted on a path the accountant cannot read: its saving goes unrecorded.
+		// Said once per request at DEBUG, so a paths: config wider than FormatOf is visible.
+		if n := len(pctx.ReportedOps()); n > 0 {
+			slog.Debug("accounting: unknown wire format; saving not recorded", "path", pctx.Path, "ops", n)
+		}
 		return
 	}
 	client := pctx.ClientBody()
