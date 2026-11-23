@@ -74,14 +74,16 @@ func AccountantLines(c usage.Counts, unit string) []Line {
 		}
 		out = append(out, Line{"plugin model calls", strings.Join(parts, "   ")})
 	}
-	if c.KeepAlivePings != 0 || c.KeepAliveMicros != 0 || c.KeepAliveUnits != 0 || c.KeepAliveUnknownMicros != 0 {
+	if c.KeepAlivePings != 0 || c.KeepAliveMicros != 0 || c.KeepAliveUnits != 0 ||
+		c.KeepAliveAPIEquivalentMicros != 0 || c.KeepAliveUnknownMicros != 0 {
 		// Split like plugin spend: only pings on an API key are money. A subscription's pings
 		// are units, their API equivalent labelled beside them; unknown billing is apart.
 		var parts []string
 		if c.KeepAliveMicros != 0 {
 			parts = append(parts, Signed(c.KeepAliveMicros, unit))
 		}
-		if c.KeepAliveUnits != 0 {
+		// A subscription ping whose units round to zero still has its API equivalent to show.
+		if c.KeepAliveUnits != 0 || c.KeepAliveAPIEquivalentMicros != 0 {
 			f := unitsOf(c.KeepAliveUnits) + " units"
 			if c.KeepAliveAPIEquivalentMicros != 0 {
 				f += " (API equivalent " + Signed(c.KeepAliveAPIEquivalentMicros, unit) + ")"

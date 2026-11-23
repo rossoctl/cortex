@@ -2,6 +2,7 @@ package accounting
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -189,7 +190,8 @@ func hostWithThreads(t *testing.T, path string, sessions ...string) *Host {
 }
 
 // Over snapshotMaxBytes the threads seen longest ago are left out of the file, and what is kept is
-// a snapshot the library itself restores. One WARN per crossing.
+// a snapshot the library itself restores. The cap is on the file, whose state is base64, not on the
+// raw state. One WARN per crossing.
 func TestSnapshot_OverTheCapDropsTheOldestThreads(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "accountant-state.json")
 	h := hostWithThreads(t, path, "s-old", "s-mid", "s-new")
@@ -200,8 +202,12 @@ func TestSnapshot_OverTheCapDropsTheOldestThreads(t *testing.T) {
 
 	logs := captureWarn(t)
 	prev := snapshotMaxBytes
-	snapshotMaxBytes = len(full) - 1 // one thread too many
+	// A file cap whose state budget is 1 to 3 bytes short of the full state: one thread too many.
+	snapshotMaxBytes = base64.StdEncoding.EncodedLen(len(full)-3) + snapshotFileOverhead
 	t.Cleanup(func() { snapshotMaxBytes = prev })
+	if b := snapshotStateBudget(snapshotMaxBytes); b >= len(full) || b < len(full)-3 {
+		t.Fatalf("state budget %d for a %d-byte state", b, len(full))
+	}
 	for i := 0; i < 3; i++ {
 		if err := h.save(); err != nil {
 			t.Fatalf("save over the cap: %v", err)
@@ -209,6 +215,14 @@ func TestSnapshot_OverTheCapDropsTheOldestThreads(t *testing.T) {
 	}
 	if n := strings.Count(logs.String(), "over its size limit"); n != 1 {
 		t.Errorf("%d WARNs for three saves over the cap, want 1:\n%s", n, logs)
+	}
+
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Size() > int64(snapshotMaxBytes) {
+		t.Fatalf("the saved file is %d bytes, over the %d cap", fi.Size(), snapshotMaxBytes)
 	}
 
 	again := New(Options{SnapshotPath: path}) // restores through the library's own Restore
@@ -220,8 +234,8 @@ func TestSnapshot_OverTheCapDropsTheOldestThreads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(state) > snapshotMaxBytes {
-		t.Errorf("restored state is %d bytes, over the %d cap", len(state), snapshotMaxBytes)
+	if len(state) > snapshotStateBudget(snapshotMaxBytes) {
+		t.Errorf("restored state is %d bytes, over the %d budget", len(state), snapshotStateBudget(snapshotMaxBytes))
 	}
 	if strings.Contains(string(state), "s-old") {
 		t.Error("the oldest thread was kept")

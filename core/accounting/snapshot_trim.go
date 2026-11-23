@@ -8,7 +8,7 @@ import (
 )
 
 // trimmableSnapshotVersion is the accountant snapshot format trimSnapshot knows (accountant
-// v0.3.0, internal/engine/persist.go snapshotVersion). A snapshot of any other version is not
+// v0.5.0, internal/engine/persist.go snapshotVersion). A snapshot of any other version is not
 // trimmed: save falls back to removing the file.
 const trimmableSnapshotVersion = 1
 

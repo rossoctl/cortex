@@ -1,8 +1,11 @@
 package contextguru
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -119,11 +122,18 @@ func TestPolicyDefaults(t *testing.T) {
 	}
 }
 
+// Keep-alive is on by default on every install, local or not.
 func TestKeepAliveOnByDefault(t *testing.T) {
-	for _, cfg := range []string{`{}`, `{"keep_alive": {}}`, `{"keep_alive": {"max_pings": 3}}`} {
-		p := configured(t, cfg)
-		if p.keeper == nil || p.disp == nil || !p.kaPol.On() {
-			t.Fatalf("%s: no keeper built, want keep-alive on by default", cfg)
+	for _, local := range []bool{false, true} {
+		for _, cfg := range []string{`{}`, `{"keep_alive": {}}`, `{"keep_alive": {"max_pings": 3}}`} {
+			p := New()
+			p.SetLocalInstall(local)
+			if err := p.Configure(json.RawMessage(cfg)); err != nil {
+				t.Fatal(err)
+			}
+			if p.keeper == nil || p.disp == nil || !p.kaPol.On() {
+				t.Fatalf("local=%v %s: no keeper built, want keep-alive on by default", local, cfg)
+			}
 		}
 	}
 }
@@ -451,5 +461,126 @@ func TestARecordedFinishDoesNotReleaseAnOverlappingRequest(t *testing.T) {
 	}
 	if n := p.keeper.Sweep(time.Unix(1_700_000_000, 0).Add(281 * time.Second)); n != 0 {
 		t.Fatalf("sweep sent %d pings while B was still open, want 0 — A departed twice", n)
+	}
+}
+
+// oneHourPctx is a finished main-thread request that asks the 1-hour tier on its only breakpoint
+// and was billed at it for everything it wrote.
+func oneHourPctx() *pipeline.Context {
+	p := finishedPctx(200, pipeline.AgentRoleMain)
+	p.Body = []byte(`{"model":"claude-sonnet-5","system":[{"type":"text","text":"s",` +
+		`"cache_control":{"type":"ephemeral","ttl":"1h"}}],"messages":[]}`)
+	p.Extensions.Inference.CacheWriteTokens = 90_000
+	p.Extensions.Inference.CacheWrite1hTokens = 90_000
+	return p
+}
+
+// The keeper decides a thread's tier from CacheWrite1h; with the field dropped, every thread
+// billed at the 1-hour tier ran on the 5-minute schedule.
+func TestRecordForCarriesTheOneHourCacheWrite(t *testing.T) {
+	pctx := oneHourPctx()
+	r, ok := recordFor(pctx, "s1", keepAliveConfig{Enabled: true}.policy(), nil, logEmitter{})
+	if !ok {
+		t.Fatal("a 1h-billed request was not recorded")
+	}
+	if r.Usage.CacheWrite != 90_000 || r.Usage.CacheWrite1h != 90_000 {
+		t.Fatalf("usage = %+v, want CacheWrite and CacheWrite1h 90000", r.Usage)
+	}
+	if !keepalive.ResolveTier(r.Body, r.Usage, r.UsageOK, false) {
+		t.Fatal("ResolveTier did not put a 1h-asked, 1h-billed thread on the 1-hour tier")
+	}
+}
+
+// The credential-retention bound in docs/context-guru-plugin.md: a thread billed at the 1-hour
+// tier holds for (MaxPings1h+1) × Idle1h, 118 minutes at the shipped defaults, never more than
+// keepalive.MaxHold1h; a 5-minute thread holds for (max_pings+1) × idle_seconds, 12 minutes.
+func TestKeepAliveHoldFollowsTheBilledTier(t *testing.T) {
+	p := keepAlivePlugin(t)
+	// StartedAt now, not finishedPctx's fixed past: the started sweep releases an entry whose hold
+	// deadline has passed.
+	turn := func(pctx *pipeline.Context) keepalive.EntryView {
+		t.Helper()
+		pctx.StartedAt = time.Now()
+		invokeReq(p, pctx)
+		p.OnFinish(t.Context(), pctx)
+		e, _ := p.keeper.Entry(keepalive.Key{Session: sessionID(pctx)})
+		return e
+	}
+	// Turn 0 is counted but never tracked (the engine's first-request gate).
+	turn(finishedPctx(200, pipeline.AgentRoleMain))
+	e := turn(finishedPctx(200, pipeline.AgentRoleMain))
+	if e.TTL1h || e.Policy.Idle == 0 {
+		t.Fatalf("5-minute thread: entry %+v", e)
+	}
+	if hold := time.Duration(e.Policy.MaxPings+1) * e.Policy.Idle; hold != 12*time.Minute {
+		t.Fatalf("5-minute thread holds for %v, the docs say 12 minutes", hold)
+	}
+
+	e = turn(oneHourPctx())
+	if !e.TTL1h {
+		t.Fatalf("1-hour thread: entry %+v, want TTL1h", e)
+	}
+	hold := time.Duration(e.Policy.MaxPings+1) * e.Policy.Idle
+	if hold != 118*time.Minute || hold > keepalive.MaxHold1h || keepalive.MaxHold1h != 236*time.Minute {
+		t.Fatalf("1-hour thread holds for %v (MaxHold1h %v), the docs say 118 and at most 236 minutes",
+			hold, keepalive.MaxHold1h)
+	}
+}
+
+// destRouter redirects and, when translate is set, translates every request, as inference-router does.
+type destRouter struct{ translate, upstreamHeader bool }
+
+func (destRouter) Name() string { return "router" }
+func (destRouter) Capabilities() pipeline.PluginCapabilities {
+	return pipeline.PluginCapabilities{WritesDestination: true, Description: "test"}
+}
+func (r destRouter) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
+	u, _ := url.Parse("https://openai.example")
+	_ = pctx.Redirect(u)
+	if r.translate {
+		_ = pctx.Translate("anthropic", "openai", "/v1/chat/completions")
+	}
+	if r.upstreamHeader {
+		_ = pctx.SetUpstreamHeaders(http.Header{"X-Target": {"1"}})
+	}
+	return pipeline.Action{Type: pipeline.Continue}
+}
+func (destRouter) OnResponse(context.Context, *pipeline.Context) pipeline.Action {
+	return pipeline.Action{Type: pipeline.Continue}
+}
+
+// A translated request, or one with router-set upstream headers, is not what pctx holds on the
+// wire, so a ping cannot replay it: nothing is held for it.
+func TestKeepAliveHoldsNothingForARequestTheRouterRewrote(t *testing.T) {
+	for _, r := range []destRouter{{translate: true}, {upstreamHeader: true}} {
+		p := keepAlivePlugin(t)
+		pipe, err := pipeline.New([]pipeline.Plugin{r})
+		if err != nil {
+			t.Fatal(err)
+		}
+		pctx := finishedPctx(200, pipeline.AgentRoleMain)
+		pctx.MarkRedirectable()
+		pipe.Run(t.Context(), pctx)
+		if _, _, _, tr := pctx.TranslateTarget(); tr != r.translate {
+			t.Fatalf("%+v: the test router did not translate as asked", r)
+		}
+		invokeReq(p, pctx)
+		p.OnFinish(t.Context(), pctx)
+		if _, ok := p.keeper.Entry(keepalive.Key{Session: sessionID(pctx)}); ok || heldCount(p) != 0 {
+			t.Fatalf("%+v: the keeper holds an entry (held creds %d) for a rewritten request", r, heldCount(p))
+		}
+	}
+	// A plain redirect is replayable: pctx.Host and pctx.Path are where the bytes went.
+	pipe, err := pipeline.New([]pipeline.Plugin{destRouter{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pctx := finishedPctx(200, pipeline.AgentRoleMain)
+	pctx.MarkRedirectable()
+	pipe.Run(t.Context(), pctx)
+	r, ok := recordFor(pctx, "s1", keepAliveConfig{Enabled: true}.policy(), nil, logEmitter{})
+	if !pctx.Redirected() || !ok || r.Endpoint != "openai.example" {
+		t.Fatalf("a redirected, untranslated request: redirected=%v recorded=%v endpoint=%q",
+			pctx.Redirected(), ok, r.Endpoint)
 	}
 }

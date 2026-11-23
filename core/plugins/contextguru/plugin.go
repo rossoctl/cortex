@@ -27,6 +27,7 @@ import (
 	"log/slog"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -259,6 +260,11 @@ type ContextGuru struct {
 	// later. keepalive.Keeper.Record has no stopped check of its own, so without this flag that
 	// request would hold its credential again on a keeper whose sweep is gone.
 	stopped atomic.Bool
+	// stopMu closes the window between OnFinish's stopped check and its Record call: OnFinish holds
+	// it for reading across both, and Shutdown sets stopped under the write lock. So once Shutdown
+	// has set stopped, no OnFinish that passed the check is still on its way to Record, and the
+	// keeper's Shutdown sweep releases every hold there will be.
+	stopMu sync.RWMutex
 	// lateModelCalls counts model calls whose spend op was dropped because the call returned
 	// after its request was accounted (cgModel). Reported by Metrics.
 	lateModelCalls atomic.Int64
@@ -317,8 +323,9 @@ func (p *ContextGuru) Capabilities() pipeline.PluginCapabilities {
 func (p *ContextGuru) SetLocalInstall(local bool) { p.localInstall = local }
 
 func (p *ContextGuru) Configure(raw json.RawMessage) error {
-	// Keep-alive is on unless the config says enabled: false. Set before decoding, so a missing
-	// keep_alive block or a block without `enabled` keeps it, and an explicit false overrides it.
+	// Keep-alive is on unless the config says enabled: false, on every install. Set before
+	// decoding, so a missing keep_alive block or a block without `enabled` keeps it, and an
+	// explicit false overrides it.
 	decoded := contextGuruConfig{KeepAlive: keepAliveConfig{Enabled: true}}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &decoded); err != nil {
@@ -473,7 +480,7 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 	//
 	// UNDER on_error: observe NOTHING IS HELD: a held turn is pinged upstream with the caller's own
 	// credential, and that ping is real, billed spend — the opposite of a shadow run, where
-	// nothing the plugin does takes effect (review finding). The marker tells OnFinish, which
+	// nothing the plugin does takes effect. The marker tells OnFinish, which
 	// runs with no policy of its own, to record nothing for this request.
 	if p.keeper != nil && pctx.Observing() {
 		pipeline.SetState(pctx, kaShadowStateKey, &kaShadow{})
@@ -515,7 +522,7 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 		// shadow-write case). Ops are stamped and reported AFTER this call, never before: reporting
 		// first would price a shadow write as a real saving, which can fail the library's
 		// client-vs-forwarded sum check and zero the whole request's figure, tool-prune's savings on
-		// it included (review finding on plugin.go:485). ReportOps's own DryRun stamp (on_error:
+		// it included. ReportOps's own DryRun stamp (on_error:
 		// observe) is a different, narrower case — see pipeline.Context.ReportOps's doc comment —
 		// and stampDryRun's OR leaves it untouched when it already applies.
 		applied := pctx.SetBody(out)
@@ -594,7 +601,9 @@ func (p *ContextGuru) selfCall(pctx *pipeline.Context) bool {
 // Shutdown stops the sweep and releases every held credential before returning: on a hot-reload
 // this instance is the old one, and its holds must not outlive it.
 func (p *ContextGuru) Shutdown(context.Context) error {
+	p.stopMu.Lock()
 	p.stopped.Store(true)
+	p.stopMu.Unlock()
 	if p.keeper != nil {
 		p.keeper.Shutdown()
 	}
@@ -650,6 +659,8 @@ func (p *ContextGuru) OnFinish(_ context.Context, pctx *pipeline.Context) {
 			p.keeper.Depart(arrived.key)
 		}
 	}()
+	p.stopMu.RLock()
+	defer p.stopMu.RUnlock()
 	if p.stopped.Load() {
 		return
 	}
@@ -725,8 +736,8 @@ func providerFor(path string) bschemas.ModelProvider {
 // this, the engine's own model-calling components (cache_aware_summarizer, extract_llm,
 // extract_llm_sweep) did not: cgModel.Complete always sends the real HTTP
 // call, and dryRun only changes how the resulting op is REPORTED (Projected, left out of every
-// total) — the call itself, and its cost on the caller's own credential, already happened
-// (review finding). Returning an empty ModelSpec here makes every model.source: incoming or
+// total) — the call itself, and its cost on the caller's own credential, already happened.
+// Returning an empty ModelSpec here makes every model.source: incoming or
 // model: component degrade to deterministic/no-op under observe, the same way the keeper
 // degrades to no ping: observe measures what the DETERMINISTIC reducers would do, at the cost
 // of not previewing what the model-backed ones would add.

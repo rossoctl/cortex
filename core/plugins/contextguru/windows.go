@@ -57,10 +57,13 @@ func buildWindows(c windowsConfig, local bool) models.Resolver {
 		chain = append(chain, f)
 	}
 	if modelInfoOn(c, local) {
-		// A standalone client, not one routed back through this proxy. The map refreshes in the
-		// background, so a lookup never waits on the network; until the first fetch lands the
-		// chain falls through and the fraction triggers decline, which is the safe direction.
-		chain = append(chain, litellm.New(c.ModelInfoURL, &http.Client{Timeout: 30 * time.Second}, 0))
+		// A standalone client on the plugin's model transport, so on a local install the fetch
+		// ignores HTTPS_PROXY (which points at Cortex itself there) and is not routed back through
+		// this proxy (modelTransport). The map refreshes in the background, so a lookup never waits
+		// on the network; until the first fetch lands the chain falls through and the fraction
+		// triggers decline, which is the safe direction.
+		chain = append(chain, litellm.New(c.ModelInfoURL,
+			&http.Client{Timeout: 30 * time.Second, Transport: modelTransport(local)}, 0))
 	}
 	return append(chain, models.DefaultStatic())
 }
