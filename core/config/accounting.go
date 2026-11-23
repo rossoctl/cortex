@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/rossoctl/cortex/core/pipeline"
 )
@@ -43,7 +44,7 @@ func (a *AccountingConfig) On(hasOperator bool) bool {
 	if a == nil {
 		return hasOperator
 	}
-	switch a.Enabled {
+	switch strings.ToLower(a.Enabled) {
 	case AccountingTrue:
 		return true
 	case AccountingFalse:
@@ -52,13 +53,16 @@ func (a *AccountingConfig) On(hasOperator bool) bool {
 	return hasOperator
 }
 
-// Validate refuses a value of Enabled other than "", "auto", "true" and "false". Safe on a nil
-// receiver.
+// Validate refuses a value of Enabled other than "", "auto", "true" and "false", in any case:
+// YAML's own boolean spellings (True, TRUE, False, FALSE) decode into this string field verbatim
+// (unlike a *bool field, which yaml.v3 already folds them into), so this compares case-
+// insensitively to accept every spelling a YAML user might write for the same value. Safe on a
+// nil receiver.
 func (a *AccountingConfig) Validate() error {
 	if a == nil {
 		return nil
 	}
-	switch a.Enabled {
+	switch strings.ToLower(a.Enabled) {
 	case "", AccountingAuto, AccountingTrue, AccountingFalse:
 		return nil
 	}

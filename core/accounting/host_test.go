@@ -488,6 +488,21 @@ func TestHost_ModelChangeBecomesSettingOp(t *testing.T) {
 	}
 }
 
+// Review (r4659882441): wire.FormatOf now matches dialects through core/parse/inference
+// (eb4a0269) instead of a local path table, so the Codex ChatGPT gateway path must start a
+// record here the same as the public /v1/responses endpoint.
+func TestHost_CodexResponsesPathStartsARecord(t *testing.T) {
+	h := newHost(t)
+	body := []byte(`{"model":"gpt-5","instructions":"sys-prompt","input":[{"role":"user","content":"hi"}]}`)
+	pctx := request(t, h, "s1", "/backend-api/codex/responses", body, &operator{}, 200, coldUsage())
+	if pipeline.GetState[pending](pctx, pendingKey) == nil {
+		t.Fatal("a Codex responses request left no pending handle")
+	}
+	if _, ok := h.Compute(pctx); !ok {
+		t.Error("Compute gave no Result for a Codex /backend-api/codex/responses request")
+	}
+}
+
 func TestHost_ServerHeldHistoryIsSkipped(t *testing.T) {
 	h := newHost(t)
 	body := []byte(`{"model":"gpt-5","previous_response_id":"resp_1","input":[{"role":"user","content":"hi"}]}`)

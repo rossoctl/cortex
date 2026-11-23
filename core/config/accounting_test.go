@@ -32,12 +32,12 @@ func TestAccountingConfig_On(t *testing.T) {
 }
 
 func TestAccountingConfig_ValidateRefusesOtherValues(t *testing.T) {
-	for _, v := range []string{"", "auto", "true", "false"} {
+	for _, v := range []string{"", "auto", "true", "false", "TRUE", "False", "AUTO"} {
 		if err := (&AccountingConfig{Enabled: v}).Validate(); err != nil {
 			t.Errorf("%q: %v", v, err)
 		}
 	}
-	for _, v := range []string{"yes", "on", "TRUE", "1"} {
+	for _, v := range []string{"yes", "on", "1"} {
 		err := (&AccountingConfig{Enabled: v}).Validate()
 		if err == nil || !strings.Contains(err.Error(), "accounting.enabled") {
 			t.Errorf("%q: err = %v, want a refusal naming accounting.enabled", v, err)
@@ -46,6 +46,18 @@ func TestAccountingConfig_ValidateRefusesOtherValues(t *testing.T) {
 	var nilBlock *AccountingConfig
 	if err := nilBlock.Validate(); err != nil {
 		t.Errorf("absent block: %v", err)
+	}
+}
+
+// Review (r4663002497): yaml.v3 decodes YAML's True/TRUE/False/FALSE into this string field
+// verbatim, so On and Validate must compare case-insensitively for them to mean what a *bool
+// field would already accept.
+func TestAccountingConfig_OnIsCaseInsensitive(t *testing.T) {
+	if !(&AccountingConfig{Enabled: "TRUE"}).On(false) {
+		t.Error(`Enabled: "TRUE" should force accounting on`)
+	}
+	if (&AccountingConfig{Enabled: "False"}).On(true) {
+		t.Error(`Enabled: "False" should force accounting off`)
 	}
 }
 
