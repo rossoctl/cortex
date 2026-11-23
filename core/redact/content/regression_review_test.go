@@ -104,6 +104,12 @@ func TestRegression_MysqlQuotedPassword(t *testing.T) {
 		{`["mysql -p'abcd", "efgh'"]`, `["mysql -p'abcd", "efgh'"]`},
 		{`{"t":"Run \"mysql -p\" and 'x'"}`, `{"t":"Run \"mysql -p\" and 'x'"}`},
 		{`cmd = 'mysql -p"' + x + '"'`, `cmd = 'mysql -p"' + x + '"'`},
+		{`{"code":"cmd = 'mysql -p\"' + x + '\"'"}`, `{"code":"cmd = 'mysql -p\"' + x + '\"'"}`},
+		// ... while a raw-JSON password an outer single quote closes is still found
+		{`{"cmd":"sh -c 'mysql -u root -p\"` + pw + `'\" db'"}`, `{"cmd":"sh -c 'mysql -u root -p\"[REDACTED:password]\" db'"}`},
+		// a redirect right after the closing quote ends the argument too
+		{"mysqldump -u root -p'" + pw + "'>out.sql", "mysqldump -u root -p'[REDACTED:password]'>out.sql"},
+		{`mysql -p"` + pw + `"<in.sql`, `mysql -p"[REDACTED:password]"<in.sql`},
 		// a double-quoted password may still start or end with a single quote
 		{`mysql -p"'` + pw + `"`, `mysql -p"[REDACTED:password]"`},
 		{`mysql -p"` + pw + `'" db`, `mysql -p"[REDACTED:password]" db`},
