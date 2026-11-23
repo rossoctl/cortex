@@ -643,8 +643,7 @@ func removalOps(raw []gjson.Result, victims []int, names []string, dryRun bool) 
 		decl := raw[i].Raw
 		// Hashed in place: []byte(decl) DOES copy here (confirmed by reverting this during a
 		// review pass: TestPrune_RewriteDoesNotCopyTheBodyPerVictim failed, allocating one extra
-		// body-sized copy per victim), unlike markMoveOp's plain conversion above, which runs at
-		// most once per request. A large manifest's declarations are hundreds of kilobytes each.
+		// body-sized copy per victim). A large manifest's declarations are hundreds of kilobytes each.
 		// Sum256 only reads its input, so the string's bytes are never written.
 		sum := sha256.Sum256(unsafe.Slice(unsafe.StringData(decl), len(decl)))
 		ops = append(ops, accountant.Operation{

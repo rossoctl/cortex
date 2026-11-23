@@ -254,6 +254,14 @@ func TestOpReporter_ConcurrentWithDispatch(t *testing.T) {
 	}
 }
 
+// The zero OpReporter belongs to no request, so Report on it must not panic.
+func TestOpReporter_ZeroValueReportsNothing(t *testing.T) {
+	var r OpReporter
+	if r.Report(accountant.Operation{ID: "1"}) {
+		t.Error("zero OpReporter.Report returned true, want false")
+	}
+}
+
 // OpReporter.Report takes the operator and dry-run state the reporter was built with and reads
 // nothing of the plugin being dispatched, so an op reported after the plugin returned is not
 // given another's name.

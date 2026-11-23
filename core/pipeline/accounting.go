@@ -92,8 +92,12 @@ func (c *Context) OpReporter() OpReporter {
 // It returns false when the ops were dropped because the request's op list was already sealed:
 // Pipeline.Run seals it right before handing it to the accountant, so an op reported after the
 // request left (a detached model call, design §2 non-goal) reaches no figure. Each dropped op is
-// counted in LateOpsDropped.
+// counted in LateOpsDropped. The zero OpReporter belongs to no request: it reports nothing and
+// returns false.
 func (r OpReporter) Report(ops ...accountant.Operation) bool {
+	if r.c == nil {
+		return false
+	}
 	if len(ops) == 0 {
 		return true
 	}
