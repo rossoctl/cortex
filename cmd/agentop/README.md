@@ -1241,7 +1241,7 @@ agentop server use ete --key-of glm                       # new sessions that se
 agentop server reset --key-of glm                         # glm's key goes to glm again
 agentop server move <session-id> glm                      # move one running session → glm
 agentop server                                            # the servers, their models, their agents
-agentop server rename ete litellm-external               # a new name; its agents follow
+agentop server rename ete litellm-external                # a new name; its agents follow
 agentop server reset --agent opencode                     # stop routing opencode
 agentop server remove glm                                 # refused while an agent uses it; the last takes the router out
 ```
