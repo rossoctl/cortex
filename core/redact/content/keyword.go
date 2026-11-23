@@ -183,14 +183,20 @@ func keywordStart(text string, p int) int {
 
 func isNameByte(c byte) bool { return isTokenByte(c) || c == '.' }
 
+// rescanBudgetPer is how many times its own length a run of rescanned text may be scanned
+// again (findKeywords): enough for URLs nested 4 deep.
+const rescanBudgetPer = 4
+
 // findKeywords runs the keyword rule at each trigger position (sorted).
 func findKeywords(text string, at []int, out []Edit) []Edit {
 	covered, nameRunEnd := 0, -1
-	// rescanBudget is how many bytes, in all, the query-string override below may send back to
-	// be scanned again. Without a bound, "key=?" repeated makes every trigger's value run to the
-	// end of the text and be rescanned: quadratic. With it, the rescans cost at most 8 times the
-	// text, plus 64 KiB so a short text with nested URLs is never cut short.
-	rescanBudget := 8*len(text) + 64<<10
+	// The query-string override below sends a long rejected value back to be scanned again from
+	// its "?". Without a bound, "key=?" repeated makes every trigger's value run to the end of
+	// the text and be rescanned: quadratic. So each run of rescanned text (from a value's start
+	// to the furthest value end reached from it, runEnd) has a budget of rescanBudgetPer times
+	// its length: the rescans cost at most that many times the text, and a run cannot use up
+	// another's, so junk early in the text does not turn the rescan off for a later URL.
+	runEnd, rescanBudget := -1, 0
 	for _, p := range at {
 		if p < covered || p < nameRunEnd {
 			continue // inside an accepted or long value, or another word of the same name
@@ -241,10 +247,18 @@ func findKeywords(text string, at []int, out []Edit) []Edit {
 		if !ok && ve-vs >= longRejected {
 			// A long rejected URL can still hold an assignment in its query string
 			// ("auth_url=https://host/...?password=..."): the triggers from its "?" on are tried,
-			// within the rescan budget.
-			if q := strings.IndexByte(text[vs:ve], '?'); q >= 0 && rescanBudget > 0 {
-				rescanBudget -= ve - vs
-				covered = vs + q
+			// within the run's rescan budget.
+			if q := strings.IndexByte(text[vs:ve], '?'); q >= 0 {
+				if vs >= runEnd {
+					runEnd, rescanBudget = ve, rescanBudgetPer*(ve-vs) // a new run
+				} else if ve > runEnd {
+					rescanBudget += rescanBudgetPer * (ve - runEnd) // the run grows
+					runEnd = ve
+				}
+				if rescanBudget > 0 {
+					rescanBudget -= ve - vs
+					covered = vs + q
+				}
 			}
 		}
 		if ok {

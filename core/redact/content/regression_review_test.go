@@ -27,6 +27,19 @@ func TestRegression_QueryStringRescan(t *testing.T) {
 	if out, _ := redact(in); strings.Contains(out, pw) {
 		t.Errorf("leaked after query marks: %q", out)
 	}
+	// Redirect URLs nested 4 deep, the password in the innermost query.
+	in = "auth_url=https://a.example.io/" + a + "?next_url=https://b.example.io/" + a +
+		"?return_url=https://c.example.io/" + a + "?redirect_url=https://d.example.io/" + a + "?password=" + pw
+	if out, _ := redact(in); strings.Contains(out, pw) {
+		t.Errorf("leaked 4 deep: %q", out)
+	}
+	// Each run of rescanned text has its own budget: junk before a later URL does not use it up.
+	for _, n := range []int{1000, 5000, 50000} {
+		in = strings.Repeat("key=?", n) + "\n auth_url=https://host/" + a + "?password=" + pw
+		if out, _ := redact(in); strings.Contains(out, pw) {
+			t.Errorf("leaked after %d query marks", n)
+		}
+	}
 	in = strings.Repeat("key=?", 200000)
 	if out, _ := redact(in); out != in {
 		t.Errorf("\"key=?\" repeated changed")
@@ -78,6 +91,22 @@ func TestRegression_MysqlQuotedPassword(t *testing.T) {
 		{`Use "mysql -p" or "mysql --password" to log in`, `Use "mysql -p" or "mysql --password" to log in`},
 		{`{"t":"Use \"mysql -p\" or \"mysql --password\""}`, `{"t":"Use \"mysql -p\" or \"mysql --password\""}`},
 		{"Run 'mysql -p' and 'mysql -h' then", "Run 'mysql -p' and 'mysql -h' then"},
+		// a quoted password that closes an outer quote (the usual sh -c, ssh, JSON tool call)
+		{`{"cmd":"mysql -u root -p'` + pw + `'"}`, `{"cmd":"mysql -u root -p'[REDACTED:password]'"}`},
+		{`{"cmd":"mysql -u root -p'` + pw + `'\nexit"}`, `{"cmd":"mysql -u root -p'[REDACTED:password]'\nexit"}`},
+		{`ssh db "mysql -u root -p'` + pw + `'"`, `ssh db "mysql -u root -p'[REDACTED:password]'"`},
+		{`sh -c 'mysql -u root -p"` + pw + `"'`, `sh -c 'mysql -u root -p"[REDACTED:password]"'`},
+		{`{"cmd":"ssh db \"mysql -u root -p'` + pw + `'\""}`, `{"cmd":"ssh db \"mysql -u root -p'[REDACTED:password]'\""}`},
+		{`{"cmd":"sh -c 'mysql -u root -p\"` + pw + `\"'"}`, `{"cmd":"sh -c 'mysql -u root -p\"[REDACTED:password]\"'"}`},
+		// ... while quotes of separate strings or pieces of code are still kept
+		{`{"a":"mysql -p'","b":"x'"}`, `{"a":"mysql -p'","b":"x'"}`},
+		{`{"a":"mysql -p'x","b":"y'"}`, `{"a":"mysql -p'x","b":"y'"}`},
+		{`["mysql -p'abcd", "efgh'"]`, `["mysql -p'abcd", "efgh'"]`},
+		{`{"t":"Run \"mysql -p\" and 'x'"}`, `{"t":"Run \"mysql -p\" and 'x'"}`},
+		{`cmd = 'mysql -p"' + x + '"'`, `cmd = 'mysql -p"' + x + '"'`},
+		// a double-quoted password may still start or end with a single quote
+		{`mysql -p"'` + pw + `"`, `mysql -p"[REDACTED:password]"`},
+		{`mysql -p"` + pw + `'" db`, `mysql -p"[REDACTED:password]" db`},
 		// the first -p is the one taken
 		{"mysql -p" + pw + " -h db -p'x'", "mysql -p[REDACTED:password] -h db -p'x'"},
 		{"mysql -u root -p -h db -p" + pw, "mysql -u root -p -h db -p[REDACTED:password]"},

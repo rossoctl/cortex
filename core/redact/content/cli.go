@@ -64,16 +64,20 @@ var cliRules = []*anchored{
 	{
 		// The first -p, and the password attached: escaped-double-quoted (raw JSON),
 		// double-quoted, single-quoted, or bare. A bare one may not start with "-", so "-p -h db"
-		// is kept. A quoted one must end its argument (a space, ";", "|", "&", ")", the end, or
-		// in raw JSON the string's end or an escaped break), so a quote that closes a JSON string
+		// is kept. A quoted one must end its argument (a space, ";", "|", "&", ")", the end, the
+		// other kind of quote closing an outer one (sh -c 'mysql -p"..."'), or in raw JSON the
+		// string's end or an escaped break), so a quote that closes a JSON string
 		// ("mysql -p", 3306) or a quoted phrase ('mysql -p' and 'mysql -h') is not taken for one.
-		// A double-quoted one may not hold JSON's punctuation at either end, nor a single-quoted
-		// one a double quote: what lies between two JSON strings is not a password.
+		// A double-quoted one may not hold JSON's punctuation at either end, nor, when an outer
+		// single quote closes it, a single quote ('mysql -p"' + x + '"' is two pieces of code);
+		// a single-quoted one may not hold a double quote: what lies between two JSON strings,
+		// or two quoted pieces of code, is not a password.
 		cat: catPassword, triggers: []string{"mysql"}, anyGroup: true, span: 1024, before: true, segment: true,
 		re: regexp.MustCompile(`^mysql(?:dump|admin|sh)?[ \t]+(?:[^\n|;&]*?[ \t])??-p(?:` +
-			`\\"([^"\\\r\n]+)\\"(?:[\s;|&)"]|\\[nrt]|$)|` +
+			`\\"([^"\\\r\n]+)\\"(?:[\s;|&)"']|\\[nrt]|$)|` +
 			`"([^"\\\r\n,:\[\]{}\s](?:[^"\\\r\n]*[^"\\\r\n,:\[\]{}\s])?)"(?:[\s;|&)]|$)|` +
-			`'([^'"\\\r\n]+)'(?:[\s;|&)]|$)|` +
+			`"([^"'\\\r\n,:\[\]{}\s](?:[^"\\\r\n]*[^"'\\\r\n,:\[\]{}\s])?)"'|` +
+			`'([^'"\\\r\n]+)'(?:[\s;|&)"]|\\[nrt"]|$)|` +
 			`((?:[^\s'"` + "`" + `\\-]|\\[^\s'"` + "`" + `nrt])` + bareArgChar + `*))`),
 		check: func(v string) bool { return len(v) >= 4 && !notASecret(v) },
 	},
