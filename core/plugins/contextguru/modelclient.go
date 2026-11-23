@@ -16,7 +16,7 @@ func newModelTransport(noProxy bool) *http.Transport {
 	if t, ok := http.DefaultTransport.(*http.Transport); ok {
 		tr = t.Clone()
 	} else {
-		tr = &http.Transport{Proxy: http.ProxyFromEnvironment}
+		tr = &http.Transport{Proxy: http.ProxyFromEnvironment, MaxIdleConnsPerHost: 100}
 	}
 	if noProxy {
 		tr.Proxy = nil
