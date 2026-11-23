@@ -60,14 +60,15 @@ processors:
         statements:
           - set(name, "")
           - set(version, "")
-      # Prometheus's OTLP translator promotes a resource attribute onto a point only when the
-      # point does not already carry that key (createAttributes in
-      # storage/remote/otlptranslator/prometheusremotewrite/helper.go): a data-point attribute
-      # of the same name wins. Delete any of these the sender set on the point itself, so
-      # "which proxy sent this" stays decided above, by the collector, never by the sender.
+      # Prometheus's OTLP receiver turns every data-point attribute into a series label, not only
+      # a promoted resource one, so a deny-list of proxy/machine/etc. still lets a sender add any
+      # OTHER label it likes (a privacy and cardinality problem: session_id, user_email, ...).
+      # Allow-list instead: only the labels context-guru's shared metrics contract defines
+      # (docs/metrics/spec.md 5.1-5.5) survive on the point. Everything else, including a forged
+      # proxy/machine, is merged away. A label the contract adds later needs adding here too.
       - context: datapoint
         statements:
-          - delete_matching_keys(attributes, "^(proxy|machine|preset|service[._]version|job|instance)$")
+          - keep_matching_keys(attributes, "^(model|provider|status_class|stream|source|tier|stage|kind|component|effect|cause|direction|result|reason|check|outcome)$")
   transform/contextguru:
     metric_statements:
       - context: resource
@@ -81,7 +82,7 @@ processors:
           - set(version, "")
       - context: datapoint
         statements:
-          - delete_matching_keys(attributes, "^(proxy|machine|preset|service[._]version|job|instance)$")
+          - keep_matching_keys(attributes, "^(model|provider|status_class|stream|source|tier|stage|kind|component|effect|cause|direction|result|reason|check|outcome)$")
   batch:
     timeout: 5s
 

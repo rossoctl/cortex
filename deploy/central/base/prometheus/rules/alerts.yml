@@ -112,8 +112,11 @@ groups:
           description: "No proxy can push. Nothing is stored until it is back; proxies resend totals."
 
       - alert: CollectorRefusingData
-        # The collector accepted data it could not hand to Prometheus.
-        expr: sum(rate(otelcol_exporter_send_failed_metric_points_total[5m])) > 0
+        # The collector accepted data it could not hand to Prometheus. Collector 0.165.0 exposes
+        # its internal counters with no _total suffix (verified against a live scrape, both
+        # text and OpenMetrics Accept headers) — a name with _total never matches and the alert
+        # was silently dead.
+        expr: sum(rate(otelcol_exporter_send_failed_metric_points[5m])) > 0
         for: 10m
         labels: {severity: warning}
         annotations:

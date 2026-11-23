@@ -15,7 +15,9 @@
 #      value), machine set from service.instance.id, and no extra label;
 #   5. the same holds when the forged `proxy`/`machine` sit on the data point instead of the
 #      resource — Prometheus's OTLP translator lets a point's own attribute override a promoted
-#      resource one of the same name, so the collector must strip it there too.
+#      resource one of the same name, so the collector must strip it there too — and a
+#      data-point `session_id` (standing in for any label outside the metrics contract) does
+#      not survive either: the collector allow-lists, not denies, data-point labels.
 set -eu
 
 host="${1:?usage: smoke.sh <collector-host>}"
@@ -51,9 +53,12 @@ EOF
 }
 
 # body_datapoint_forge <machine>: the resource is honest (no forged proxy/machine there); the
-# forgery is on the data point itself, where createAttributes
-# (storage/remote/otlptranslator/prometheusremotewrite/helper.go) lets a point's own attribute
-# of the same name win over a promoted resource attribute.
+# forgery is on the data point itself, where Prometheus's OTLP receiver turns every data-point
+# attribute into a series label, promoted resource ones included (createAttributes in
+# storage/remote/otlptranslator/prometheusremotewrite/helper.go, which lets a point's own
+# attribute of the same name win over a promoted resource one). session_id stands in for any
+# label outside the metrics contract's allow-list (docs/metrics/spec.md 5.1-5.5): a deny-list of
+# just proxy/machine/etc. would still let it through.
 body_datapoint_forge() {
   cat <<EOF
 {"resourceMetrics":[{"resource":{"attributes":[
@@ -63,7 +68,8 @@ body_datapoint_forge() {
   "sum":{"aggregationTemporality":2,"isMonotonic":true,
    "dataPoints":[{"asInt":"1","startTimeUnixNano":"$now","timeUnixNano":"$now","attributes":[
     {"key":"proxy","value":{"stringValue":"evil-dp"}},
-    {"key":"machine","value":{"stringValue":"evil-machine-dp"}}]}]}}]}]}]}
+    {"key":"machine","value":{"stringValue":"evil-machine-dp"}},
+    {"key":"session_id","value":{"stringValue":"SECRET-SESSION"}}]}]}}]}]}]}
 EOF
 }
 

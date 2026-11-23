@@ -188,6 +188,24 @@ tests:
               summary: "The OpenTelemetry Collector is down"
               description: "No proxy can push. Nothing is stored until it is back; proxies resend totals."
 
+  # Collector 0.165.0 exposes this counter with no _total suffix (verified against a live scrape,
+  # both text and OpenMetrics Accept headers; review of #2064). This only pins that the rule
+  # reads the name it is given — it cannot catch a rule/scrape name mismatch on its own, which is
+  # why the live-scrape check matters too.
+  - name: CollectorRefusingData fires when exports fail
+    interval: 1m
+    input_series:
+      - series: 'otelcol_exporter_send_failed_metric_points{exporter="otlp_http/prometheus"}'
+        values: '0+1x20'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: CollectorRefusingData
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: "The collector fails to write to Prometheus"
+              description: "Check Prometheus and the remote-write receiver."
+
   # ---- Keep-alive: a rescue is net of the reads that replaced the writes ------------------------
   - name: keep-alive net counts both sides of the rescue
     interval: 1m
