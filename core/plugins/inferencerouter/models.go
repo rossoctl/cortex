@@ -343,7 +343,7 @@ func (p *Router) renewSubstitutes(pctx *pipeline.Context, server string) {
 	}
 	p.substitutesMu.Lock()
 	defer p.substitutesMu.Unlock()
-	if subs := p.substitutes(pctx, key); subs != nil {
+	if subs := p.substitutes(pctx, key); len(subs) > 0 {
 		p.saveSubstitutes(pctx, key, subs)
 	}
 }
