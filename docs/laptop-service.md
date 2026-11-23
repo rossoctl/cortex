@@ -59,8 +59,10 @@ script, the exit code alone does not say Cortex is serving: check for
 `Cortex is healthy according to` in the output as well. Before, a stopped Cortex
 exited 1.
 
-On macOS, `service stop` and `agentop uninstall` return only once launchd has taken
-Cortex down, so nothing still holds its ports when they say it is stopped.
+On macOS, `service stop` and `service uninstall` return only once launchd has taken
+Cortex down, so nothing still holds its ports when they say it is stopped. (`agentop
+uninstall` already waited.) If launchd takes longer than 30 seconds, they say it is still
+shutting down, and exit 1.
 
 `service start`, `service restart` and `service install` clear systemd's record of the
 crashes first, so they can start a unit systemd had given up on without waiting out

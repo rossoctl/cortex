@@ -157,6 +157,51 @@ func prints(t *testing.T, count string) int {
 // `launchctl bootout` returns before teardown finishes, so stop used to say
 // "stopped" while the supervisor was still taking the proxy down and holding its
 // ports. Passing "darwin" makes this run on any host: only launchctl is stubbed.
+// TestServiceUninstallSaysStoppedOnlyOnceItIs: `service uninstall` says "Cortex is
+// stopped" and exits 0 once launchd has taken the job down. When the teardown outlasts
+// the wait, it still removes the plist, but says Cortex is still shutting down and
+// exits 1: the stopped claim was what the wait exists to make true.
+func TestServiceUninstallSaysStoppedOnlyOnceItIs(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("the wait after a bootout is launchd's; systemd's disable --now waits itself")
+	}
+	for _, tc := range []struct {
+		name     string
+		lingers  int
+		code     int
+		want     string
+		mustNot  string
+		wantWarn bool
+	}{
+		{"the teardown finishes", 2, 0, "Removed. Cortex is stopped", "still shutting down", false},
+		{"the teardown outlasts the wait", 1000, 1, "Removed, but Cortex was still shutting down", "Cortex is stopped", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			saved := serviceBootoutTimeout
+			serviceBootoutTimeout = 500 * time.Millisecond
+			t.Cleanup(func() { serviceBootoutTimeout = saved })
+			launchctlTearingDown(t, tc.lingers)
+			p := servicePathsFixture(t)
+			if err := os.WriteFile(p.unitFile, []byte("plist"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var out, errb bytes.Buffer
+			if code := serviceUninstall(p, true, &out, &errb); code != tc.code {
+				t.Errorf("exit = %d, want %d", code, tc.code)
+			}
+			if !strings.Contains(out.String(), tc.want) || strings.Contains(out.String(), tc.mustNot) {
+				t.Errorf("stdout =\n%s\nwant %q and not %q", out.String(), tc.want, tc.mustNot)
+			}
+			if got := strings.Contains(errb.String(), "still shutting down"); got != tc.wantWarn {
+				t.Errorf("stderr =\n%s\nwant the still-shutting-down error: %v", errb.String(), tc.wantWarn)
+			}
+			if _, err := os.Stat(p.unitFile); !os.IsNotExist(err) {
+				t.Errorf("plist still at %s, want it removed either way", p.unitFile)
+			}
+		})
+	}
+}
+
 func TestStopAndUnloadWaitForTheBootout(t *testing.T) {
 	for _, tc := range []struct {
 		name string

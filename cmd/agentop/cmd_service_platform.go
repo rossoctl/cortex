@@ -495,8 +495,8 @@ func unloadService(goos string, p servicePaths) error {
 		// As in controlService's stop: bootout returns before the job is gone, and
 		// uninstall says "Cortex is stopped" next.
 		if err == nil && !waitBootedOut(target, serviceBootoutTimeout) {
-			return fmt.Errorf("the %s was still shutting down %s after launchctl bootout",
-				supervisorName(goos), serviceBootoutTimeout)
+			return fmt.Errorf("the %s was %w %s after launchctl bootout",
+				supervisorName(goos), errStillShuttingDown, serviceBootoutTimeout)
 		}
 		return nil
 	}
@@ -834,6 +834,10 @@ type launchdState struct {
 // launchdJobState asks launchd for Cortex's job. Not known when launchctl is missing
 // or cannot see the domain, as in a restricted sandbox: status then says only what
 // its health probe saw, as it always did.
+// errStillShuttingDown is in unloadService's error when launchd still had the job
+// when the wait after its bootout ran out, so a caller can avoid saying it stopped.
+var errStillShuttingDown = errors.New("still shutting down")
+
 func launchdJobState() launchdState {
 	if _, err := exec.LookPath("launchctl"); err != nil {
 		return launchdState{}

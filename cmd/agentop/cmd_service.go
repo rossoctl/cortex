@@ -609,7 +609,16 @@ func serviceUninstall(p servicePaths, yes bool, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "Not changed.")
 		return exitDeclined
 	}
-	if !removeService(p, stderr) {
+	removed, stopped := removeServiceStopped(p, stderr)
+	if !removed {
+		return 1
+	}
+	// launchd still had the job when the wait ran out: removed, but not yet stopped,
+	// so not "Cortex is stopped" (the error above says why).
+	if !stopped {
+		fmt.Fprintf(stdout, "\nRemoved, but Cortex was still shutting down when uninstall stopped waiting, so it may still be running.\n"+
+			"  launchd should finish stopping it. To check:  launchctl print gui/%d/%s\n"+
+			"  The config and CA are untouched in %s\n", os.Getuid(), launchdLabel, filepath.Dir(p.configFile))
 		return 1
 	}
 	// Not "start it yourself with a backgrounded proxy": running unsupervised is no
@@ -628,18 +637,27 @@ func serviceUninstall(p servicePaths, yes bool, stdout, stderr io.Writer) int {
 // unit file could not be removed: the one failure that leaves the service looking
 // installed.
 func removeService(p servicePaths, stderr io.Writer) bool {
+	removed, _ := removeServiceStopped(p, stderr)
+	return removed
+}
+
+// removeServiceStopped is removeService that also says whether the job was seen to
+// stop. stopped is false when launchd still had it when the wait after its bootout
+// ran out, so a caller must not say Cortex is stopped.
+func removeServiceStopped(p servicePaths, stderr io.Writer) (removed, stopped bool) {
 	unloadErr, unitErr, stampErr := removeServiceReport(p)
+	stopped = !errors.Is(unloadErr, errStillShuttingDown)
 	if unloadErr != nil {
 		_, _ = fmt.Fprintf(stderr, "agentop: %v\n", unloadErr)
 	}
 	if unitErr != nil {
 		_, _ = fmt.Fprintf(stderr, "agentop: removing %s: %v\n", p.unitFile, unitErr)
-		return false
+		return false, stopped
 	}
 	if stampErr != nil {
 		_, _ = fmt.Fprintf(stderr, "agentop: could not remove %s: %v\n", p.stampFile, stampErr)
 	}
-	return true
+	return true, stopped
 }
 
 // removeServiceReport is removeService without the printing. uninstall needs the
