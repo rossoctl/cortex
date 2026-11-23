@@ -354,7 +354,14 @@ func (s *Sink) priceUsageSplit(model string, u accountant.Usage, output int) (ac
 	price(pricing.TierInput, u.Input)
 	price(pricing.TierCacheRead, u.CacheRead)
 	price(pricing.TierCacheWrite, u.CacheWrite-u.CacheWrite1h)
-	price(pricing.TierCacheWrite1h, u.CacheWrite1h)
+	if u.CacheWrite1h > 0 {
+		v, est := USD1h(s.pricer.resolver, s.pricer.request.endpoint, model, s.pricer.request.promptTotal, int64(u.CacheWrite1h))
+		if est {
+			estimated += v
+		} else {
+			actual += v
+		}
+	}
 	price(pricing.TierOutput, output)
 	return
 }
@@ -382,7 +389,8 @@ func (s *Sink) missPremiumUSD(model string, u accountant.Usage) float64 {
 		usd += float64(w5Tok) * max(rate(pricing.TierCacheWrite)-rd, 0)
 	}
 	if w1hTok > 0 {
-		usd += float64(w1hTok) * max(rate(pricing.TierCacheWrite1h)-rd, 0)
+		rate1h, _ := USD1h(s.pricer.resolver, s.pricer.request.endpoint, model, s.pricer.request.promptTotal, 1)
+		usd += float64(w1hTok) * max(rate1h-rd, 0)
 	}
 	return usd
 }
@@ -451,20 +459,26 @@ type boundPricer struct {
 // the request's for a model with none. The same function prices the ledger, so the two cannot
 // price one token differently.
 func (p *boundPricer) Price(model string, _ time.Time, t acmetrics.Tier) (float64, bool) {
+	b, ok := p.byModel[model]
+	if !ok {
+		b = p.request
+	}
+	// CacheWrite1h has no pricing.Tier of its own — see pricing.Tier's doc — so it is priced
+	// through USD1h rather than pricingTier+USD, same as priceUsageSplit and missPremiumUSD.
+	if t == acmetrics.TierCacheWrite1h {
+		return USD1h(p.resolver, b.endpoint, model, b.promptTotal, 1)
+	}
 	tier, ok := pricingTier(t)
 	if !ok {
 		// An unknown tier has no rate: (0, true) is "no money, and estimated", which is what
 		// the Pricer contract asks for a rate the host does not know.
 		return 0, true
 	}
-	b, ok := p.byModel[model]
-	if !ok {
-		b = p.request
-	}
 	return USD(p.resolver, b.endpoint, model, b.promptTotal, tier, 1)
 }
 
-// pricingTier maps the library's metrics tier onto Cortex's rate table.
+// pricingTier maps the library's metrics tier onto Cortex's rate table. CacheWrite1h is not
+// here: Price handles it separately, through USD1h.
 func pricingTier(t acmetrics.Tier) (pricing.Tier, bool) {
 	switch t {
 	case acmetrics.TierInput:
@@ -473,8 +487,6 @@ func pricingTier(t acmetrics.Tier) (pricing.Tier, bool) {
 		return pricing.TierCacheRead, true
 	case acmetrics.TierCacheWrite5m:
 		return pricing.TierCacheWrite, true
-	case acmetrics.TierCacheWrite1h:
-		return pricing.TierCacheWrite1h, true
 	case acmetrics.TierOutput:
 		return pricing.TierOutput, true
 	}

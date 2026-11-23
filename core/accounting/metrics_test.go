@@ -606,7 +606,7 @@ func TestSink_EstimatedCostIsSubsetOfCost(t *testing.T) {
 	s.Observe(meta, u, 0, accountant.Result{}, "api.example.com", 1100, false)
 
 	input, inputEst := USD(rates, "api.example.com", "m1", 1100, pricing.TierInput, 100)
-	write1h, write1hEst := USD(rates, "api.example.com", "m1", 1100, pricing.TierCacheWrite1h, 1000)
+	write1h, write1hEst := USD1h(rates, "api.example.com", "m1", 1100, 1000)
 	if inputEst || !write1hEst {
 		t.Fatalf("fixture: input estimated=%v (want false), 1h write estimated=%v (want true)", inputEst, write1hEst)
 	}
