@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"errors"
@@ -56,6 +57,9 @@ func runExport(args []string, stdout, stderr io.Writer) int {
 		"export only this `session`, repeatable and comma-separated; omit for every archived session")
 	since := fs.String("since", "",
 		"export only events newer than this far back — a duration such as 168h, or a day count like 7d")
+	withToolCalls := fs.Bool("with-tool-calls", false,
+		"also export one record per tool call, paired with its result — still content-free: "+
+			"durations and sizes, never arguments or output")
 	endpoint := fs.String("endpoint", "",
 		"session API URL of the proxy (default: the Cortex installed on this machine)")
 	fs.Usage = func() {
@@ -67,15 +71,33 @@ Usage:
   agentop export --gzip --out F.gz     write it gzip-compressed, for sharing
   agentop export --since 168h          only events from the last week
   agentop export --session ID          one session, repeatable or comma-separated
+  agentop export --with-tool-calls     add a record per tool call, paired with its result
   agentop export --endpoint URL        ask a specific proxy rather than the local one
 
-Each line is one archived event reduced to 36 content-free scalars — timings, token
+Each line is one archived event reduced to 37 content-free scalars — timings, token
 counts, hosts, models, outcomes — never message content, completions or tool arguments,
 which is what makes it shareable where the full events are not. It is not anonymous,
 though: hosts, models, session ids and timestamps remain, and together they describe who
 talked to what and when. A month of traffic is about 12MB. The reading rules that keep a
 consumer from misinterpreting the fields (zero means "not recorded", never a real zero;
 order by "at" then "seq") are in Cortex's docs/session-export.md.
+
+--with-tool-calls adds a second kind of line: one per tool call, carrying how long it
+took, how it ended, and how many bytes its result was. It answers "which tools ran and
+what did those turns cost" without a second request and without joining by hand. The new
+records stay content-free on the same terms as the rest — no arguments, no output, and no
+tool-use id, so a record cannot be joined back to a conversation. A built-in tool name
+(Bash, Read) appears as itself; an MCP tool's name is a hash under a key this install
+keeps, because an MCP name is operator-defined and can carry a customer or project name.
+
+Two reading rules matter for the new lines, and both cost real accuracy. Every line of
+one turn's batch repeats that turn's "modelMs" and "gapMs", so take them once per
+"callSeq" rather than summing them. And a batch of calls shares one measured window,
+marked "durationShared": summing their durations counts that window several times.
+
+Without the flag the output is byte-for-byte what it was before tool-call records
+existed, so an existing consumer is unaffected. With it, every line carries a "kind" —
+"event" or "toolCall" — so a reader can select either.
 
 The export reads the durable archive, not memory: a session with nothing flushed yet
 does not appear, and the live tail is /v1/events, not this.
@@ -183,7 +205,7 @@ Flags:
 	// answers a doubled slash with a 307 whose HTML body is all `curl -s` would show —
 	// a fallback leading into a second dead end.
 	client := apiclient.New(target)
-	body, err := client.Export(ctx, sessions.ids, *since)
+	body, err := client.Export(ctx, sessions.ids, *since, *withToolCalls)
 	if err != nil {
 		fmt.Fprintf(stderr, "agentop export: %v\n", err)
 		switch {
@@ -317,11 +339,53 @@ Flags:
 		}
 		fmt.Fprintf(stderr, "  %s records, %s → %s (%s gzip)\n",
 			plainCount(counted.lines), byteSize(counted.bytes), where, byteSize(onDisk))
+		if code := reportToolCallSkew(stderr, *withToolCalls, counted, where); code != 0 {
+			return code
+		}
 		return 0
 	}
 	fmt.Fprintf(stderr, "  %s records, %s → %s\n",
 		plainCount(counted.lines), byteSize(counted.bytes), where)
+	if code := reportToolCallSkew(stderr, *withToolCalls, counted, where); code != 0 {
+		return code
+	}
 	return 0
+}
+
+// reportToolCallSkew fails the command when --with-tool-calls was asked for and the proxy did
+// not apply it. Returns the exit code: 0 when there is nothing to report.
+//
+// NON-ZERO, NOT A WARNING, because the file is not what was asked for. A warning on stderr is
+// lost in a script — `agentop export --with-tool-calls --out f.ndjson && analyse f.ndjson`
+// would run the analysis over an export with no tool calls in it and silently produce a
+// different answer. The summary line stays, so the user can see what WAS written.
+//
+// THE SIGNAL IS `kind`, NOT THE PRESENCE OF toolCall RECORDS. A current server stamps `kind` on
+// every record whenever the opt-in applies (spec T28); a proxy predating the parameter ignores
+// it and answers 200 with the plain stream, where no record carries `kind` at all. Keying on
+// toolCall records instead would report skew for an archive that simply ran no tools.
+//
+// An empty export is not skew: with no records there is no `kind` to find, and nothing was
+// misreported either.
+func reportToolCallSkew(stderr io.Writer, asked bool, counted *lineCounter, where string) int {
+	if !asked {
+		return 0
+	}
+	// A stream whose last record carried no trailing newline leaves the check undecided, so
+	// settle it from what is buffered.
+	counted.settleKind()
+	// EMPTINESS IS JUDGED ON BYTES, NOT ON LINES, and that distinction is the whole guard.
+	// lines counts NEWLINES, so a proxy that sends one record without a trailing newline
+	// reports zero lines — and an earlier revision's `lines == 0` exception then passed it as
+	// success, with no `kind` anywhere and the flag silently ignored. That stream is not empty:
+	// it is one record proving the option was not applied, which is exactly the case this
+	// check exists for. A genuinely empty body has nothing to check and still succeeds.
+	if counted.bytes == 0 || counted.sawKind {
+		return 0
+	}
+	fmt.Fprintf(stderr, "agentop export: this proxy ignored --with-tool-calls; %s holds no tool-call records\n", where)
+	fmt.Fprintln(stderr, "  it predates the option (`agentop update`), so it served the plain export instead of refusing")
+	return 1
 }
 
 // shellArg quotes a path for a command line this command suggests to the user. The
@@ -375,7 +439,47 @@ type lineCounter struct {
 	lines int64
 	bytes int64
 	err   error
+
+	// sawKind records whether the stream's FIRST COMPLETE RECORD carried a `kind` field, which
+	// is how this command tells a proxy that APPLIED --with-tool-calls from one that ignored it.
+	//
+	// A PROXY PREDATING THE FLAG ANSWERS 200 WITH THE PLAIN STREAM rather than refusing, so
+	// without this the user asks for tool calls, gets an export without them, and is told
+	// nothing. The signal is `kind` on the EVENT records — a current server stamps it on every
+	// line whenever the opt-in applies (spec T28) — and NOT the presence of toolCall records,
+	// because an archive with no tool calls legitimately produces none. Checking for those
+	// would report skew on a perfectly good export of a session that ran no tools.
+	//
+	// DECIDED ON A WHOLE LINE, NOT ON THE FIRST WRITE. io.Copy hands Write whatever each read
+	// returned, and a read may return fewer bytes than asked for — so the first chunk can end
+	// mid-token. An opted-in record begins `{"schema":1,"kind":`, where the token ends at byte
+	// 19, so a first chunk shorter than that would have latched sawKind false and failed a
+	// VALID export with "this proxy ignored --with-tool-calls". Rare (it needs a short first
+	// read) and wrong in the direction that breaks scripts, so the check waits for a newline.
+	//
+	// kindHead buffers only until that first newline and is then released: the scan is paid
+	// once per export, not once per megabyte of a stream that can be a month of traffic.
+	sawKind  bool
+	kindSeen bool
+	kindHead []byte
 }
+
+// settleKind decides the check from whatever is buffered, for a stream that ended without a
+// trailing newline. A no-op once a complete record has already decided it.
+func (l *lineCounter) settleKind() {
+	if l.kindSeen {
+		return
+	}
+	l.kindSeen = true
+	l.sawKind = bytes.Contains(l.kindHead, []byte(`"kind":`))
+	l.kindHead = nil
+}
+
+// kindHeadMax bounds the buffer above, so a stream that never sends a newline cannot grow it.
+// 4 KiB is far past the longest plausible record prefix — `kind` sits in the first 19 bytes of
+// an opted-in record — and reaching it means the first "line" is not a record this command
+// understands, which is answered the same way an absent `kind` is.
+const kindHeadMax = 4096
 
 func (l *lineCounter) Write(p []byte) (int, error) {
 	n, err := l.w.Write(p)
@@ -383,6 +487,21 @@ func (l *lineCounter) Write(p []byte) (int, error) {
 	for _, b := range p[:n] {
 		if b == '\n' {
 			l.lines++
+		}
+	}
+	if !l.kindSeen && n > 0 {
+		// Accumulate until the first newline ends a record, then decide from that record alone.
+		l.kindHead = append(l.kindHead, p[:n]...)
+		if i := bytes.IndexByte(l.kindHead, '\n'); i >= 0 {
+			l.kindSeen = true
+			l.sawKind = bytes.Contains(l.kindHead[:i], []byte(`"kind":`))
+			l.kindHead = nil
+		} else if len(l.kindHead) >= kindHeadMax {
+			// No newline in a record's worth of bytes: not a stream this check can read, which
+			// is answered the same way an absent `kind` is.
+			l.kindSeen = true
+			l.sawKind = bytes.Contains(l.kindHead, []byte(`"kind":`))
+			l.kindHead = nil
 		}
 	}
 	if err != nil {

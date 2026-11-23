@@ -541,7 +541,7 @@ func TestGetBody_ErrNoDetailMarksARefusalThatExplainedNothing(t *testing.T) {
 			}))
 			defer ts.Close()
 
-			_, err := New(ts.URL).Export(context.Background(), []string{"nope"}, "")
+			_, err := New(ts.URL).Export(context.Background(), []string{"nope"}, "", false)
 			if !errors.Is(err, ErrBadRequest) {
 				t.Fatalf("error = %v, want ErrBadRequest in the chain either way", err)
 			}

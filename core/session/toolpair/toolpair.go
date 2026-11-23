@@ -27,7 +27,9 @@
 // come from — hence Result carries those too, for the one consumer that wants them. The scan
 // cannot be reduced to the task-notification match alone: it must skip the history each request
 // re-sends (commonPrefix), or it is quadratic in turns — 0.26-0.47GB of text against 35-42MB
-// new, on real sessions. core/session/timeline's TestBuildBudget enforces the consequence.
+// new, on real sessions. core/session/timeline's TestBuildScalesLinearly enforces the
+// consequence: it asserts the bytes Build scans grow in step with the session rather than
+// with its square.
 //
 // NO ARGUMENT TEXT AND NO RESULT TEXT LEAVE THIS PACKAGE unless a caller asks. A Call carries
 // the SIZE of a result, never its content, and carries a call's arguments only under
@@ -161,6 +163,16 @@ type Call struct {
 	// call returned is a number an export may carry, and the text is not.
 	ResultBytes int
 
+	// ArgumentBytes is the size of the call's arguments, on exactly the same terms: the effort a
+	// call was ASKED with, as a number, where the text itself stays out.
+	//
+	// UNGATED, UNLIKE Arguments, and that pairing is the point. A consumer that must not hold
+	// argument text leaves Options.Arguments off and still gets the size — which is what lets
+	// core/sessionexport carry an effort proxy (spec T14) while holding no argument bytes at
+	// all. Measured from the wire string before it is dropped, so nothing is retained to
+	// measure it later.
+	ArgumentBytes int
+
 	// CallSeq is the seq of the response that asked for this call; ResultSeq the seq of the
 	// request that carried its result, and 0 when none did. Together they let a consumer rejoin
 	// a call to the events either side of it WITHOUT the tool-use id.
@@ -289,8 +301,9 @@ func Calls(events []model.SessionEvent, opts Options) Result {
 		return res
 	}
 	// PREALLOCATED, because a Call is ~192 bytes and a real session has thousands: letting the
-	// slice double copies megabytes for nothing, and this walk is on the timeline's 50ms budget
-	// (core/session/timeline's TestBuildBudget).
+	// slice double copies megabytes for nothing, and the timeline pane pays this walk on every
+	// refresh it asks for (core/session/timeline's BenchmarkBuild, over a 6,000-event session).
+	// That benchmark REPORTS the cost; no test asserts a threshold on it.
 	n := 0
 	for _, c := range calls {
 		if c.resp != nil && c.resp.Inference != nil {
@@ -419,15 +432,16 @@ func Calls(events []model.SessionEvent, opts Options) Result {
 		tcs := c.resp.Inference.ToolCalls
 		for i, tc := range tcs {
 			k := Call{
-				Agent:     c.agent,
-				ToolUseID: tc.ID,
-				Name:      tc.Name,
-				Start:     end,
-				CallSeq:   c.resp.Seq,
-				CallIndex: i,
-				SiblingN:  len(tcs),
-				AskedAt:   c.req.At,
-				ModelDur:  c.resp.Duration,
+				Agent:         c.agent,
+				ToolUseID:     tc.ID,
+				Name:          tc.Name,
+				Start:         end,
+				CallSeq:       c.resp.Seq,
+				CallIndex:     i,
+				SiblingN:      len(tcs),
+				AskedAt:       c.req.At,
+				ModelDur:      c.resp.Duration,
+				ArgumentBytes: len(tc.Arguments),
 			}
 			if opts.Arguments {
 				k.Arguments = tc.Arguments

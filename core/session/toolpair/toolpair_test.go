@@ -333,7 +333,8 @@ func TestReturnsAreOptional(t *testing.T) {
 }
 
 // TestOnlyNewMessagesAreScanned guards the incremental skip. Without it the scan is quadratic in
-// turns, which core/session/timeline's TestBuildBudget measures as a 10-100x cliff.
+// turns, which core/session/timeline's TestBuildScalesLinearly catches: it fails when the bytes
+// Build scans over 6,000 events exceed three times what it scans over 3,000.
 func TestOnlyNewMessagesAreScanned(t *testing.T) {
 	var r rec
 	history := []model.InferenceMessage{user("aaaa"), user("bbbb")}

@@ -209,7 +209,20 @@ func (c *Client) ListSessionsArchived(ctx context.Context) (SessionList, error) 
 // caller's read fails instead of returning io.EOF (an older proxy predating that ends
 // the body cleanly, and a truncated export there is indistinguishable from a whole one).
 // Every complete line already read stays valid NDJSON either way.
-func (c *Client) Export(ctx context.Context, sessions []string, since string) (io.ReadCloser, error) {
+// withToolCalls ADDS the paired tool-call records to the stream (`?include=toolCalls`).
+//
+// A PROXY PREDATING THE PARAMETER IGNORES IT AND ANSWERS 200 WITH THE PLAIN STREAM. net/url
+// puts unknown keys in the query like any other, and that handler never looked at `include`,
+// so there is no refusal to rely on: the caller asked for tool calls and silently received an
+// export without them. An earlier version of this comment claimed a 400, which was true only
+// of a server that already has the feature — exactly the case where it does not matter.
+//
+// So detection is the CALLER's job, and ExportSkewError is what it gets. Do not infer support
+// from the presence of toolCall records: an archive with no tool calls legitimately produces
+// none, so their absence cannot distinguish an old proxy from a quiet one. The signal is
+// `kind` on the EVENT records, which a current server stamps on every line whenever the
+// opt-in applies (spec T28) and an old one never writes at all.
+func (c *Client) Export(ctx context.Context, sessions []string, since string, withToolCalls bool) (io.ReadCloser, error) {
 	q := url.Values{}
 	for _, id := range sessions {
 		if id != "" {
@@ -218,6 +231,9 @@ func (c *Client) Export(ctx context.Context, sessions []string, since string) (i
 	}
 	if since != "" {
 		q.Set("since", since)
+	}
+	if withToolCalls {
+		q.Set("include", "toolCalls")
 	}
 	path := "/v1/export"
 	if len(q) > 0 {

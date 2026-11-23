@@ -56,6 +56,20 @@ const SchemaVersion = 1
 type Record struct {
 	Schema int `json:"schema"`
 
+	// Kind is `event`, and is WRITTEN ONLY ON A STREAM THAT ALSO CARRIES toolCall RECORDS —
+	// that is, only under the export's opt-in (spec T28). A plain GET /v1/export must stay
+	// BYTE-IDENTICAL to the one that shipped before toolCall records existed (T20), and adding
+	// a key to every record would break that for every consumer already parsing the file.
+	//
+	// So on an opted-in stream a consumer can select on `kind` in both directions; on a plain
+	// one an absent `kind` still reads as an event record, which keeps a file from either mode
+	// readable by the same reader. FromEvent does not set it — WriteEvent does, because the
+	// opt-in is a property of the stream rather than of the event.
+	//
+	// TestRecord_EveryFieldIsPopulated exempts this field for that reason: it is the one field
+	// here whose correct value on the default path is empty.
+	Kind string `json:"kind,omitempty"`
+
 	// --- identity ---
 
 	// SessionID is the session the event belongs to, as the client asserted it.
