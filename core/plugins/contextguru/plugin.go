@@ -149,7 +149,7 @@ func (m cgModel) Complete(ctx context.Context, prompt string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if resp.Usage != nil && m.report != (pipeline.OpReporter{}) {
+	if resp.Usage != nil {
 		cached := resp.Usage.CachedTokens()
 		accepted := m.report.Report(accountant.Operation{
 			Kind: accountant.KindSpend,

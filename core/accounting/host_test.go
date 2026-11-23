@@ -598,10 +598,11 @@ func TestHost_BillingFromClientHeaderBeforeRewrite(t *testing.T) {
 }
 
 // TestHost_BillingSurvivesAnEarlierInboundRewrite reproduces the review finding on host.go:214:
-// the accountant is wired on the OUTBOUND pipeline only, and every listener runs its inbound
+// the accountant is wired on the OUTBOUND pipeline only, and a listener that ran its inbound
 // pipeline's own Run — with no accountant attached, so RequestStart never fires on it — on this
-// pctx BEFORE the outbound one. jwt-validation's placeholder_mode and token-exchange both rewrite
-// Authorization on the inbound chain. Reading pctx.Headers fresh at outbound RequestStart time
+// pctx BEFORE the outbound one. No shipped listener does that today (each chain gets its own pctx;
+// see BillingSnapshot), so this pins the first-Run rule for a listener that would. jwt-validation's
+// placeholder_mode and token-exchange both rewrite Authorization on the inbound chain. Reading pctx.Headers fresh at outbound RequestStart time
 // (the pre-fix behavior) would see that rewrite instead of the client's own credential, silently
 // reporting every saving on the request as basis "unknown" rather than "usd" or
 // "subscriptionEquivalent" — zeroing the headline dollar totals for exactly this (common,
@@ -633,7 +634,8 @@ func TestHost_BillingSurvivesAnEarlierInboundRewrite(t *testing.T) {
 	inf.Model = "claude-sonnet-4-5"
 	pctx.Extensions.Inference = &inf
 
-	// Inbound first, outbound second — the same pctx, the same order every listener runs them in.
+	// Inbound first, outbound second — the same pctx, the order a listener sharing one pctx would
+	// run them in.
 	if act := inbound.Run(context.Background(), pctx); act.Type != pipeline.Continue {
 		t.Fatalf("inbound action = %v", act.Type)
 	}
