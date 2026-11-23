@@ -210,6 +210,7 @@ decides:
   A request already sent with a substitute is never sent again, so a refused
   substitute reaches the agent; so does a refusal when the server's list names no
   model for the word, or none has been read yet, recorded as `skip/no_substitute`.
+  The session drops a refused substitute, so its next request is decided again.
   Any other answer — a bad key's `401`, a rate limit, a server error — reaches the
   agent as the server sent it. The lists are fetched from `GET /v1/models` with
   each server's key when the router starts and hourly after, the last good one
