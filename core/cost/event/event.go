@@ -506,6 +506,10 @@ func (e Event) Trust() Trust {
 	switch e.IncompleteReason {
 	case pricing.ReasonSplitUnreported:
 		return TrustApproximate
+	case pricing.ReasonCacheWrite1hRateEstimated:
+		// Named, not left to default: the 1h writes priced at the 5m rate, and a 1h
+		// write costs more than a 5m one, so the figure is low.
+		return TrustFloor
 	default:
 		// Every other reason names a figure known to be LOW — and so does an EMPTY one, which is
 		// a producer that set Incomplete without saying why. Treating that as approximate would

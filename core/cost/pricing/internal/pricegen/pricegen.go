@@ -73,13 +73,21 @@ func BundledProviders() string {
 // pricing.BundleableRate allows is therefore dropped whole rather than carried at
 // its base rate; see ratesOf.
 //
-// STILL NOT EVERY VARIANT UPSTREAM PUBLISHES. _above_512k, the _above_1hr
-// cache-write premium, and the per-service-tier suffixes (_flex, _priority,
-// _batches, _decisions, including their _above_272k combinations) remain out of
-// scope — see pricing.Tier. Exact JSON tags are what keeps them out: a tag of
-// input_cost_per_token_above_272k_tokens does not match that field's _flex
+// STILL NOT EVERY VARIANT UPSTREAM PUBLISHES. _above_512k and the per-service-tier
+// suffixes (_flex, _priority, _batches, _decisions, including their _above_272k
+// combinations) remain out of scope. Exact JSON tags are what keeps them out: a tag
+// of input_cost_per_token_above_272k_tokens does not match that field's _flex
 // sibling, so a suffix added upstream is ignored rather than silently flattened
 // into the tier it resembles.
+//
+// LiteLLM's _above_1hr cache-write field is not one of these gaps: it is never
+// read, on purpose, even where it exists. pricing.Rates carries no slot for an
+// explicit 1-hour rate (that was tried and backed out — nothing populated it), so
+// CostWith1h derives the 1-hour price from the bundled row's own input rate
+// instead (pricing.Rates.CacheWrite1hRate), the same as it does for a configured
+// or remote one. Reading the LiteLLM field would make the bundled table the one
+// source that skips the derivation, for no documented reason to trust that field
+// over the derivation everywhere else.
 const (
 	contextThreshold200k = 200_000
 	contextThreshold272k = 272_000

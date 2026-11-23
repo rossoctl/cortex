@@ -115,7 +115,7 @@ func Avoided(pctx *pipeline.Context, rates pricing.Resolver) []event.Saving {
 		// add it to a cost total in either direction — so splitting it by tier would invite
 		// exactly the addition the invariant forbids, and compound a bytes-to-tokens estimate
 		// with a modelled ratio into a figure nobody could defend.
-		if micros, _, prov, ok, _ := modelledCost(rates, pctx.Host, model, saved, prompt); ok {
+		if micros, _, prov, ok, _, _ := modelledCost(rates, pctx.Host, model, saved, prompt); ok {
 			s.USD, s.Provenance = float64(micros)/1e6, prov.String()
 		}
 		// Published even with no dollar figure: the token saving is still known, and

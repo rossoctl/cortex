@@ -65,12 +65,15 @@ func (r *Registry) CurrencyFor(endpoint, model string) string {
 // match but its tiers do not cover the request. Reporting "bundled" alongside a
 // figure of zero would label an absent answer as a sourced one, which is the
 // mislabelling this package's provenance exists to prevent.
+//
+// Priced through CostWith1h, like every other modelled figure, so the 1-hour
+// cache-write premium is included.
 func (r *Registry) Cost(endpoint, model string, u Usage) (micros int64, prov Provenance, ok bool) {
 	rates, prov := r.Resolve(endpoint, model, u.PromptTotal())
 	if prov == ProvNone {
 		return 0, ProvNone, false
 	}
-	micros, ok = Cost(rates, u)
+	_, micros, ok, _, _ = CostWith1h(rates, u, AnthropicShaped(model))
 	if !ok {
 		return 0, ProvNone, false
 	}

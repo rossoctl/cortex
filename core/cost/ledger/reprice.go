@@ -91,6 +91,11 @@ func repriceTiers(rows []Row, res pricing.Resolver) {
 			// reconstructed from the rows themselves.
 			continue
 		}
+		// CostByTier, not pricing.CostWith1h: a Row has no 1h cache-write count, so
+		// the 1h premium cannot be modelled here. The split is a ratio that
+		// ApportionTiers scales to the row's settled CostMicros, which does include
+		// the premium. A row with 1h writes therefore shows a cache-write share that is
+		// a little low. Closing that needs a 1h token column on Row, a wire change.
 		tiers, _, ok, _ := pricing.CostByTier(rates, mean)
 		if !ok {
 			continue

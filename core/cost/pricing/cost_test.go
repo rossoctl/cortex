@@ -153,6 +153,30 @@ func TestCost_NegativeTokensRefused(t *testing.T) {
 	}
 }
 
+// TestCost_CacheWrite1hAboveCacheWriteRefused: CacheWrite1h is a SUBSET of
+// CacheWrite, so a report with more 1h writes than writes altogether is an
+// impossible count — the same class of refusal as a negative or
+// past-maxPlausibleTokens counter, just shaped as a relationship between two
+// counters. u.tokens() never includes CacheWrite1h (it is not one of the four
+// tiers Cost sums over), so without this check PlausibleUsage would not look at it.
+func TestCost_CacheWrite1hAboveCacheWriteRefused(t *testing.T) {
+	if !PlausibleUsage(Usage{CacheWrite: 1000, CacheWrite1h: 1000}) {
+		t.Error("CacheWrite1h == CacheWrite should be plausible (the whole write was 1h)")
+	}
+	if PlausibleUsage(Usage{CacheWrite: 1000, CacheWrite1h: 1001}) {
+		t.Error("CacheWrite1h > CacheWrite should be refused: it cannot be a subset of a smaller total")
+	}
+	if PlausibleUsage(Usage{CacheWrite: 0, CacheWrite1h: 1}) {
+		t.Error("CacheWrite1h > 0 with CacheWrite == 0 should be refused, for the same reason")
+	}
+	if PlausibleUsage(Usage{CacheWrite: 1000, CacheWrite1h: -1}) {
+		t.Error("a negative CacheWrite1h should be refused")
+	}
+	if _, ok := Cost(claudeOpus(), Usage{CacheWrite: 1000, CacheWrite1h: 1001, Output: 10}); ok {
+		t.Error("Cost priced a request whose CacheWrite1h exceeds its CacheWrite")
+	}
+}
+
 func TestCost_UnpricedModelIsUnpriced(t *testing.T) {
 	if _, ok := Cost(Rates{}, Usage{Input: 1000}); ok {
 		t.Error("empty Rates reported priced")
@@ -253,5 +277,61 @@ func TestCost_PerTierInvariantCoversEveryTier(t *testing.T) {
 				t.Errorf("removing the %s rate unpriced a request that does not use it", tc.name)
 			}
 		})
+	}
+}
+
+// CostWith1h prices the base and the 1h premium at the same threshold rates, even
+// when it is given rates that are not flattened yet. Above 200k prompt tokens the
+// rates double: 300k writes at 7.5/M = $2.25, plus 300k x (2 x 6 - 7.5)/M = $1.35.
+func TestCostWith1h_PremiumUsesTheThresholdRates(t *testing.T) {
+	var r Rates
+	r.Base[TierInput], r.Set[TierInput] = 3.0/perMillion, true
+	r.Base[TierCacheWrite], r.Set[TierCacheWrite] = 3.75/perMillion, true
+	r.Thresholds = []ContextThreshold{{
+		AbovePromptTokens: 200_000,
+		Rate:              [numTiers]float64{TierInput: 6.0 / perMillion, TierCacheWrite: 7.5 / perMillion},
+		Set:               [numTiers]bool{TierInput: true, TierCacheWrite: true},
+	}}
+	_, micros, ok, refusal, _ := CostWith1h(r, Usage{CacheWrite: 300_000, CacheWrite1h: 300_000}, true)
+	if !ok {
+		t.Fatalf("refused: %v", refusal)
+	}
+	if want := int64(3_600_000); micros != want {
+		t.Errorf("micros = %d, want %d ($3.60)", micros, want)
+	}
+}
+
+// With the Anthropic-shape requirement, the premium is proportional to the base
+// (see cacheWrite1hPremium's doc), so an implausible base is refused by CostByTier
+// before CostWith1h ever computes a premium — not refused BECAUSE of the premium.
+// TestCacheWrite1hPremium_AnUnrepresentableDeltaOverflows below pins premiumOverflow
+// itself, bypassing CostByTier's ceiling, so that outcome stays covered too.
+func TestCostWith1h_AnImplausibleBaseIsRefusedBeforeThePremium(t *testing.T) {
+	var r Rates
+	r.Base[TierInput], r.Set[TierInput] = 16.0, true
+	r.Base[TierCacheWrite], r.Set[TierCacheWrite] = 20.0, true // Anthropic-shaped: 1.25x input
+	u := Usage{CacheWrite: 1000, CacheWrite1h: 1000}           // base = 1000 x $20 = $20,000
+	if _, _, ok, _ := CostByTier(r, u); ok {
+		t.Fatal("fixture broken: the base figure alone should already exceed the plausible-total " +
+			"ceiling, so CostByTier refuses before CostWith1h ever computes a premium")
+	}
+	_, micros, ok, refusal, _ := CostWith1h(r, u, true)
+	if ok || micros != 0 || refusal != RefusalImplausibleTotal {
+		t.Errorf("ok=%v micros=%d refusal=%v, want false/0/%v", ok, micros, refusal, RefusalImplausibleTotal)
+	}
+}
+
+// TestCacheWrite1hPremium_AnUnrepresentableDeltaOverflows is the unit-level version
+// of the above: with the Anthropic-shape requirement, a premium that cannot fit in
+// micros is already only reachable once the token count itself is implausible (see
+// the test above), so this calls cacheWrite1hPremium directly to pin premiumOverflow
+// without going through CostByTier's own ceiling.
+func TestCacheWrite1hPremium_AnUnrepresentableDeltaOverflows(t *testing.T) {
+	var r Rates
+	r.Base[TierInput], r.Set[TierInput] = 2e7, true
+	r.Base[TierCacheWrite], r.Set[TierCacheWrite] = 2.5e7, true // Anthropic-shaped: 1.25x input
+	micros, outcome, estimated := cacheWrite1hPremium(r, 1000, true)
+	if outcome != premiumOverflow || micros != 0 || estimated {
+		t.Errorf("outcome=%v micros=%d estimated=%v, want premiumOverflow/0/false", outcome, micros, estimated)
 	}
 }

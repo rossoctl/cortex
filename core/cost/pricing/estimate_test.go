@@ -90,3 +90,33 @@ func TestTierString_MatchesConfigSpelling(t *testing.T) {
 		t.Errorf("out-of-range tier = %q, want %q", got, "unknown")
 	}
 }
+
+// TestAvoidedUsage_KeepsTheOneHourShare: a cache-write saving carries the request's 1h
+// share, so it prices at the rate the request's own writes were priced at.
+func TestAvoidedUsage_KeepsTheOneHourShare(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		prompt Usage
+		want1h int
+	}{
+		{"all 1h", Usage{CacheWrite: 1000, CacheWrite1h: 1000}, 40},
+		{"all 5m", Usage{CacheWrite: 1000}, 0},
+		{"mixed, split by the same ratio", Usage{CacheWrite: 1000, CacheWrite1h: 250}, 10},
+		{"mixed, rounded to the nearest token", Usage{CacheWrite: 3, CacheWrite1h: 1}, 13},
+		{"an impossible 1h count is ignored", Usage{CacheWrite: 1000, CacheWrite1h: 2000}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, tier := AvoidedUsage(tc.prompt, 40)
+			if tier != TierCacheWrite || got.CacheWrite != 40 {
+				t.Fatalf("got %+v in tier %v, want 40 cache-write tokens", got, tier)
+			}
+			if got.CacheWrite1h != tc.want1h {
+				t.Errorf("CacheWrite1h = %d, want %d", got.CacheWrite1h, tc.want1h)
+			}
+		})
+	}
+	// Not a cache-write saving: no 1h part, whatever the request's writes were.
+	if got, _ := AvoidedUsage(Usage{CacheRead: 5000, CacheWrite: 100, CacheWrite1h: 100}, 40); got.CacheWrite1h != 0 {
+		t.Errorf("a cache-read saving carries CacheWrite1h = %d, want 0", got.CacheWrite1h)
+	}
+}
