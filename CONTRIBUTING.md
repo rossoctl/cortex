@@ -386,16 +386,19 @@ signal there is — and the page is explicit about what that does and does not s
 
 Two things worth knowing before reading it:
 
-- **`release-smoke-linux.yaml` is in those numbers.** It installs the way a user
-  does, `curl | sh` from GitHub Releases, which is the point of it — so it cannot
-  be told apart from a real Linux user by behaviour. The page subtracts it by
-  *count* instead: **one** install per job lands in the figures the page reads,
-  with one job per architecture. Each job installs three times — a fresh install
+- **`release-smoke-linux.yaml` and `release-smoke-macos.yaml` are in those
+  numbers.** They install the way a user does, `curl | sh` from GitHub Releases,
+  which is the point of them — so they cannot be told apart from a real user by
+  behaviour. The page subtracts them by *count* instead: **one** install per job
+  lands in the figures the page reads, with one job per runner, and each run is
+  taken off its own platform's column. Each job installs three times — a fresh install
   of the newest stable tag, an upgrade to the tag under test, and a no-op re-run —
   but on a push to `main` the latter two land on `main-latest`, which the collector
-  excludes because `--clobber` resets its download counts on every push. Change
-  that structure, and the estimate drifts until `scripts/collect-install-stats.sh`
-  is updated to match.
+  excludes because `--clobber` resets its download counts on every push. On a tag
+  push they land on the tag under test, and nothing subtracts them: each release
+  carries two installs per smoke job that the page counts as people: four on Linux
+  and six on Mac with today's runners. Change that structure, and the estimate drifts until
+  `scripts/collect-install-stats.sh` is updated to match.
 - **The figures include us.** At the current scale, maintainers running the
   installer are a large share of the total. Do not read a daily number as new users.
 

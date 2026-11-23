@@ -20,7 +20,7 @@ including the PR title format and the Go checks that CI gates on, are in the roo
 | `spellcheck_action.yml` | PR | Spellcheck on markdown files — **disabled** (`if: false`) |
 | `site-dispatch.yaml` | Push to main on `scripts/install.sh`, manual | Sends `docs-updated` to `rossoctl/.github`, so the site's `/cortex/install.sh` copy updates in minutes, not at its daily schedule. Needs the `SITE_DISPATCH_TOKEN` secret; without it, a warning only |
 
-Also: `release-smoke-linux.yaml`, `dependabot-tidy.yml`, `install-stats.yaml`, `project.yml`, `self-assign.yml`, `stale.yaml`.
+Also: `release-smoke-linux.yaml` and `release-smoke-macos.yaml` (install a just-published release as a user does, on each platform; both counted by `scripts/collect-install-stats.sh`), `dependabot-tidy.yml`, `install-stats.yaml`, `project.yml`, `self-assign.yml`, `stale.yaml`.
 
 `ci.yaml`'s Python job pip-installs `python-keycloak==5.3.1`, two majors behind the
 `>=7.1.1,<8` that `requirements.txt` declares. CI does not test the declared version.
