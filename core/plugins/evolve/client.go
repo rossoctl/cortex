@@ -122,10 +122,15 @@ type mcpEvolve struct {
 	gen int
 	// closeHook, when a test sets it, runs just before a session's client is closed.
 	closeHook func(*conn)
-	// connectBudget is connectTimeout, shortened by tests.
+	// connectBudget is connectTimeout; tests set their own.
 	connectBudget time.Duration
+	// now is the clock a connect's deadline is set from: time.Now, or a test's.
+	now func() time.Time
 	// afterSetup, when a test sets it, runs once a session's setup calls are done.
 	afterSetup func()
+	// initializing, when a test sets it, runs with initialize's context just
+	// before initialize is sent.
+	initializing func(context.Context)
 }
 
 func newMCPEvolve(url, profile, prompt string, timeout time.Duration) *mcpEvolve {
@@ -136,6 +141,7 @@ func newMCPEvolve(url, profile, prompt string, timeout time.Duration) *mcpEvolve
 		prompt:        prompt,
 		timeout:       timeout,
 		connectBudget: connectTimeout,
+		now:           time.Now,
 		// No client timeout: the SSE stream is long-lived. Calls are bounded by ctx.
 		// The dial and response-header timeouts bound only getting an answer started,
 		// so a server that accepts the connection and never answers can't hold one.
@@ -336,7 +342,7 @@ func (e *mcpEvolve) dial(cn *conn) (*mcpclient.Client, error) {
 	// One deadline for the whole connect: starting the stream and initializing.
 	// With a deadline each, a late endpoint event gave initialize a full budget
 	// of its own, and a connect could take twice as long as it should.
-	deadline := time.Now().Add(e.connectBudget)
+	deadline := e.now().Add(e.connectBudget)
 	timer := time.AfterFunc(time.Until(deadline), cancel)
 	fail := func(err error) (*mcpclient.Client, error) {
 		timer.Stop()
@@ -351,6 +357,9 @@ func (e *mcpEvolve) dial(cn *conn) (*mcpclient.Client, error) {
 	init := mcp.InitializeRequest{}
 	init.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
 	init.Params.ClientInfo = mcp.Implementation{Name: "cortex-evolve-plugin", Version: "1"}
+	if e.initializing != nil {
+		e.initializing(initCtx)
+	}
 	if _, err := c.Initialize(initCtx, init); err != nil {
 		return fail(err)
 	}

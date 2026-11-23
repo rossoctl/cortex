@@ -39,6 +39,9 @@ type fakeEvolveServer struct {
 	// holdGuidelines and holdLearn, when set, keep those tools from answering until
 	// they are closed.
 	holdGuidelines, holdLearn chan struct{}
+	// calling, when set, receives each tool's name as its call arrives. Tests give
+	// it room for every call they make.
+	calling chan string
 	// paged serves list_entities a page at a time: 7 and 8, then 9.
 	paged bool
 	// cursor, when set, makes list_entities serve 7 alone, on and on: the same
@@ -49,9 +52,12 @@ type fakeEvolveServer struct {
 
 func (f *fakeEvolveServer) record(req mcp.CallToolRequest) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.calls = append(f.calls, req)
 	f.headers = append(f.headers, req.Header)
+	f.mu.Unlock()
+	if f.calling != nil {
+		f.calling <- req.Params.Name
+	}
 }
 
 func (f *fakeEvolveServer) start(t *testing.T) string {
@@ -282,18 +288,14 @@ func TestMCPEvolve_ToolErrorsAreUnavailable(t *testing.T) {
 
 func TestMCPEvolve_UnreachableIsUnavailable(t *testing.T) {
 	e := newMCPEvolve("http://127.0.0.1:1/sse", "cortex", "environment-grounded", time.Second)
+	e.connectBudget = time.Hour
 	defer e.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
 	for range 2 {
-		// A refused connection fails at once, not at the call's deadline, the
-		// second time too: nothing is left waiting for a stream that never opened.
-		start := time.Now()
-		if _, err := e.Guidelines(ctx, "cortex", "t", "s"); !errors.Is(err, ErrUnavailable) {
+		// A refused connection fails at once, the second time too: nothing is left
+		// waiting for a stream that never opened. The call has no deadline and the
+		// connect an hour, so a call that waited for either would not return.
+		if _, err := e.Guidelines(context.Background(), "cortex", "t", "s"); !errors.Is(err, ErrUnavailable) {
 			t.Fatalf("err = %v", err)
-		}
-		if took := time.Since(start); took > time.Second {
-			t.Fatalf("a refused connection took %v to fail", took)
 		}
 	}
 }
@@ -379,25 +381,30 @@ func TestMCPEvolve_AnEvolveWithoutThePromptStillLearns(t *testing.T) {
 }
 
 // hungStream answers the SSE request with headers and then nothing: no endpoint
-// event, so the session never comes up.
-func hungStream(t *testing.T) string {
+// event, so the session never comes up. arrived is closed once the headers are
+// sent.
+func hungStream(t *testing.T) (url string, arrived <-chan struct{}) {
 	t.Helper()
 	stop := make(chan struct{})
+	came := make(chan struct{})
+	var once sync.Once
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		w.(http.Flusher).Flush()
+		once.Do(func() { close(came) })
 		select {
 		case <-r.Context().Done():
 		case <-stop:
 		}
 	}))
 	t.Cleanup(func() { close(stop); srv.Close() })
-	return srv.URL + "/sse"
+	return srv.URL + "/sse", came
 }
 
-// silentListener accepts connections and never answers them.
-func silentListener(t *testing.T) string {
+// silentListener accepts connections and never answers them. arrived is closed
+// once the first is accepted.
+func silentListener(t *testing.T) (url string, arrived <-chan struct{}) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -406,6 +413,8 @@ func silentListener(t *testing.T) string {
 	var mu sync.Mutex
 	var conns []net.Conn
 	accepting := make(chan struct{})
+	came := make(chan struct{})
+	var once sync.Once
 	go func() {
 		defer close(accepting)
 		for {
@@ -416,6 +425,7 @@ func silentListener(t *testing.T) string {
 			mu.Lock()
 			conns = append(conns, c)
 			mu.Unlock()
+			once.Do(func() { close(came) })
 		}
 	}()
 	t.Cleanup(func() {
@@ -429,44 +439,57 @@ func silentListener(t *testing.T) string {
 			_ = c.Close()
 		}
 	})
-	return "http://" + ln.Addr().String() + "/sse"
+	return "http://" + ln.Addr().String() + "/sse", came
 }
 
-func TestMCPEvolve_AHungEvolveCostsACallOnlyItsOwnTimeout(t *testing.T) {
-	for name, url := range map[string]func(*testing.T) string{
+func TestMCPEvolve_AHungEvolveHoldsACallOnlyUntilItsOwnCancellation(t *testing.T) {
+	for name, hung := range map[string]func(*testing.T) (string, <-chan struct{}){
 		"no endpoint event": hungStream,
 		"silent listener":   silentListener,
 	} {
 		t.Run(name, func(t *testing.T) {
-			e := newMCPEvolve(url(t), "cortex", "environment-grounded", 200*time.Millisecond)
+			url, arrived := hung(t)
+			e := newMCPEvolve(url, "cortex", "environment-grounded", time.Second)
+			// The connect's own bounds are an hour, so only the calls' contexts end
+			// the calls.
+			e.connectBudget = time.Hour
+			e.http.Transport.(*http.Transport).ResponseHeaderTimeout = time.Hour
 			// Two sessions' first requests at once: neither waits on the other, and
-			// each returns at its own 200 ms deadline. Before, the first waited 30 s
-			// (no endpoint event) or forever (silent listener), and the second
-			// queued behind it.
-			start := time.Now()
-			var wg sync.WaitGroup
-			for range 2 {
-				wg.Add(1)
+			// each returns when its own context ends, with the connect still hung.
+			// Before, the first waited 30 s (no endpoint event) or forever (silent
+			// listener), and the second queued behind it.
+			var cancels [2]context.CancelFunc
+			var done [2]chan error
+			for i := range 2 {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancels[i], done[i] = cancel, make(chan error, 1)
 				go func() {
-					defer wg.Done()
-					ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-					defer cancel()
-					if _, err := e.Guidelines(ctx, "cortex", "t", "s"); !errors.Is(err, ErrUnavailable) {
-						t.Errorf("err = %v, want ErrUnavailable", err)
-					}
+					_, err := e.Guidelines(ctx, "cortex", "t", "s")
+					done[i] <- err
 				}()
 			}
-			wg.Wait()
-			if took := time.Since(start); took > 2*time.Second {
-				t.Fatalf("calls took %v, want about their 200ms timeout", took)
+			<-arrived
+			// A call ended by its own cancellation fails at the connect with
+			// context.Canceled. One that waited for the connect fails with what
+			// ended it, such as mcp-go's own 30 s wait for the endpoint event.
+			ownCancellation := func(err error) bool {
+				return errors.Is(err, ErrUnavailable) && strings.HasSuffix(err.Error(), "connect: "+context.Canceled.Error())
 			}
-			closed := make(chan struct{})
-			go func() { e.Close(); close(closed) }()
+			cancels[0]()
+			if err := <-done[0]; !ownCancellation(err) {
+				t.Fatalf("first call: err = %v, want its own cancellation", err)
+			}
 			select {
-			case <-closed:
-			case <-time.After(time.Second):
-				t.Fatal("Close waited for the hung connect")
+			case err := <-done[1]:
+				t.Fatalf("second call returned before its context ended: %v", err)
+			default:
 			}
+			cancels[1]()
+			if err := <-done[1]; !ownCancellation(err) {
+				t.Fatalf("second call: err = %v, want its own cancellation", err)
+			}
+			// Close returns with the connect still hung.
+			e.Close()
 		})
 	}
 }
@@ -492,34 +515,73 @@ func (f *fakeEvolveServer) called(tool string) bool {
 	return false
 }
 
-func TestMCPEvolve_OneCallTimingOutLeavesTheOthersRunning(t *testing.T) {
-	f := &fakeEvolveServer{holdGuidelines: make(chan struct{}), holdLearn: make(chan struct{})}
+// postAnswered closes answered once a POST naming tool has its response: evolve
+// has accepted the call, and its reply is to come on the stream.
+type postAnswered struct {
+	base     http.RoundTripper
+	tool     string
+	answered chan struct{}
+	once     sync.Once
+}
+
+func (p *postAnswered) RoundTrip(req *http.Request) (*http.Response, error) {
+	var body []byte
+	if req.Body != nil {
+		body, _ = io.ReadAll(req.Body)
+		req.Body = io.NopCloser(strings.NewReader(string(body)))
+	}
+	resp, err := p.base.RoundTrip(req)
+	if err == nil && req.Method == http.MethodPost && strings.Contains(string(body), p.tool) {
+		p.once.Do(func() { close(p.answered) })
+	}
+	return resp, err
+}
+
+func TestMCPEvolve_OneCallEndingLeavesTheOthersRunning(t *testing.T) {
+	f := &fakeEvolveServer{holdGuidelines: make(chan struct{}), holdLearn: make(chan struct{}), calling: make(chan string, 8)}
 	e := newMCPEvolve(f.start(t), "cortex", "environment-grounded", time.Second)
+	sent := &postAnswered{base: e.http.Transport, tool: `"get_guidelines_with_attribution"`, answered: make(chan struct{})}
+	e.http.Transport = sent
 	defer e.Close()
+	defer close(f.holdGuidelines)
 
 	learned := make(chan error, 1)
 	go func() {
 		learned <- e.Learn(context.Background(), "cortex", Trajectory{Messages: []map[string]any{{"role": "user", "content": "x"}}})
 	}()
 	// Wait for process_trajectory to start, or for Learn to fail before it does.
-	for deadline := time.Now().Add(5 * time.Second); !f.called("process_trajectory"); time.Sleep(5 * time.Millisecond) {
+	for tool := ""; tool != "process_trajectory"; {
 		select {
+		case tool = <-f.calling:
 		case err := <-learned:
 			t.Fatalf("Learn ended before process_trajectory: %v", err)
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("process_trajectory never started")
 		}
 	}
-	// A session's fetch times out while evolve is still learning. Before, the
-	// timeout closed the shared session and failed the learning call with it, so
-	// evolve's minutes of LLM work were sent again.
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	_, err := e.Guidelines(ctx, "cortex", "t", "s")
+	// A session's fetch ends while waiting for its reply, with evolve still
+	// learning. Before, a fetch that timed out there closed the shared session and
+	// failed the learning call with it, so evolve's minutes of LLM work were sent
+	// again.
+	ctx, cancel := context.WithCancel(context.Background())
+	fetched := make(chan error, 1)
+	go func() {
+		_, err := e.Guidelines(ctx, "cortex", "t", "s")
+		fetched <- err
+	}()
+	select {
+	case <-sent.answered:
+	case err := <-fetched:
+		t.Fatalf("fetch ended before evolve accepted it: %v", err)
+	}
 	cancel()
-	if !errors.Is(err, ErrUnavailable) {
+	if err := <-fetched; !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("fetch err = %v, want ErrUnavailable", err)
+	}
+	// A call retires its session before it returns, so this is already settled.
+	e.mu.Lock()
+	kept := e.client != nil && !e.client.retired
+	e.mu.Unlock()
+	if !kept {
+		t.Error("the fetch's cancellation retired the session evolve is still learning on")
 	}
 	close(f.holdLearn)
 	if err := <-learned; err != nil {
@@ -665,20 +727,15 @@ func TestMCPEvolve_ASessionWhoseStreamEndedIsReplaced(t *testing.T) {
 	f := &fakeEvolveServer{}
 	e := newMCPEvolve(cutStream(t, f), "cortex", "environment-grounded", time.Second)
 	defer e.Close()
-	// The first call's reply can't arrive: the stream ended after initialize.
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	_, err := e.Guidelines(ctx, "cortex", "t", "s")
-	cancel()
-	if !errors.Is(err, ErrUnavailable) {
+	// The first call's reply can't arrive: the stream ended after initialize. The
+	// call fails when the plugin sees the stream end; it has no deadline.
+	if _, err := e.Guidelines(context.Background(), "cortex", "t", "s"); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("err = %v, want ErrUnavailable", err)
 	}
 	// Before, the session was kept: evolve accepted every later request on it, and
 	// each call waited out its deadline for a reply.
-	start := time.Now()
-	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if _, err := e.Guidelines(ctx, "cortex", "t", "s"); err != nil {
-		t.Fatalf("after %v, still on the dead session: %v", time.Since(start), err)
+	if _, err := e.Guidelines(context.Background(), "cortex", "t", "s"); err != nil {
+		t.Fatalf("still on the dead session: %v", err)
 	}
 }
 
@@ -718,16 +775,14 @@ func TestMCPEvolve_ASessionIsClosedOnlyAfterItsReaderStopped(t *testing.T) {
 	f := &fakeEvolveServer{}
 	e := newMCPEvolve(f.start(t), "cortex", "environment-grounded", time.Second)
 	e.http.Transport = &failBodyOnce{base: e.http.Transport}
-	var mu sync.Mutex
-	var closes, early int
+	// Each close reports whether the session's reader had stopped.
+	closed := make(chan bool, 4)
 	e.closeHook = func(cn *conn) {
-		mu.Lock()
-		defer mu.Unlock()
-		closes++
 		select {
 		case <-cn.readerDone:
+			closed <- true
 		default:
-			early++
+			closed <- false
 		}
 	}
 
@@ -740,19 +795,21 @@ func TestMCPEvolve_ASessionIsClosedOnlyAfterItsReaderStopped(t *testing.T) {
 		t.Fatalf("not reconnected: %v", err)
 	}
 	e.Close()
-	waitFor(t, func() bool { mu.Lock(); defer mu.Unlock(); return closes >= 2 })
-	mu.Lock()
-	defer mu.Unlock()
-	if early > 0 {
-		t.Fatalf("%d of %d sessions were closed while their reader could still deliver a reply", early, closes)
+	for i := range 2 {
+		if stopped := <-closed; !stopped {
+			t.Fatalf("session %d was closed while its reader could still deliver a reply", i+1)
+		}
 	}
 }
 
-// lateEndpoint sends the endpoint event after a delay and then never answers
-// initialize: evolve accepts the request and sends no reply.
-func lateEndpoint(t *testing.T, delay time.Duration) string {
+// lateEndpoint sends the endpoint event once release is closed and then never
+// answers initialize: evolve accepts the request and sends no reply. arrived is
+// closed once the stream's headers are sent.
+func lateEndpoint(t *testing.T, release <-chan struct{}) (url string, arrived <-chan struct{}) {
 	t.Helper()
 	stop := make(chan struct{})
+	came := make(chan struct{})
+	var once sync.Once
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			w.WriteHeader(http.StatusAccepted)
@@ -761,8 +818,9 @@ func lateEndpoint(t *testing.T, delay time.Duration) string {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		w.(http.Flusher).Flush()
+		once.Do(func() { close(came) })
 		select {
-		case <-time.After(delay):
+		case <-release:
 		case <-stop:
 			return
 		}
@@ -774,23 +832,45 @@ func lateEndpoint(t *testing.T, delay time.Duration) string {
 		}
 	}))
 	t.Cleanup(func() { close(stop); srv.Close() })
-	return srv.URL + "/sse"
+	return srv.URL + "/sse", came
 }
 
 func TestMCPEvolve_OneDeadlineCoversStartingAndInitializing(t *testing.T) {
-	e := newMCPEvolve(lateEndpoint(t, 400*time.Millisecond), "cortex", "environment-grounded", time.Second)
-	e.connectBudget = 600 * time.Millisecond
-	defer e.Close()
+	release := make(chan struct{})
+	url, arrived := lateEndpoint(t, release)
+	e := newMCPEvolve(url, "cortex", "environment-grounded", time.Second)
+	e.connectBudget = time.Hour
+	var mu sync.Mutex
 	start := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	if _, err := e.Guidelines(ctx, "cortex", "t", "s"); !errors.Is(err, ErrUnavailable) {
-		t.Fatalf("err = %v, want the connect to fail", err)
+	now := start
+	e.now = func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	deadlines := make(chan time.Time, 1)
+	e.initializing = func(ctx context.Context) {
+		d, _ := ctx.Deadline()
+		deadlines <- d
 	}
-	// The endpoint came at 400 ms and initialize never answered: the connect ends
-	// at its 600 ms budget. Before, initialize got 600 ms of its own, to 1 s.
-	if took := time.Since(start); took > 850*time.Millisecond {
-		t.Fatalf("connect failed after %v, want within its 600ms budget", took)
+	defer e.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	failed := make(chan error, 1)
+	go func() {
+		_, err := e.Guidelines(ctx, "cortex", "t", "s")
+		failed <- err
+	}()
+	// The endpoint comes half the budget late.
+	<-arrived
+	mu.Lock()
+	now = now.Add(30 * time.Minute)
+	mu.Unlock()
+	close(release)
+	// Initialize ends where the connect does, an hour from its start. Before,
+	// initialize got an hour of its own from the endpoint's arrival.
+	if got, want := <-deadlines, start.Add(time.Hour); !got.Equal(want) {
+		t.Fatalf("initialize's deadline is %v after the connect began, want %v", got.Sub(start), want.Sub(start))
+	}
+	// Initialize never answers; the call ends with its context.
+	cancel()
+	if err := <-failed; !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("err = %v, want the connect to fail", err)
 	}
 }
 

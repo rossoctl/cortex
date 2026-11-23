@@ -35,13 +35,16 @@ type fakeEvolve struct {
 	learnErr   error
 	learnCalls int
 	// learnHold, when set, keeps the next Learn from answering until it is
-	// closed; learning names the conversation that Learn is sending.
+	// closed.
 	learnHold chan struct{}
-	learning  string
+	// learning, when set, receives the conversation of each Learn as it starts.
+	learning chan string
 	// hold, when set, keeps fetches for holdSession from answering until it is
 	// closed or the fetch's context ends.
 	hold        chan struct{}
 	holdSession string
+	// fetching, when set, receives the session of each fetch as it starts.
+	fetching chan string
 }
 
 func (f *fakeEvolve) Guidelines(ctx context.Context, namespace, task, sessionID string) ([]Guideline, error) {
@@ -51,7 +54,11 @@ func (f *fakeEvolve) Guidelines(ctx context.Context, namespace, task, sessionID 
 	if sessionID != f.holdSession {
 		hold = nil
 	}
+	fetching := f.fetching
 	f.mu.Unlock()
+	if fetching != nil {
+		fetching <- sessionID
+	}
 	if hold != nil {
 		select {
 		case <-hold:
@@ -74,10 +81,11 @@ func (f *fakeEvolve) Learn(_ context.Context, namespace string, t Trajectory) er
 	f.mu.Lock()
 	hold := f.learnHold
 	f.learnHold = nil
-	if t.Batch != nil {
-		f.learning = t.Batch.ConversationID
-	}
+	learning := f.learning
 	f.mu.Unlock()
+	if learning != nil && t.Batch != nil {
+		learning <- t.Batch.ConversationID
+	}
 	if hold != nil {
 		<-hold
 	}
@@ -794,13 +802,11 @@ func TestLearn_SkipsTurnsCutOffOrDenied(t *testing.T) {
 
 func TestInitShutdown(t *testing.T) {
 	p, _ := configured(t, "", &fakeEvolve{})
-	p.tick = time.Millisecond
+	p.tick = time.Hour // the sender starts and stops without a tick
 	if err := p.Init(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if err := p.Shutdown(ctx); err != nil {
+	if err := p.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -816,44 +822,39 @@ func userTask(text string) []pipeline.InferenceMessage {
 	return []pipeline.InferenceMessage{{Role: "user", Content: text}}
 }
 
-func waitFor(t *testing.T, cond func() bool) {
-	t.Helper()
-	for deadline := time.Now().Add(5 * time.Second); !cond(); time.Sleep(5 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting")
-		}
-	}
-}
+// hourTimeout is a timeout_ms that keeps the fetch's timeout out of a test.
+const hourTimeout = `{"endpoint":"http://evolve.invalid/sse","timeout_ms":3600000}`
 
 func TestFetch_OutlivesTheRequestThatStartedIt(t *testing.T) {
-	fe := &fakeEvolve{gs: twoGuidelines, hold: make(chan struct{}), holdSession: "s1"}
-	p, _ := configured(t, `{"endpoint":"http://evolve.invalid/sse","timeout_ms":5000}`, fe)
+	fe := &fakeEvolve{gs: twoGuidelines, hold: make(chan struct{}), holdSession: "s1", fetching: make(chan string, 2)}
+	p, _ := configured(t, hourTimeout, fe)
 	first, cancel := context.WithCancel(context.Background())
 	started := make(chan *cached, 1)
 	go func() {
 		entry, _ := p.guidelinesFor(first, "s1", "claude-code", userTask("fix the test"))
 		started <- entry
 	}()
-	waitFor(t, func() bool { return fe.fetches() == 1 })
+	<-fe.fetching
 	// The client that started the fetch hangs up. Before, that cancelled the fetch,
 	// and the failure was cached for the whole session for retry_after_seconds.
 	cancel()
-	// That request stops waiting at once; the fetch goes on for the next one.
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("the cancelled request that started the fetch is still waiting for it")
-	}
+	// That request stops waiting at once, with the fetch still held; the fetch goes
+	// on for the next one.
+	<-started
+	joined := make(chan struct{})
+	p.joinHook = func() { close(joined) }
 	waiting := make(chan *cached, 1)
 	go func() {
 		entry, _ := p.guidelinesFor(context.Background(), "s1", "claude-code", userTask("fix the test"))
 		waiting <- entry
 	}()
-	waitFor(t, func() bool {
-		p.mu.Lock()
-		defer p.mu.Unlock()
-		return p.inflight["s1"] != nil
-	})
+	select {
+	case <-joined:
+	case entry := <-waiting:
+		t.Fatalf("the next request got %+v without joining the fetch: it ended with the request that started it", entry)
+	case <-fe.fetching:
+		t.Fatal("the next request started its own fetch instead of joining the one in progress")
+	}
 	close(fe.hold)
 	if entry := <-waiting; len(entry.guidelines) != 2 || entry.failed {
 		t.Fatalf("entry = %+v, want the two guidelines", entry)
@@ -864,19 +865,17 @@ func TestFetch_OutlivesTheRequestThatStartedIt(t *testing.T) {
 }
 
 func TestFetch_AWaitingRequestStopsAtItsOwnCancellation(t *testing.T) {
-	fe := &fakeEvolve{gs: twoGuidelines, hold: make(chan struct{}), holdSession: "s1"}
-	p, _ := configured(t, `{"endpoint":"http://evolve.invalid/sse","timeout_ms":5000}`, fe)
+	fe := &fakeEvolve{gs: twoGuidelines, hold: make(chan struct{}), holdSession: "s1", fetching: make(chan string, 1)}
+	p, _ := configured(t, hourTimeout, fe)
 	defer close(fe.hold)
 	go p.guidelinesFor(context.Background(), "s1", "claude-code", userTask("fix the test"))
-	waitFor(t, func() bool { return fe.fetches() == 1 })
+	<-fe.fetching
 
+	// The fetch is held until the test ends and the wait for it is an hour, so
+	// the cancelled request returns only by its own cancellation.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	start := time.Now()
 	entry, _ := p.guidelinesFor(ctx, "s1", "claude-code", userTask("fix the test"))
-	if took := time.Since(start); took > time.Second {
-		t.Fatalf("a cancelled request waited %v for the fetch in progress", took)
-	}
 	if len(entry.guidelines) != 0 {
 		t.Fatalf("entry = %+v, want none: the fetch hasn't answered", entry)
 	}
@@ -884,11 +883,12 @@ func TestFetch_AWaitingRequestStopsAtItsOwnCancellation(t *testing.T) {
 
 func TestFetch_EvictingASessionLeavesItsFetchShared(t *testing.T) {
 	fe := &fakeEvolve{gs: twoGuidelines}
-	p, clk := configured(t, `{"endpoint":"http://evolve.invalid/sse","timeout_ms":5000,"max_sessions":1,"cache_ttl_seconds":60}`, fe)
+	p, clk := configured(t, `{"endpoint":"http://evolve.invalid/sse","timeout_ms":3600000,"max_sessions":1,"cache_ttl_seconds":60}`, fe)
 	p.guidelinesFor(context.Background(), "a", "claude-code", userTask("task a"))
 	clk.t = clk.t.Add(2 * time.Minute) // a's guidelines expire: the next request refreshes them
+	fetching := make(chan string, 3)
 	fe.mu.Lock()
-	fe.hold, fe.holdSession = make(chan struct{}), "a"
+	fe.hold, fe.holdSession, fe.fetching = make(chan struct{}), "a", fetching
 	fe.mu.Unlock()
 
 	done := make(chan struct{}, 2)
@@ -896,9 +896,10 @@ func TestFetch_EvictingASessionLeavesItsFetchShared(t *testing.T) {
 		p.guidelinesFor(context.Background(), "a", "claude-code", userTask("task a"))
 		done <- struct{}{}
 	}()
-	waitFor(t, func() bool { return fe.fetches() == 2 })
+	<-fetching // a's refresh
 	// b's answer evicts a from the cache while a's refresh is still in progress.
 	p.guidelinesFor(context.Background(), "b", "claude-code", userTask("task b"))
+	<-fetching // b's fetch
 	joined := make(chan struct{})
 	p.joinHook = func() { close(joined) }
 	go func() {
@@ -906,11 +907,11 @@ func TestFetch_EvictingASessionLeavesItsFetchShared(t *testing.T) {
 		done <- struct{}{}
 	}()
 	// The second request for a joins the refresh in progress. Had eviction
-	// dropped it, that request would start a refresh of its own and never join.
+	// dropped it, that request would start a refresh of its own instead.
 	select {
 	case <-joined:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the second request for a didn't join the refresh in progress")
+	case <-fetching:
+		t.Fatal("the second request for a started a refresh instead of joining the one in progress")
 	}
 	close(fe.hold)
 	<-done
@@ -996,14 +997,8 @@ func TestLearn_AResumedSessionDoesNotReuseItsBatchIDs(t *testing.T) {
 	}
 }
 
-func (f *fakeEvolve) sendingSession() string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.learning
-}
-
 func TestLearn_ASessionThatResumesDuringATickWaits(t *testing.T) {
-	fe := &fakeEvolve{learnHold: make(chan struct{})}
+	fe := &fakeEvolve{learnHold: make(chan struct{}), learning: make(chan string, 2)}
 	p, c := configured(t, `{"endpoint":"http://x","idle_after_seconds":60,"min_turns":1}`, fe)
 	for _, id := range []string{"s1", "s2"} {
 		pctx := turn(h1, "Running.", bash1)
@@ -1014,10 +1009,9 @@ func TestLearn_ASessionThatResumesDuringATickWaits(t *testing.T) {
 	hold := fe.learnHold
 	done := make(chan struct{})
 	go func() { p.learnIdle(context.Background()); close(done) }()
-	waitFor(t, func() bool { return fe.sendingSession() != "" })
 	// Both sessions were idle when the tick began. The one not being sent resumes.
 	other := "s1"
-	if fe.sendingSession() == "s1" {
+	if <-fe.learning == "s1" {
 		other = "s2"
 	}
 	resumed := turn(h2, "Done.", nil, pipeline.InferenceToolResult{ToolUseID: "t1", Content: "ok"})
@@ -1033,14 +1027,16 @@ func TestLearn_ASessionThatResumesDuringATickWaits(t *testing.T) {
 }
 
 func TestLearn_MaxSessionsHoldsWhileEverySessionIsSending(t *testing.T) {
-	fe := &fakeEvolve{learnHold: make(chan struct{})}
+	fe := &fakeEvolve{learnHold: make(chan struct{}), learning: make(chan string, 1)}
 	p, c := configured(t, `{"endpoint":"http://x","idle_after_seconds":60,"min_turns":1,"max_sessions":1}`, fe)
 	finish(t, p, turn(h1, "Running.", bash1))
 	c.t = c.t.Add(61 * time.Second)
 	hold := fe.learnHold
 	done := make(chan struct{})
 	go func() { p.learnIdle(context.Background()); close(done) }()
-	waitFor(t, func() bool { return fe.sendingSession() == "s1" })
+	if id := <-fe.learning; id != "s1" {
+		t.Fatalf("sending %q, want s1", id)
+	}
 
 	// s1 is being sent, so it can't be evicted to make room for s2.
 	other := turn(h1, "x", nil)

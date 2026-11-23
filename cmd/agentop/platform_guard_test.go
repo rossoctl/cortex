@@ -8,7 +8,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 )
 
 // On Windows, the subcommands that install, run or replace Cortex refuse with a message naming
@@ -45,15 +44,12 @@ func TestProcessAlive(t *testing.T) {
 	}
 	// The test binary itself, asked to run no test: it starts and exits at once on every OS.
 	cmd := exec.Command(exe, "-test.run=^$")
+	// Run returns once the child has exited and been reaped, so it is gone at once.
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("run the child: %v", err)
 	}
-	pid := cmd.Process.Pid
-	for deadline := time.Now().Add(5 * time.Second); processAlive(pid); {
-		if time.Now().After(deadline) {
-			t.Fatalf("pid %d of an exited child is still alive", pid)
-		}
-		time.Sleep(20 * time.Millisecond)
+	if pid := cmd.Process.Pid; processAlive(pid) {
+		t.Fatalf("pid %d of an exited child is still alive", pid)
 	}
 }
 
