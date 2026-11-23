@@ -373,7 +373,7 @@ func TestSink_NonAPIBillingMovesNoMoney(t *testing.T) {
 			s := NewSink(mp, zone)
 			res := maskResult()
 			res.Ops = append(res.Ops, spendOp("sp1", "m2", "other.example"))
-			s.Observe(accountant.RequestMeta{Model: "m1", At: time.Now(), Billing: accountant.Billing{Mode: mode}}, accountant.Usage{Input: 30000}, 0, res, "api.example", 30000, false)
+			s.Observe(accountant.RequestMeta{RequestID: "r1", Model: "m1", At: time.Now(), Billing: accountant.Billing{Mode: mode}}, accountant.Usage{Input: 30000, CacheWrite: 1000}, 500, res, "api.example", 30000, false)
 
 			if got := sum(t, rd, "llm.savings.saved.tokens", map[string]string{"component": "mask", "tier": "input"}); got != 1200 {
 				t.Errorf("saved tokens = %v, want 1200", got)
@@ -386,7 +386,32 @@ func TestSink_NonAPIBillingMovesNoMoney(t *testing.T) {
 			if got := sum(t, rd, "llm.savings.estimated", nil); got != 1 {
 				t.Errorf("estimated = %v, want 1", got)
 			}
+			// The Tier 1 USD counters move only for an API-billed request: docs/pricing.md and
+			// docs/laptop-service.md promise a subscription or unknown-billing login never moves
+			// a dollar counter, even though the request still has a real token-priced total.
+			for _, name := range []string{"llm.inference.cost_usd", "llm.inference.estimated_cost_usd", "llm.keepalive.cost_usd", "llm.keepalive.estimated_cost_usd", "llm.cache.miss_cost_usd"} {
+				if got := sum(t, rd, name, nil); got != 0 {
+					t.Errorf("%s = %v, want 0 for billing %s", name, got, mode)
+				}
+			}
+			// The token counter is not gated: the same request happened whatever pays for it.
+			if got := sum(t, rd, "llm.inference.tokens", map[string]string{"tier": "input"}); got != 30000 {
+				t.Errorf("llm.inference.tokens{tier=input} = %v, want 30000 for billing %s", got, mode)
+			}
 		})
+	}
+}
+
+// The Tier 1 counters DO move dollars for an API-billed request, so the non-API case above is a
+// gate, not a counter that never fires.
+func TestSink_APIBillingMovesTier1Money(t *testing.T) {
+	mp, rd := manual(t)
+	s := NewSink(mp, zone)
+	res := maskResult()
+	s.Observe(accountant.RequestMeta{RequestID: "r1", Model: "m1", At: time.Now(), Billing: apiBilling}, accountant.Usage{Input: 30000, CacheWrite: 1000}, 500, res, "api.example", 30000, false)
+
+	if got := sum(t, rd, "llm.inference.cost_usd", nil); got <= 0 {
+		t.Errorf("llm.inference.cost_usd = %v, want > 0 for billing api", got)
 	}
 }
 

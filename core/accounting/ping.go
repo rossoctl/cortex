@@ -104,12 +104,20 @@ func (h *Host) Ping(sessionID string, client *model.EventClient, host string, p 
 	}()
 	u := p.Usage
 	outcome := pingOutcome(info)
+	if sessionID == "" {
+		sessionID = p.Session
+	}
+	p.Session = sessionID
+	thread := pingThread(p.ThreadID)
+	// One read, ahead of every return, so the library, the cost record, the sink and a
+	// refused or timed-out ping's countPing call all see the same mode (design §5.7).
+	billing := h.ThreadBilling(sessionID, thread)
 	if outcome != PingOK || p.Window.IsZero() || u.Input+u.CacheRead+u.CacheWrite+u.Output == 0 {
 		projected := 0.0
 		if outcome == PingTimeout {
 			projected = info.ProjectedUSD
 		}
-		h.countPing(p.Model, outcome, projected)
+		h.countPing(p.Model, outcome, projected, billing.Mode)
 		return accountant.Result{}, false
 	}
 	// The zero check above lets mixed-sign counters that sum to zero (or an outright negative
@@ -120,19 +128,12 @@ func (h *Host) Ping(sessionID string, client *model.EventClient, host string, p 
 		Input: u.Input, CacheWrite: u.CacheWrite, CacheRead: u.CacheRead, Output: u.Output,
 		CacheWrite1h: u.CacheWrite1h,
 	}) {
-		h.countPing(p.Model, outcome, 0)
+		h.countPing(p.Model, outcome, 0, billing.Mode)
 		return accountant.Result{}, false
 	}
-	if sessionID == "" {
-		sessionID = p.Session
-	}
-	p.Session = sessionID
 	if p.Host == "" {
 		p.Host = host
 	}
-	thread := pingThread(p.ThreadID)
-	// One read, so the library, the cost record and the sink all see the same mode.
-	billing := h.ThreadBilling(sessionID, thread)
 	ops, facts := pingOps(p, billing)
 	res = computeStandalone(ops)
 	if !info.Manual {

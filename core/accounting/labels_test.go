@@ -103,6 +103,10 @@ func TestPing_CountsEveryOutcome(t *testing.T) {
 	rec := &fakeRecorder{}
 	h := New(Options{Resolver: rates, Sink: NewSink(mp, rates), CostRecorders: []session.Recorder{rec}})
 	t.Cleanup(func() { _ = h.Close() })
+	// A ping's billing mode is the thread's last request's (design §5.7). In production that is
+	// always set by RequestEnd before the keeper ever pings; set it here so the Tier 1 dollar
+	// counters this test checks are not gated off by the zero-value BillingUnknown.
+	h.setThreadBilling("s1", "main", accountant.BillingAPI)
 
 	noUsage := testPing()
 	noUsage.Usage = accountant.CallUsage{}

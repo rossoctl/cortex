@@ -218,7 +218,9 @@ func NewSink(mp metric.MeterProvider, r pricing.Resolver) *Sink {
 // firstOnThread says the request is its thread's first that the Host has seen (missCause). It is
 // ignored for a ping.
 //
-// Money moves only for meta.Billing.Mode == api; the library decides that, not this sink.
+// Money moves only for meta.Billing.Mode == api; this sink decides that for the Tier 1
+// (llm.inference.*/llm.keepalive.*/llm.cache.*) dollar counters, in observeInferenceMetrics.
+// The library decides it for llm.savings.*, through acmetrics.
 func (s *Sink) Observe(meta accountant.RequestMeta, u accountant.Usage, output int, res accountant.Result, endpoint string, promptTotal int, firstOnThread bool) {
 	if s == nil || s.sink == nil {
 		return
@@ -237,11 +239,13 @@ func (s *Sink) Observe(meta accountant.RequestMeta, u accountant.Usage, output i
 }
 
 // CountPing counts a ping the Host refused to price (Host.Ping): one llm.keepalive.pings with
-// outcome. projectedUSD is the keeper's projected cost of a ping with no answer; it is booked as
-// cost and, all of it, as estimated cost, because the provider probably billed the ping but
-// nobody measured it. 0 books no money. A priced ping is counted by Observe instead, never here
-// too. Safe on a nil Sink.
-func (s *Sink) CountPing(model, outcome string, projectedUSD float64) {
+// outcome, counted whatever the billing mode — this is a count, not money. projectedUSD is the
+// keeper's projected cost of a ping with no answer; it is booked as cost and, all of it, as
+// estimated cost, because the provider probably billed the ping but nobody measured it, and only
+// for mode == accountant.BillingAPI, the same gate Observe applies (design §5.7a: a ping's basis
+// is the thread's). 0, or a non-API mode, books no money. A priced ping is counted by Observe
+// instead, never here too. Safe on a nil Sink.
+func (s *Sink) CountPing(model, outcome string, projectedUSD float64, mode accountant.BillingMode) {
 	if s == nil || s.sink == nil {
 		return
 	}
@@ -253,7 +257,7 @@ func (s *Sink) CountPing(model, outcome string, projectedUSD float64) {
 	ctx := context.Background()
 	modelAttr := attribute.String("model", model)
 	s.keepalivePings.Add(ctx, 1, metric.WithAttributes(modelAttr, attribute.String("outcome", outcome)))
-	if projectedUSD > 0 {
+	if projectedUSD > 0 && mode == accountant.BillingAPI {
 		s.keepaliveCostUSD.Add(ctx, projectedUSD, metric.WithAttributes(modelAttr))
 		s.keepaliveEstimatedUSD.Add(ctx, projectedUSD, metric.WithAttributes(modelAttr))
 	}
@@ -274,19 +278,26 @@ func (s *Sink) CountPing(model, outcome string, projectedUSD float64) {
 // the 5m fallback) — not res.Unpriced, which is the accountant library's "this savings op could
 // not be priced" marker and says nothing about this request's own price. So a request with one
 // estimated tier and three priced ones books only that tier's dollars as estimated.
+//
+// Every dollar counter here is gated on meta.Billing.Mode == accountant.BillingAPI: cost_usd
+// means a real, metered dollar, and a subscription or unknown-billing request has no per-request
+// price a dollar total can mean (design §5.7a is the same rule the ledger and /v1/usage apply to
+// basis "usd"). The token and count counters are never gated — they are the same request
+// whatever pays for it.
 func (s *Sink) observeInferenceMetrics(meta accountant.RequestMeta, u accountant.Usage, output int, cause string) {
 	ctx := context.Background()
 	modelAttr := attribute.String("model", meta.Model)
+	billedAPI := meta.Billing.Mode == accountant.BillingAPI
 	actual, estimated := s.priceUsageSplit(meta.Model, u, output)
 	total := actual + estimated
 
 	if meta.RequestID == "" {
 		// A ping reaches here only once Host.Ping has priced it, which needs a 2xx answer.
 		s.keepalivePings.Add(ctx, 1, metric.WithAttributes(modelAttr, attribute.String("outcome", PingOK)))
-		if total > 0 {
+		if total > 0 && billedAPI {
 			s.keepaliveCostUSD.Add(ctx, total, metric.WithAttributes(modelAttr))
 		}
-		if estimated > 0 {
+		if estimated > 0 && billedAPI {
 			s.keepaliveEstimatedUSD.Add(ctx, estimated, metric.WithAttributes(modelAttr))
 		}
 		return
@@ -305,16 +316,16 @@ func (s *Sink) observeInferenceMetrics(meta accountant.RequestMeta, u accountant
 			s.inferenceTokens.Add(ctx, int64(t.n), metric.WithAttributes(modelAttr, attribute.String("tier", t.name)))
 		}
 	}
-	if total > 0 {
+	if total > 0 && billedAPI {
 		s.inferenceCostUSD.Add(ctx, total, metric.WithAttributes(modelAttr))
 	}
-	if estimated > 0 {
+	if estimated > 0 && billedAPI {
 		s.inferenceEstimatedUSD.Add(ctx, estimated, metric.WithAttributes(modelAttr))
 	}
 	if u.CacheRead == 0 {
 		missAttrs := metric.WithAttributes(modelAttr, attribute.String("cause", cause))
 		s.cacheMisses.Add(ctx, 1, missAttrs)
-		if usd := s.missPremiumUSD(meta.Model, u); usd > 0 {
+		if usd := s.missPremiumUSD(meta.Model, u); usd > 0 && billedAPI {
 			s.cacheMissCostUSD.Add(ctx, usd, missAttrs)
 		}
 	}
@@ -486,11 +497,11 @@ func (h *Host) observe(meta accountant.RequestMeta, u accountant.Usage, output i
 
 // countPing counts a ping Host.Ping refused to price (Sink.CountPing), off the keeper's goroutine
 // like observe. It is not an observation of a Result, so observeHook does not see it.
-func (h *Host) countPing(model, outcome string, projectedUSD float64) {
+func (h *Host) countPing(model, outcome string, projectedUSD float64, mode accountant.BillingMode) {
 	if h.sink == nil {
 		return
 	}
-	h.goObserve(func() { h.sink.CountPing(model, outcome, projectedUSD) })
+	h.goObserve(func() { h.sink.CountPing(model, outcome, projectedUSD, mode) })
 }
 
 // goObserve runs fn on a goroutine of its own that Close waits for, unless Close has started.

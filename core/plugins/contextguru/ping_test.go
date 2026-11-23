@@ -204,6 +204,23 @@ func TestPingEmitter_PassesATimeoutWithItsProjectedCost(t *testing.T) {
 	p.SetAccounting(h)
 	pctx := finishedPctx(200, pipeline.AgentRoleMain)
 	pctx.Host = "api.anthropic.com"
+	// A ping's billing mode is its thread's last request's (design §5.7), and the Tier 1
+	// dollar counters gate on BillingAPI (billing_contract_test.go). Prime it with a real,
+	// API-key-credentialed request on the same session/thread before the ping — the way a
+	// keep-alive ping always follows a real request in production. Run through a bare
+	// pipeline, not RequestStart/RequestEnd directly: RequestEnd reads pctx.ClientBody(),
+	// which only pipeline.Run's own Run sets.
+	pctx.Headers.Set("X-Api-Key", "sk-ant-api03-test")
+	pipe, err := pipeline.New(nil, pipeline.WithAccountant(h))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if act := pipe.Run(context.Background(), pctx); act.Type != pipeline.Continue {
+		t.Fatalf("priming request action = %v", act.Type)
+	}
+	if _, ok := h.Compute(pctx); !ok {
+		t.Fatal("the priming request was refused")
+	}
 	em := p.pingEmitter(pctx, "s1").(cgcomponents.KeepAliveEmitter)
 	em.KeepAlivePing(cgcomponents.KeepAliveReport{Session: "s1", Model: "claude-sonnet-5",
 		TimedOut: true, CostUSD: 0.02, Window: time.Unix(1_700_000_000, 0)})

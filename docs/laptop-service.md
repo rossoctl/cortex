@@ -823,8 +823,10 @@ metrics_push:
 | `interval` | `METRICS_PUSH_INTERVAL` | `30s` | How often the counters are pushed. |
 
 What is sent: the `llm.savings.*` counters (tokens saved and added by tier and component, their
-dollar value, cache effects, request and check counts), `llm.proxy.export_failures`, and
-`llm.proxy.info`: a gauge that is always 1, with the build's `version` as its label. It is sent
+dollar value, cache effects, request and check counts); `llm.inference.tokens` / `cost_usd` /
+`estimated_cost_usd`, `llm.keepalive.pings` / `cost_usd` / `estimated_cost_usd` and
+`llm.cache.misses` / `miss_cost_usd`, each labelled with the model; `llm.proxy.export_failures`;
+and `llm.proxy.info`: a gauge that is always 1, with the build's `version` as its label. It is sent
 on every push, also before the first request, so the central dashboards list an idle machine and
 the `MachineSilent` alert sees when a machine stops pushing. The
 resource carries `service.name=cortex`, `service.version` and `service.instance.id`: a random
