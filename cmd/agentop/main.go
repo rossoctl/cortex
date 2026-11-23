@@ -100,7 +100,8 @@ Usage:
   agentop exec -- CMD [ARG...] run CMD with Cortex's proxy and CA in its
                                environment, for tools with no settings file
   agentop server [<action>]    the inference server each agent's new sessions
-                               use: add, remove, use, reset; alone, list them
+                               use: add, remove, rename, use, reset, move;
+                               alone, list them
   agentop script <action>      the script plugins Cortex ships: list, install,
                                remove
   agentop tools <action>       tool-definition costs: scan
