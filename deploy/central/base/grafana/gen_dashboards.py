@@ -49,8 +49,14 @@ SAVED_SIDE = ',__name__=~"llm_savings_(saved_usd|cache_effect_usd|interaction_us
 ADDED_SIDE = ',__name__=~"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total",direction=~"added|"'
 # Labels that every counter of both sides has. A cache effect has no component, kind or tier.
 NET_LABELS = ("", "machine", "proxy", "preset")
-# How far before a range inc() looks for a sample that makes a series OLD (see inc()).
-OLD_LOOKBACK = "1d"
+# How far before a range inc() looks for a sample that makes a series OLD (see inc()). Matches
+# Prometheus's own retention.time (deployment.yaml): a shorter lookback misclassifies a series
+# that returns after a longer silence (a laptop asleep or off the VPN over a weekend, or the
+# collector down for a day) as newly BORN, and bar()/day_bar() then draw its whole lifetime
+# total as one bar — every Monday morning, for every machine left asleep with the proxy running
+# (review of #2064). A series is OLD if it has ANY sample in the retention window before win, so
+# this has to cover the window a reasonably silent machine could still be found in.
+OLD_LOOKBACK = "30d"
 
 
 def inc(metric, by="", win="$__range", extra="", new_series_fallback=True, anchored=False, ahead=False):

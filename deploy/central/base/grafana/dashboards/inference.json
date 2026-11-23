@@ -83,7 +83,7 @@
       },
       "targets": [
         {
-          "expr": "sum((increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"input\"}[$__range]) and last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"input\"}[1d] offset $__range)) or (increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"input\"}[$__range]) >= last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"input\"}[$__range])) or last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"input\"}[$__range]))",
+          "expr": "sum((increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"input\"}[$__range]) and last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"input\"}[30d] offset $__range)) or (increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"input\"}[$__range]) >= last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"input\"}[$__range])) or last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"input\"}[$__range]))",
           "refId": "A",
           "instant": true,
           "datasource": {
@@ -128,7 +128,7 @@
       },
       "targets": [
         {
-          "expr": "sum((increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"cache_read\"}[$__range]) and last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"cache_read\"}[1d] offset $__range)) or (increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"cache_read\"}[$__range]) >= last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"cache_read\"}[$__range])) or last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"cache_read\"}[$__range]))",
+          "expr": "sum((increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"cache_read\"}[$__range]) and last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"cache_read\"}[30d] offset $__range)) or (increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"cache_read\"}[$__range]) >= last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"cache_read\"}[$__range])) or last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"cache_read\"}[$__range]))",
           "refId": "A",
           "instant": true,
           "datasource": {
@@ -177,7 +177,7 @@
       },
       "targets": [
         {
-          "expr": "sum((increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=~\"cache_write_5m|cache_write_1h\"}[$__range]) and last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=~\"cache_write_5m|cache_write_1h\"}[1d] offset $__range)) or (increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=~\"cache_write_5m|cache_write_1h\"}[$__range]) >= last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=~\"cache_write_5m|cache_write_1h\"}[$__range])) or last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=~\"cache_write_5m|cache_write_1h\"}[$__range]))",
+          "expr": "sum((increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=~\"cache_write_5m|cache_write_1h\"}[$__range]) and last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=~\"cache_write_5m|cache_write_1h\"}[30d] offset $__range)) or (increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=~\"cache_write_5m|cache_write_1h\"}[$__range]) >= last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=~\"cache_write_5m|cache_write_1h\"}[$__range])) or last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=~\"cache_write_5m|cache_write_1h\"}[$__range]))",
           "refId": "A",
           "instant": true,
           "datasource": {
@@ -226,7 +226,7 @@
       },
       "targets": [
         {
-          "expr": "sum((increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"output\"}[$__range]) and last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"output\"}[1d] offset $__range)) or (increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"output\"}[$__range]) >= last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"output\"}[$__range])) or last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"output\"}[$__range]))",
+          "expr": "sum((increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"output\"}[$__range]) and last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"output\"}[30d] offset $__range)) or (increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"output\"}[$__range]) >= last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"output\"}[$__range])) or last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"output\"}[$__range]))",
           "refId": "A",
           "instant": true,
           "datasource": {
@@ -275,7 +275,7 @@
       },
       "targets": [
         {
-          "expr": "sum((increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"cache_read\"}[$__range]) and last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"cache_read\"}[1d] offset $__range)) or (increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"cache_read\"}[$__range]) >= last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"cache_read\"}[$__range])) or last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"cache_read\"}[$__range])) / ((sum((increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=~\"cache_read|cache_write_5m|cache_write_1h|input\"}[$__range]) and last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=~\"cache_read|cache_write_5m|cache_write_1h|input\"}[1d] offset $__range)) or (increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=~\"cache_read|cache_write_5m|cache_write_1h|input\"}[$__range]) >= last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=~\"cache_read|cache_write_5m|cache_write_1h|input\"}[$__range])) or last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=~\"cache_read|cache_write_5m|cache_write_1h|input\"}[$__range]))) > 0)",
+          "expr": "sum((increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"cache_read\"}[$__range]) and last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"cache_read\"}[30d] offset $__range)) or (increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"cache_read\"}[$__range]) >= last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"cache_read\"}[$__range])) or last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"cache_read\"}[$__range])) / ((sum((increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=~\"cache_read|cache_write_5m|cache_write_1h|input\"}[$__range]) and last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=~\"cache_read|cache_write_5m|cache_write_1h|input\"}[30d] offset $__range)) or (increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=~\"cache_read|cache_write_5m|cache_write_1h|input\"}[$__range]) >= last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=~\"cache_read|cache_write_5m|cache_write_1h|input\"}[$__range])) or last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=~\"cache_read|cache_write_5m|cache_write_1h|input\"}[$__range]))) > 0)",
           "refId": "A",
           "instant": true,
           "datasource": {
@@ -324,7 +324,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (tier)((increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval] anchored) and last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\"}[1d] offset $__interval)) or (increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval] anchored) >= last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval])) or last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval]))",
+          "expr": "sum by (tier)((increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval] anchored) and last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\"}[30d] offset $__interval)) or (increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval] anchored) >= last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval])) or last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval]))",
           "legendFormat": "{{tier}}",
           "refId": "A",
           "datasource": {
@@ -449,7 +449,7 @@
       },
       "targets": [
         {
-          "expr": "sort_desc(sum by (model)((increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) and last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\"}[1d] offset $__range)) or (increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) >= last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) or last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])))",
+          "expr": "sort_desc(sum by (model)((increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) and last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\"}[30d] offset $__range)) or (increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) >= last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) or last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])))",
           "legendFormat": "{{model}}",
           "refId": "A",
           "datasource": {
@@ -818,7 +818,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (model)((increase(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval] anchored) and last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[1d] offset $__interval)) or (increase(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval] anchored) >= last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval])) or last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval]))",
+          "expr": "sum by (model)((increase(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval] anchored) and last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[30d] offset $__interval)) or (increase(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval] anchored) >= last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval])) or last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval]))",
           "legendFormat": "{{model}}",
           "refId": "A",
           "datasource": {
@@ -867,7 +867,7 @@
       },
       "targets": [
         {
-          "expr": "sum((increase(llm_inference_estimated_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) and last_over_time(llm_inference_estimated_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[1d] offset $__range)) or (increase(llm_inference_estimated_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) >= last_over_time(llm_inference_estimated_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) or last_over_time(llm_inference_estimated_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) / ((sum((increase(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) and last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[1d] offset $__range)) or (increase(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) >= last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) or last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) > 0)",
+          "expr": "sum((increase(llm_inference_estimated_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) and last_over_time(llm_inference_estimated_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[30d] offset $__range)) or (increase(llm_inference_estimated_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) >= last_over_time(llm_inference_estimated_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) or last_over_time(llm_inference_estimated_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) / ((sum((increase(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) and last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[30d] offset $__range)) or (increase(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) >= last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) or last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) > 0)",
           "refId": "A",
           "instant": true,
           "datasource": {

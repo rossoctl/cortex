@@ -57,7 +57,7 @@ class IncTest(unittest.TestCase):
         got = g.inc("m")
         self.assertEqual(
             got,
-            f"sum((increase({m}[$__range]) and last_over_time({m}[1d] offset $__range)) "
+            f"sum((increase({m}[$__range]) and last_over_time({m}[30d] offset $__range)) "
             f"or (increase({m}[$__range]) >= last_over_time({m}[$__range])) "
             f"or last_over_time({m}[$__range]))",
         )
