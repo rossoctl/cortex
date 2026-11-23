@@ -576,6 +576,13 @@ func TestMCPEvolve_OneCallEndingLeavesTheOthersRunning(t *testing.T) {
 	if err := <-fetched; !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("fetch err = %v, want ErrUnavailable", err)
 	}
+	// A call retires its session before it returns, so this is already settled.
+	e.mu.Lock()
+	kept := e.client != nil && !e.client.retired
+	e.mu.Unlock()
+	if !kept {
+		t.Error("the fetch's cancellation retired the session evolve is still learning on")
+	}
 	close(f.holdLearn)
 	if err := <-learned; err != nil {
 		t.Fatalf("learning failed with the fetch: %v", err)
