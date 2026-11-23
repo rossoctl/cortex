@@ -60,6 +60,14 @@ processors:
         statements:
           - set(name, "")
           - set(version, "")
+      # Prometheus's OTLP translator promotes a resource attribute onto a point only when the
+      # point does not already carry that key (createAttributes in
+      # storage/remote/otlptranslator/prometheusremotewrite/helper.go): a data-point attribute
+      # of the same name wins. Delete any of these the sender set on the point itself, so
+      # "which proxy sent this" stays decided above, by the collector, never by the sender.
+      - context: datapoint
+        statements:
+          - delete_matching_keys(attributes, "^(proxy|machine|preset|service[._]version|job|instance)$")
   transform/contextguru:
     metric_statements:
       - context: resource
@@ -71,6 +79,9 @@ processors:
         statements:
           - set(name, "")
           - set(version, "")
+      - context: datapoint
+        statements:
+          - delete_matching_keys(attributes, "^(proxy|machine|preset|service[._]version|job|instance)$")
   batch:
     timeout: 5s
 

@@ -110,6 +110,49 @@ tests:
         alertname: NetSavingNegative
         exp_alerts: []
 
+  # A component with only an "added" series (a compaction call, say) must not vanish from the
+  # subtraction instead of tripping the alert — the padding gap the review found with promtool
+  # (mask saves $1/h and adds $0.50/h; compaction adds $10/h with no saved series at all).
+  - name: ComponentLosingMoney fires for a component with no saved series
+    interval: 1h
+    input_series:
+      - series: 'llm_savings_saved_usd_total{proxy="cortex",machine="m1",component="mask"}'
+        values: '0+1x170'
+      - series: 'llm_savings_added_usd_total{proxy="cortex",machine="m1",component="mask"}'
+        values: '0+0.5x170'
+      - series: 'llm_savings_added_usd_total{proxy="cortex",machine="m1",component="compaction"}'
+        values: '0+10x170'
+    alert_rule_test:
+      - eval_time: 7d1h
+        alertname: ComponentLosingMoney
+        exp_alerts:
+          - exp_labels: {severity: info, proxy: cortex, component: compaction}
+            exp_annotations:
+              summary: "compaction (cortex) lost money over 7 days"
+              description: "Net saving of this component over 7 days is below -$5."
+
+  # The fleet rollup must also see the compaction-only component's cost: with no padding its net
+  # row (used by NetSavingNegative too, via proxy_component:llm_savings_net_usd:rate5m) would
+  # drop out of the subtraction, and mask's own positive net ($0.50/h * 168h = $84) would hide
+  # compaction's -$1680.
+  - name: NetSavingNegative fires when a component with no saved series dominates the fleet
+    interval: 1m
+    input_series:
+      - series: 'llm_savings_saved_usd_total{proxy="cortex",machine="m1",component="mask"}'
+        values: '0+1x1600'
+      - series: 'llm_savings_added_usd_total{proxy="cortex",machine="m1",component="mask"}'
+        values: '0+0.5x1600'
+      - series: 'llm_savings_added_usd_total{proxy="cortex",machine="m1",component="compaction"}'
+        values: '0+10x1600'
+    alert_rule_test:
+      - eval_time: 25h
+        alertname: NetSavingNegative
+        exp_alerts:
+          - exp_labels: {severity: warning, proxy: cortex}
+            exp_annotations:
+              summary: "cortex saves less than it costs"
+              description: "Net saving (saved - added) has been below zero for 24 hours."
+
   # ---- Unpriced ratio --------------------------------------------------------------------------
   - name: ManyUnpricedRequests fires above 10 percent
     interval: 1m

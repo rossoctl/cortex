@@ -16,8 +16,24 @@ groups:
           description: "Net saving (saved - added) has been below zero for 24 hours."
 
       - alert: ComponentLosingMoney
-        # A component whose net is below -$5 over 7 days is a candidate to turn off (#670).
-        expr: sum by (proxy, component) (increase(llm_savings_saved_usd_total[7d])) - sum by (proxy, component) (increase(llm_savings_added_usd_total[7d])) < -5
+        # A component whose net is below -$5 over 7 days is a candidate to turn off (#670). Each
+        # side is padded with the other side's label values times zero (same as the
+        # proxy_component:llm_savings_net_usd:rate5m recording rule, and gen_dashboards.py
+        # net()'s own comment), or a component that only ever adds cost drops out of the
+        # subtraction entirely instead of tripping this alert.
+        expr: |
+          (
+            (sum by (proxy, component) (increase(llm_savings_saved_usd_total[7d])))
+            or
+            (sum by (proxy, component) (increase(llm_savings_added_usd_total[7d]))) * 0
+          )
+          -
+          (
+            (sum by (proxy, component) (increase(llm_savings_added_usd_total[7d])))
+            or
+            (sum by (proxy, component) (increase(llm_savings_saved_usd_total[7d]))) * 0
+          )
+          < -5
         for: 1h
         labels: {severity: info}
         annotations:

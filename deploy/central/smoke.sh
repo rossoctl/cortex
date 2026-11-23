@@ -12,7 +12,10 @@
 #   2. a push with no token, or a wrong one, gets 401;
 #   3. a plain-http push is not accepted;
 #   4. Prometheus stores the counter with proxy="cortex" / proxy="context-guru" (not the forged
-#      value), machine set from service.instance.id, and no extra label.
+#      value), machine set from service.instance.id, and no extra label;
+#   5. the same holds when the forged `proxy`/`machine` sit on the data point instead of the
+#      resource — Prometheus's OTLP translator lets a point's own attribute override a promoted
+#      resource one of the same name, so the collector must strip it there too.
 set -eu
 
 host="${1:?usage: smoke.sh <collector-host>}"
@@ -47,9 +50,27 @@ body() {
 EOF
 }
 
-# push <scheme> <path> <header-file|-> <machine>: prints the HTTP status (000 if no answer).
+# body_datapoint_forge <machine>: the resource is honest (no forged proxy/machine there); the
+# forgery is on the data point itself, where createAttributes
+# (storage/remote/otlptranslator/prometheusremotewrite/helper.go) lets a point's own attribute
+# of the same name win over a promoted resource attribute.
+body_datapoint_forge() {
+  cat <<EOF
+{"resourceMetrics":[{"resource":{"attributes":[
+ {"key":"service.instance.id","value":{"stringValue":"$1"}},
+ {"key":"service.name","value":{"stringValue":"smoke"}}]},
+ "scopeMetrics":[{"scope":{"name":"smoke"},"metrics":[{"name":"smoke_test",
+  "sum":{"aggregationTemporality":2,"isMonotonic":true,
+   "dataPoints":[{"asInt":"1","startTimeUnixNano":"$now","timeUnixNano":"$now","attributes":[
+    {"key":"proxy","value":{"stringValue":"evil-dp"}},
+    {"key":"machine","value":{"stringValue":"evil-machine-dp"}}]}]}}]}]}]}
+EOF
+}
+
+# push <scheme> <path> <header-file|-> <machine> [datapoint-forge]: prints the HTTP status (000 if
+# no answer). A fifth argument of "dp" sends body_datapoint_forge instead of body.
 push() {
-  body "$4" > "$work/body"
+  if [ "${5:-}" = dp ]; then body_datapoint_forge "$4" > "$work/body"; else body "$4" > "$work/body"; fi
   if [ "$3" = - ]; then hdr=""; else hdr="-H @$3"; fi
   # shellcheck disable=SC2086
   curl -s -m 15 -o /dev/null -w '%{http_code}' -X POST $hdr \
@@ -110,6 +131,10 @@ print("PASS  series " + sys.argv[2] + " stored with proxy=" + want + ", labels "
 
 check_series "$run_id-cortex" cortex
 check_series "$run_id-cg" context-guru
+
+code=$(push https /cortex "$work/h-cortex" "$run_id-dp" dp)
+expect_2xx "cortex push with a data-point-level forged proxy/machine" "$code"
+check_series "$run_id-dp" cortex
 
 out=$(query "count(smoke_test_total{machine=~\"$run_id-(none|wrong|cross|http)\"})")
 if printf '%s' "$out" | python3 -I -c 'import json,sys; sys.exit(0 if not json.load(sys.stdin)["data"]["result"] else 1)'; then

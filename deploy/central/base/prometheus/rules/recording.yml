@@ -12,12 +12,23 @@ groups:
     interval: 1m
     rules:
       # Net saving in dollars per second, by proxy and component. saved - added, and nothing else:
-      # the cache-effect counter is a breakdown and is never part of this (spec 5.2).
+      # the cache-effect counter is a breakdown and is never part of this (spec 5.2). Each side is
+      # padded with the other side's label values times zero (gen_dashboards.py net()'s own
+      # comment): PromQL drops a (proxy, component) that is on one side only, and a component that
+      # only ever adds cost (a compaction call, say) is exactly the one this rule exists to catch.
       - record: proxy_component:llm_savings_net_usd:rate5m
         expr: |
-          sum by (proxy, component) (rate(llm_savings_saved_usd_total[5m]))
+          (
+            (sum by (proxy, component) (rate(llm_savings_saved_usd_total[5m])))
+            or
+            (sum by (proxy, component) (rate(llm_savings_added_usd_total[5m]))) * 0
+          )
           -
-          sum by (proxy, component) (rate(llm_savings_added_usd_total[5m]))
+          (
+            (sum by (proxy, component) (rate(llm_savings_added_usd_total[5m])))
+            or
+            (sum by (proxy, component) (rate(llm_savings_saved_usd_total[5m]))) * 0
+          )
 
       - record: proxy:llm_savings_saved_usd:rate5m
         expr: sum by (proxy) (rate(llm_savings_saved_usd_total[5m]))
