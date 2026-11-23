@@ -23,6 +23,9 @@ func TestClassify(t *testing.T) {
 		// package-local path table previously missed — are recognized here too.
 		{"azure chat completions", "/openai/deployments/gpt4/chat/completions", ProviderOpenAI},
 		{"codex responses", "/backend-api/codex/responses", ProviderOpenAI},
+		// Legacy completions: wire.FormatOf deliberately excludes these (no messages array, no
+		// cache_control), so Classify gives them ProviderUnknown rather than guessing OpenAI.
+		{"legacy completions", "/v1/completions", ProviderUnknown},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

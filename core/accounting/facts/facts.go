@@ -26,31 +26,29 @@ const (
 	ProviderOpenAI             // Chat Completions / Responses API: no breakpoints, provider-managed cache
 )
 
-// Classify says which provider a request went to, from its path alone, by calling wire.FormatOf
-// rather than keeping its own copy of the path table: the same rule the proxy follows
-// (explicitBreakpointProvider / modelinfo.HonoursCacheControl classify by the wire dialect, never
-// by hostname) applies here, a gateway that fronts more than one provider under its own hostname
-// (LiteLLM, OpenRouter, Azure) still speaks one of the two wire dialects, and the dialect is what
-// decides which provider's cache rules apply — and wire.FormatOf is the one table this package and
-// wire now share, so they cannot disagree on which dialect a path speaks.
+// Classify says which provider's cache rules apply to a request, from its path alone. It uses
+// wire.FormatOf, so this package and wire share one path table and cannot disagree. Like the
+// proxy (explicitBreakpointProvider / modelinfo.HonoursCacheControl), it goes by the wire dialect,
+// never by the hostname: a gateway that fronts several providers (LiteLLM, OpenRouter, Azure)
+// still speaks one dialect, and the dialect decides the cache rules.
 //
 // An unrecognized path is ProviderUnknown whatever the request's destination, even a host whose
 // name contains "anthropic" or "openai", because a host name does not say which wire dialect the
 // request uses.
 //
-// This does not distinguish Chat from Responses bodies that carry cache_control: Cortex's own chat
-// decoder, and gateways such as LiteLLM and OpenRouter, accept cache_control on Chat Completions
-// content blocks for Claude models. wire.Parse still finds breakpoints on such a body, but
-// Classify gives it OpenAI cache facts (LifetimeUnknown) rather than Anthropic's exact TTL. This
-// matches the proxy's own behavior, which has the same gap.
+// A Chat or Responses body that carries cache_control marks (which Cortex's chat decoder, LiteLLM
+// and OpenRouter accept for Claude models) still gets OpenAI cache facts (LifetimeUnknown),
+// although wire.Parse finds its breakpoints. The proxy has the same gap.
 func Classify(path string) Provider {
 	switch format, ok := wire.FormatOf(path); {
 	case !ok:
 		return ProviderUnknown
 	case format == wire.FormatAnthropic:
 		return ProviderAnthropic
-	default: // wire.FormatChat, wire.FormatResponses
+	case format == wire.FormatChat, format == wire.FormatResponses:
 		return ProviderOpenAI
+	default:
+		return ProviderUnknown
 	}
 }
 

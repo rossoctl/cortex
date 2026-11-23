@@ -38,16 +38,22 @@ const (
 // core/parse/inference's ProtocolFor rather than re-deriving the path suffixes: that is the
 // function the request parser and translator already use to decide a path's dialect, and a
 // second, narrower table here previously disagreed with it on endpoints such as Azure's
-// /openai/deployments/<d>/chat/completions and Codex's /backend-api/codex/responses. ok is false
-// when the path is not one of the three endpoints this package reads (legacy /v1/completions
-// included, since ProtocolFor returns "" for it).
+// /openai/deployments/<d>/chat/completions and Codex's /backend-api/codex/responses.
+//
+// ok is false when the path has no translation protocol: legacy completions (/v1/completions,
+// /v1/engines/<id>/completions) included, deliberately — Cortex's parser does accept and forward
+// them, but their body has no messages array and never carries cache_control, so this package has
+// no positions to read and no mark to find either way. A caller that wants a cost record for
+// those requests regardless (as the proxy's provider-based classification does) must get it some
+// other way; this package stays silent on them rather than fabricate a Format for a body shape it
+// cannot parse.
 func FormatOf(path string) (Format, bool) {
 	switch inference.ProtocolFor(path) {
-	case "anthropic-messages":
+	case inference.ProtocolAnthropicMessages:
 		return FormatAnthropic, true
-	case "chat-completions":
+	case inference.ProtocolChatCompletions:
 		return FormatChat, true
-	case "responses":
+	case inference.ProtocolResponses:
 		return FormatResponses, true
 	}
 	return 0, false

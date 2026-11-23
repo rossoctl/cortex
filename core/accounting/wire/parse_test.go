@@ -278,7 +278,11 @@ func TestFormatOf(t *testing.T) {
 		{"/v1/responses", FormatResponses, true},
 		{"/backend-api/codex/responses", FormatResponses, true},
 		{"/v1/embeddings", 0, false},
+		// Legacy completions: Cortex's parser accepts and forwards these, but their body has
+		// no messages array and never carries cache_control, so FormatOf deliberately excludes
+		// them rather than claim a Format it cannot read.
 		{"/v1/completions", 0, false},
+		{"/v1/engines/davinci/completions", 0, false},
 	}
 	for _, c := range cases {
 		got, ok := FormatOf(c.path)
