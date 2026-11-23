@@ -405,13 +405,24 @@ func (c *Client) CallRaw(ctx context.Context, req *ChatRequest) (*ChatResponse, 
 
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		buf, _ := io.ReadAll(io.LimitReader(httpResp.Body, errorBodyLimit))
-		return nil, fmt.Errorf("llmclient: HTTP %d: %s",
-			httpResp.StatusCode, strings.TrimSpace(string(buf)))
+		return nil, respondedError{fmt.Errorf("llmclient: HTTP %d: %s",
+			httpResp.StatusCode, strings.TrimSpace(string(buf)))}
 	}
 
 	var cr ChatResponse
 	if err := json.NewDecoder(io.LimitReader(httpResp.Body, responseBodyLimit)).Decode(&cr); err != nil {
-		return nil, fmt.Errorf("llmclient: decode response: %w", err)
+		return nil, respondedError{fmt.Errorf("llmclient: decode response: %w", err)}
 	}
 	return &cr, nil
 }
+
+// ErrResponded matches, with errors.Is, a CallRaw error that came after the server answered: an
+// HTTP error status, or a body that does not decode. The call reached the server, so it may have
+// been billed. Other errors may come before anything was sent.
+var ErrResponded = errors.New("llmclient: the server responded")
+
+// respondedError marks an error as ErrResponded and keeps its message unchanged.
+type respondedError struct{ error }
+
+func (e respondedError) Unwrap() error        { return e.error }
+func (e respondedError) Is(target error) bool { return target == ErrResponded }
