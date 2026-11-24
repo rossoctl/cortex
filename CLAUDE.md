@@ -196,6 +196,9 @@ The one exception is the session-budget Redis driver: its module requires core, 
 each binary links it in its own `storage_redis.go`. A build with no `-tags` registers
 no plugins and rejects every config it is handed. Tag sets come from
 [`scripts/profile-tags`](scripts/profile-tags/), one profile per shipped artifact.
+A profile can also carry a driver, `include_driver_<name>`, the code for one host's
+control protocol: `hostegress` alone carries `moca`
+([`core/listener/vmcontrol`](core/listener/vmcontrol/CLAUDE.md)).
 
 **Go modules:** 7 in total, all on Go 1.26.10.
 - `core/`, `core/storage/redis/` (nested, but its own module), `cmd/cortex`,

@@ -1,3 +1,5 @@
+//go:build include_driver_moca
+
 package main
 
 import (
@@ -10,9 +12,9 @@ import (
 
 // The MOCA SBX VM control channel (#1477), configured env-only: the conformance
 // harness drives it through MOCA_EGRESS_CONTROL_SOCK / _UIDS, and operator-facing
-// YAML fields follow once there is an operator to configure them. Off unless
-// MOCA_EGRESS_CONTROL_SOCK names a path, so a proxy with no MOCA around it keeps
-// today's behavior byte for byte.
+// YAML fields follow once there is an operator to configure them. Linked only
+// into the hostegress build (include_driver_moca), and off there unless
+// MOCA_EGRESS_CONTROL_SOCK names a path. vmcontrol_off.go stands in elsewhere.
 
 const (
 	envTenancy     = "MOCA_TENANCY"
@@ -35,6 +37,14 @@ type controlConfig struct {
 // shutdown, which unregisters every VM and waits for their aborted audit lines.
 // An interface so the non-unix stub can exist without the package.
 type vmControlServer interface{ Close() error }
+
+// checkVMControlStarted fails the boot when the channel is configured but
+// nothing started it, because the forward proxy role is off.
+func checkVMControlStarted(cc controlConfig, srv vmControlServer) {
+	if cc.Socket != "" && srv == nil {
+		fatalf("vm control: %s is set but the forward proxy role is not enabled", envControlSock)
+	}
+}
 
 // resolveControlConfig reads the VM control channel's environment through
 // getenv. Every error names its variable; an unset MOCA_EGRESS_CONTROL_SOCK

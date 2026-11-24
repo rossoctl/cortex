@@ -1108,8 +1108,9 @@ func main() {
 	// The transparent (enforce-redirect) listener rides with the forward proxy;
 	// declared here so shutdown can close it whether or not the forward role ran.
 	var transparentLn *net.TCPListener
-	// The MOCA SBX VM control channel (env-only, #1477): nil unless
-	// MOCA_EGRESS_CONTROL_SOCK is set. Like transparentLn, closed on shutdown.
+	// The MOCA SBX VM control channel (env-only, #1477): nil unless this is the
+	// hostegress build and MOCA_EGRESS_CONTROL_SOCK is set. Like transparentLn,
+	// closed on shutdown.
 	var vmCtrl vmControlServer
 	ctrlCfg, ctrlErr := resolveControlConfig(os.Getenv)
 	if ctrlErr != nil {
@@ -1275,9 +1276,7 @@ func main() {
 			transparentLn = startTransparentProxy(fpSrv, listeners.takeTCP("transparent-proxy"))
 		}
 	}
-	if ctrlCfg.Socket != "" && vmCtrl == nil {
-		fatalf("vm control: %s is set but the forward proxy role is not enabled", envControlSock)
-	}
+	checkVMControlStarted(ctrlCfg, vmCtrl)
 
 	_ = mtlsMetrics // TODO Phase 2: surface metrics through /stats
 

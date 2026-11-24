@@ -1,9 +1,9 @@
-// profile-tags emits the CSV of `include_plugin_*` build tags for a named
-// plugin profile. It replaces the retired lite-tags generator, which derived a
+// profile-tags emits the CSV of `include_plugin_*` and `include_driver_*` build
+// tags for a named profile. It replaces the retired lite-tags generator, which derived a
 // negative tag list for one variant back when plugins were compiled in by default.
 //
-// Every plugin is opt-in: nothing is linked unless a tag names it, so an
-// artifact's contents are exactly its profile entry in profiles.go. A build with
+// Every plugin and driver is opt-in: nothing is linked unless a tag names it, so
+// an artifact's contents are exactly its entries in profiles.go. A build with
 // no tags registers no plugins and rejects any config naming one.
 //
 // Usage: every call site uses `go -C <path>/scripts/profile-tags run . <profile>`,

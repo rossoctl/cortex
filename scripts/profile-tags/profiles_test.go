@@ -44,6 +44,8 @@ func TestTags_ReproduceTodaysDefaults(t *testing.T) {
 		{"lite", []string{
 			"jwtvalidation", "litellm_budgettrack", "staticinject", "tokenexchange", "tokenexchangeaiac",
 		}},
+		// A full tag names a driver; a bare name is a plugin.
+		{"hostegress", []string{"include_driver_moca", "staticinject"}},
 	} {
 		t.Run(tc.profile, func(t *testing.T) {
 			got, err := Tags(ProfileName(tc.profile))
@@ -52,7 +54,10 @@ func TestTags_ReproduceTodaysDefaults(t *testing.T) {
 			}
 			var wantTags []string
 			for _, n := range tc.want {
-				wantTags = append(wantTags, "include_plugin_"+n)
+				if !strings.HasPrefix(n, "include_") {
+					n = "include_plugin_" + n
+				}
+				wantTags = append(wantTags, n)
 			}
 			sort.Strings(wantTags)
 			if strings.Join(got, ",") != strings.Join(wantTags, ",") {
