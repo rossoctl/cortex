@@ -169,14 +169,13 @@ func (c *Config) AccountingOn() bool {
 // llm.savings.* counters, over OTLP/HTTP, to the central collector (design §5.10).
 //
 //	metrics_push:
-//	  enabled: true     # default true; METRICS_PUSH=false turns the push off
-//	  url: ""           # default DefaultMetricsPushURL; METRICS_PUSH_URL overrides
+//	  enabled: true     # default true, but with no URL nothing is sent
+//	  url: ""           # no default; METRICS_PUSH_URL overrides
 //	  token: ""         # METRICS_PUSH_TOKEN; sent as Authorization: Bearer <token>
 //	  interval: 30s     # METRICS_PUSH_INTERVAL
 //
-// With no URL in the file or the environment, the push goes to DefaultMetricsPushURL, the
-// central collector (deploy/central). To send nothing, set enabled: false or METRICS_PUSH=false.
-// The block is the same in a cluster and on a laptop.
+// There is no default URL in code: with no URL nothing leaves the machine. The built-in
+// ~/.cortex/config.yaml (cmd/cortex/local.go) writes the central collector's URL. The block is the same in a cluster and on a laptop.
 //
 // NOT HOT-RELOADABLE: the push is started once at boot, so a reload that changes the block is
 // refused (reloader.validateReloadable), as for listener.*. The token is never logged; /config
@@ -197,14 +196,9 @@ type MetricsPushConfig struct {
 // it unset.
 const DefaultMetricsPushInterval = 30 * time.Second
 
-// DefaultMetricsPushURL is metrics_push.url when the block and the environment leave it unset:
-// the Cortex path of the central collector's Route (deploy/central/overlays/openshift/routes.yaml).
-const DefaultMetricsPushURL = "https://cortex-central.apps.epoc001.ete14.res.ibm.com/cortex"
-
 // Resolve returns the block with the environment applied: METRICS_PUSH (a boolean),
 // METRICS_PUSH_URL, METRICS_PUSH_TOKEN and METRICS_PUSH_INTERVAL (a Go duration) override the
-// file, an unset URL becomes DefaultMetricsPushURL, and an unset interval becomes
-// DefaultMetricsPushInterval. Safe on a nil receiver; the
+// file, and an unset interval becomes DefaultMetricsPushInterval. Safe on a nil receiver; the
 // receiver is not changed.
 //
 // A METRICS_PUSH that is not a boolean turns the push off, so a typo never sends anything. A
@@ -239,9 +233,6 @@ func (m *MetricsPushConfig) Resolve(env func(string) string) MetricsPushConfig {
 			out.Interval = d
 		}
 	}
-	if strings.TrimSpace(out.URL) == "" {
-		out.URL = DefaultMetricsPushURL
-	}
 	if out.Interval == 0 {
 		out.Interval = DefaultMetricsPushInterval
 	}
@@ -251,8 +242,7 @@ func (m *MetricsPushConfig) Resolve(env func(string) string) MetricsPushConfig {
 // IsEnabled is Enabled with its default, true.
 func (m MetricsPushConfig) IsEnabled() bool { return m.Enabled == nil || *m.Enabled }
 
-// On reports whether anything is pushed: enabled, and a URL to push to. After Resolve the URL
-// is never empty, so On is IsEnabled.
+// On reports whether anything is pushed: enabled, and a URL to push to.
 func (m MetricsPushConfig) On() bool { return m.IsEnabled() && m.URL != "" }
 
 // Validate refuses a URL that is not https, other than http to a loopback address, a URL with

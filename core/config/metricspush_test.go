@@ -16,14 +16,11 @@ func envOf(m map[string]string) func(string) string {
 
 func TestMetricsPushConfig_ResolveDefaults(t *testing.T) {
 	got := (*MetricsPushConfig)(nil).Resolve(envOf(nil))
-	if !got.IsEnabled() || got.URL != DefaultMetricsPushURL || got.Token != "" || got.Interval != 30*time.Second {
-		t.Errorf("Resolve(nil) = %+v, want enabled, the central URL, no token, 30s", got)
+	if !got.IsEnabled() || got.URL != "" || got.Token != "" || got.Interval != 30*time.Second {
+		t.Errorf("Resolve(nil) = %+v, want enabled, no URL, no token, 30s", got)
 	}
-	if !got.On() {
-		t.Error("On() with no URL set, want true: the push goes to the central collector")
-	}
-	if got := (&MetricsPushConfig{}).Resolve(envOf(map[string]string{"METRICS_PUSH": "false"})); got.On() {
-		t.Error("On() with METRICS_PUSH=false, want false: the opt-out sends nothing")
+	if got.On() {
+		t.Error("On() with no URL, want false: nothing is sent without a URL")
 	}
 }
 

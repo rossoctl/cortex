@@ -760,3 +760,30 @@ func TestBuiltinConfig_PricesBobInBobcoins(t *testing.T) {
 		t.Errorf("claude-opus-5-5 on %s: unit %q, want %s", other, got, pricing.CurrencyUSD)
 	}
 }
+
+// The built-in config names the central collector and says how to turn the push off and on,
+// so a user reading ~/.cortex/config.yaml sees where the counters go and how to stop them.
+func TestBuiltinConfig_PushesToTheCentralCollector(t *testing.T) {
+	cortexDir := t.TempDir()
+	p, err := writeBuiltinConfig(cortexDir, filepath.Join(cortexDir, "ca"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := config.Load(p)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	const central = "https://cortex-central.apps.epoc001.ete14.res.ibm.com/cortex"
+	if c.MetricsPush == nil || !c.MetricsPush.IsEnabled() || c.MetricsPush.URL != central {
+		t.Fatalf("metrics_push = %+v, want enabled with url %s", c.MetricsPush, central)
+	}
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"To turn it OFF:", "enabled: false", "To turn it back ON:", "METRICS_PUSH=false", "agentop service restart"} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("built-in config lacks %q", want)
+		}
+	}
+}

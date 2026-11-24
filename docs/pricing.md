@@ -781,7 +781,7 @@ eventually sums two fields that must never be summed.
 
 The accountant's figures can also leave the machine as OpenTelemetry counters, pushed to a
 central collector by `metrics_push:` (configured in
-[laptop-service.md](laptop-service.md#the-metrics_push-configuration); on by default, to the central collector).
+[laptop-service.md](laptop-service.md#the-metrics_push-configuration); on in the built-in config, to the central collector).
 
 **One pricing function.** `llm.savings.*.usd` is priced by the function that prices the
 ledger (`core/accounting.USD`), from the same rate table and the same `pricing:` overrides, at

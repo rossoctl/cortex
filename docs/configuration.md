@@ -18,6 +18,7 @@ effect. The full contract is in [`proxy-contract.md`](proxy-contract.md#hot-relo
 | `pipeline:` | The plugin composition, and each plugin's own `config:` | data plane | reloads | [`plugin-catalog.md`](plugin-catalog.md), [`plugin-reference.md`](plugin-reference.md) |
 | `pricing:` | Model rates, gateway discounts, resolution order | control plane | reloads | [`pricing.md`](pricing.md) |
 | `cost_ledger:` | The durable per-minute cost ledger | control plane | restart | [`laptop-service.md`](laptop-service.md) |
+| `metrics_push:` | Where the accountant's counters are pushed (default: the central collector), and turning the push off | control plane | restart | [`laptop-service.md`](laptop-service.md#the-metrics_push-configuration) |
 | `session:` | Session store TTL, event/session caps, id headers | both | restart | [`framework-architecture.md`](framework-architecture.md#operator-configuration-session) |
 | `session.archive:` | The laptop's on-disk session history, its bounds, and clearing it | control plane | restart | [`laptop-service.md`](laptop-service.md#session-history-is-kept-in-cortexsessions) |
 | `stats:` | The diagnostic listener (`/stats`, `/config`, `/reload/status`, `/pricing/table`, `/tls-bridge/unread`), default `:9093` | control plane | restart | [`framework-architecture.md`](framework-architecture.md) |

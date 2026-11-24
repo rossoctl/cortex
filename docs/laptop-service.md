@@ -804,22 +804,43 @@ it back on.
 
 ### The `metrics_push:` configuration
 
-Cortex pushes the accountant's savings counters to a central OpenTelemetry collector. **By
-default it pushes to the central collector, `https://cortex-central.apps.epoc001.ete14.res.ibm.com/cortex`.**
-To send nothing, set `enabled: false` or `METRICS_PUSH=false`.
+Cortex can push the accountant's savings counters to a central OpenTelemetry collector. The
+`~/.cortex/config.yaml` that `agentop setup` writes turns the push **on**, to the central
+collector at `https://cortex-central.apps.epoc001.ete14.res.ibm.com/cortex`. With no URL, nothing is sent.
 
 ```yaml
 metrics_push:
-  enabled: true     # default true; false sends nothing
-  url: ""           # the collector's base URL; Cortex posts to <url>/v1/metrics. Empty: the central collector
+  enabled: true     # default true, but with no URL nothing is sent
+  url: https://cortex-central.apps.epoc001.ete14.res.ibm.com/cortex   # Cortex posts to <url>/v1/metrics
   token: ""         # sent as Authorization: Bearer <token>
   interval: 30s
 ```
 
+A `~/.cortex/config.yaml` written before this block was added has no `metrics_push:` block, so
+it pushes nothing. To turn the push on there, add the block above, then run
+`agentop service restart`.
+
+**To turn the push off:**
+
+1. Open `~/.cortex/config.yaml`.
+2. Under `metrics_push:`, set `enabled: false`.
+3. Run `agentop service restart`.
+
+**To turn the push back on:**
+
+1. Open `~/.cortex/config.yaml`.
+2. Under `metrics_push:`, set `enabled: true`.
+3. If `METRICS_PUSH=false` is set in the proxy's environment, remove it. The environment wins
+   over the file.
+4. Run `agentop service restart`.
+
+The block is not hot-reloaded. If you save a change to it while the proxy runs, the reloader
+refuses the whole save until the restart.
+
 | Field | Environment override | Default | Meaning |
 |---|---|---|---|
 | `enabled` | `METRICS_PUSH` | `true` | A value that is not a boolean turns the push off. |
-| `url` | `METRICS_PUSH_URL` | `https://cortex-central.apps.epoc001.ete14.res.ibm.com/cortex` | Must be `https`. `http` is allowed only to a loopback address. A URL with user info (`https://user:pass@host`) or a query string is refused, because neither is sent: put the credential in `token`. In the file that fails startup; in `METRICS_PUSH_URL` it logs a WARN and turns the push off. |
+| `url` | `METRICS_PUSH_URL` | *(none; the built-in config sets the central collector)* | Must be `https`. `http` is allowed only to a loopback address. A URL with user info (`https://user:pass@host`) or a query string is refused, because neither is sent: put the credential in `token`. In the file that fails startup; in `METRICS_PUSH_URL` it logs a WARN and turns the push off. |
 | `token` | `METRICS_PUSH_TOKEN` | *(none)* | Never logged. `/config` serves it redacted. |
 | `interval` | `METRICS_PUSH_INTERVAL` | `30s` | How often the counters are pushed. |
 
@@ -842,8 +863,8 @@ login moves the token counters alone.
 The counters are cumulative. A push that fails is counted in `llm.proxy.export_failures`,
 logged as a WARN at most once a minute, and retried by the next push. It never delays or fails
 a request. The collector refuses a push without the right `token` (HTTP 401), so a machine
-with no token logs that WARN once a minute. With the push off the proxy logs one line at
-startup, `metrics push off`, and opens no connection.
+with no token logs that WARN once a minute. With the push off, or no URL, the proxy logs
+one line at startup, `metrics push off`, and opens no connection.
 
 A bad block in the config file fails the config load, like any other block: Cortex does not
 start, or a reload is refused. The `METRICS_PUSH*` variables are read at startup; a bad
