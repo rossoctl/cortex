@@ -810,6 +810,8 @@ func TestHost_CloseDoesNotWaitForAWedgedObservation(t *testing.T) {
 	<-entered
 	start := time.Now()
 	_ = h.Close()
+	// timing: the hook deliberately never returns, so the only way to confirm Close's grace
+	// period actually bounds the wait (rather than blocking forever) is to measure elapsed time.
 	if d := time.Since(start); d > closeObserveWait+500*time.Millisecond {
 		t.Errorf("Close took %v, want at most about %v", d, closeObserveWait)
 	}

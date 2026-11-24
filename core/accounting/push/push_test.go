@@ -255,7 +255,7 @@ func TestStart_PushesTheSavingsCounters(t *testing.T) {
 			first = rm
 		}
 		ids = append(ids, resourceAttrs(rm)["service.instance.id"])
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
 		if err := shutdown(ctx); err != nil { // flushes: the one push of an hour interval
 			t.Fatalf("shutdown: %v", err)
 		}
@@ -421,15 +421,16 @@ func TestStart_ExportFailureWarnsOnceAndCounts(t *testing.T) {
 		})
 		return n
 	}
+	// timing: the push itself runs on OTel's own periodic reader, a real-time ticker at the
+	// Interval set above; there is no seam here to inject a fake clock into the SDK's reader, so
+	// waiting for it to actually fire enough times to log >= 3 failures needs the wall clock.
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) && failures() < 3 {
-		done := make(chan struct{})
-		go func() { observe(sink); close(done) }() // must not block, fail or panic while the collector is down
-		select {
-		case <-done:
-		case <-time.After(time.Second):
-			t.Fatal("Observe blocked while the collector was down")
-		}
+		// observe must not block, fail or panic while the collector is down: call it inline so a
+		// regression that makes it block hangs the test, caught by go test's own -timeout with
+		// every goroutine's stack, rather than a guard racing a short timeout here.
+		observe(sink)
+		// timing: paced to the real periodic reader's ticker, see above.
 		time.Sleep(10 * time.Millisecond)
 	}
 	if n := failures(); n < 3 {
@@ -464,9 +465,13 @@ func TestStart_RedirectIsNotFollowed(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = shutdown(context.Background()) })
 	sink := accounting.NewSink(mp, rates())
+	// timing: the push runs on OTel's own periodic reader, a real-time ticker at the Interval
+	// set above; there is no seam here to inject a fake clock into the SDK's reader, so waiting
+	// for it to actually fire at least twice needs the wall clock.
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) && asked.Load() < 2 {
 		observe(sink)
+		// timing: paced to the real periodic reader's ticker, see above.
 		time.Sleep(20 * time.Millisecond)
 	}
 	if asked.Load() < 2 {

@@ -245,7 +245,7 @@ func (s *Sink) Observe(meta accountant.RequestMeta, u accountant.Usage, output i
 // for mode == accountant.BillingAPI, the same gate Observe applies (design §5.7a: a ping's basis
 // is the thread's). 0, or a non-API mode, books no money. A priced ping is counted by Observe
 // instead, never here too. Safe on a nil Sink.
-func (s *Sink) CountPing(model, outcome string, projectedUSD float64, mode accountant.BillingMode) {
+func (s *Sink) CountPing(model, endpoint, outcome string, projectedUSD float64, mode accountant.BillingMode) {
 	if s == nil || s.sink == nil {
 		return
 	}
@@ -257,7 +257,11 @@ func (s *Sink) CountPing(model, outcome string, projectedUSD float64, mode accou
 	ctx := context.Background()
 	modelAttr := attribute.String("model", model)
 	s.keepalivePings.Add(ctx, 1, metric.WithAttributes(modelAttr, attribute.String("outcome", outcome)))
-	if projectedUSD > 0 && mode == accountant.BillingAPI {
+	// The _usd counters are dollars by name; an endpoint priced in another currency (pricing.
+	// UnitOf non-empty) must not add its figures to them (review finding). s.pricer.resolver is
+	// set once in NewSink and never mutated after, so this reads it with no lock needed.
+	billedUSD := pricing.UnitOf(s.pricer.resolver, endpoint, model) == ""
+	if projectedUSD > 0 && mode == accountant.BillingAPI && billedUSD {
 		s.keepaliveCostUSD.Add(ctx, projectedUSD, metric.WithAttributes(modelAttr))
 		s.keepaliveEstimatedUSD.Add(ctx, projectedUSD, metric.WithAttributes(modelAttr))
 	}
@@ -288,16 +292,19 @@ func (s *Sink) observeInferenceMetrics(meta accountant.RequestMeta, u accountant
 	ctx := context.Background()
 	modelAttr := attribute.String("model", meta.Model)
 	billedAPI := meta.Billing.Mode == accountant.BillingAPI
+	// The _usd counters are dollars by name; an endpoint priced in another currency (pricing.
+	// UnitOf non-empty) must not add its figures to them (review finding).
+	billedUSD := billedAPI && pricing.UnitOf(s.pricer.resolver, s.pricer.request.endpoint, meta.Model) == ""
 	actual, estimated := s.priceUsageSplit(meta.Model, u, output)
 	total := actual + estimated
 
 	if meta.RequestID == "" {
 		// A ping reaches here only once Host.Ping has priced it, which needs a 2xx answer.
 		s.keepalivePings.Add(ctx, 1, metric.WithAttributes(modelAttr, attribute.String("outcome", PingOK)))
-		if total > 0 && billedAPI {
+		if total > 0 && billedUSD {
 			s.keepaliveCostUSD.Add(ctx, total, metric.WithAttributes(modelAttr))
 		}
-		if estimated > 0 && billedAPI {
+		if estimated > 0 && billedUSD {
 			s.keepaliveEstimatedUSD.Add(ctx, estimated, metric.WithAttributes(modelAttr))
 		}
 		return
@@ -316,16 +323,16 @@ func (s *Sink) observeInferenceMetrics(meta accountant.RequestMeta, u accountant
 			s.inferenceTokens.Add(ctx, int64(t.n), metric.WithAttributes(modelAttr, attribute.String("tier", t.name)))
 		}
 	}
-	if total > 0 && billedAPI {
+	if total > 0 && billedUSD {
 		s.inferenceCostUSD.Add(ctx, total, metric.WithAttributes(modelAttr))
 	}
-	if estimated > 0 && billedAPI {
+	if estimated > 0 && billedUSD {
 		s.inferenceEstimatedUSD.Add(ctx, estimated, metric.WithAttributes(modelAttr))
 	}
 	if u.CacheRead == 0 {
 		missAttrs := metric.WithAttributes(modelAttr, attribute.String("cause", cause))
 		s.cacheMisses.Add(ctx, 1, missAttrs)
-		if usd := s.missPremiumUSD(meta.Model, u); usd > 0 && billedAPI {
+		if usd := s.missPremiumUSD(meta.Model, u); usd > 0 && billedUSD {
 			s.cacheMissCostUSD.Add(ctx, usd, missAttrs)
 		}
 	}
@@ -463,6 +470,12 @@ func (p *boundPricer) Price(model string, _ time.Time, t acmetrics.Tier) (float6
 	if !ok {
 		b = p.request
 	}
+	// llm.savings.*.usd is dollars by name; an endpoint priced in another currency (pricing.
+	// UnitOf non-empty) has no rate this Pricer can report as one (review finding). (0, true) is
+	// "no money, and estimated", the same answer an unknown tier gets below.
+	if pricing.UnitOf(p.resolver, b.endpoint, model) != "" {
+		return 0, true
+	}
 	// CacheWrite1h has no pricing.Tier of its own — see pricing.Tier's doc — so it is priced
 	// through USD1h rather than pricingTier+USD, same as priceUsageSplit and missPremiumUSD.
 	if t == acmetrics.TierCacheWrite1h {
@@ -509,11 +522,11 @@ func (h *Host) observe(meta accountant.RequestMeta, u accountant.Usage, output i
 
 // countPing counts a ping Host.Ping refused to price (Sink.CountPing), off the keeper's goroutine
 // like observe. It is not an observation of a Result, so observeHook does not see it.
-func (h *Host) countPing(model, outcome string, projectedUSD float64, mode accountant.BillingMode) {
+func (h *Host) countPing(model, endpoint, outcome string, projectedUSD float64, mode accountant.BillingMode) {
 	if h.sink == nil {
 		return
 	}
-	h.goObserve(func() { h.sink.CountPing(model, outcome, projectedUSD, mode) })
+	h.goObserve(func() { h.sink.CountPing(model, endpoint, outcome, projectedUSD, mode) })
 }
 
 // goObserve runs fn on a goroutine of its own that Close waits for, unless Close has started.

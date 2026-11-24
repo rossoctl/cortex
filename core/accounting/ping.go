@@ -117,7 +117,7 @@ func (h *Host) Ping(sessionID string, client *model.EventClient, host string, p 
 		if outcome == PingTimeout {
 			projected = info.ProjectedUSD
 		}
-		h.countPing(p.Model, outcome, projected, billing.Mode)
+		h.countPing(p.Model, host, outcome, projected, billing.Mode)
 		return accountant.Result{}, false
 	}
 	// The zero check above lets mixed-sign counters that sum to zero (or an outright negative
@@ -128,7 +128,7 @@ func (h *Host) Ping(sessionID string, client *model.EventClient, host string, p 
 		Input: u.Input, CacheWrite: u.CacheWrite, CacheRead: u.CacheRead, Output: u.Output,
 		CacheWrite1h: u.CacheWrite1h,
 	}) {
-		h.countPing(p.Model, outcome, 0, billing.Mode)
+		h.countPing(p.Model, host, outcome, 0, billing.Mode)
 		return accountant.Result{}, false
 	}
 	if p.Host == "" {

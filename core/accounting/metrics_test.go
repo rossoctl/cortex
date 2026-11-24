@@ -415,6 +415,48 @@ func TestSink_APIBillingMovesTier1Money(t *testing.T) {
 	}
 }
 
+// creditRates is zone with one endpoint's figures denominated in credits rather than USD: a
+// provider that is not configured in USD (review finding — the sink priced every endpoint's
+// tiers through USD/USD1h with no pricing.UnitOf check, so a credits-billed provider added
+// credits to every *_usd counter and to llm.savings.*.usd, alongside every other proxy's real
+// dollars).
+type creditRates struct{ zoneRates }
+
+func (creditRates) CurrencyFor(endpoint, _ string) string {
+	if endpoint == "gw.example" {
+		return "credits"
+	}
+	return "USD"
+}
+
+// Neither Observe's Tier 1 counters nor CountPing's keep-alive pair book a credits-billed
+// endpoint's figures into a counter named _usd: pricing.UnitOf is the one rule every producer of
+// a unit goes through, and these are dollars by name.
+func TestSink_NonUSDEndpointDoesNotBookIntoTheUSDCounters(t *testing.T) {
+	r := creditRates{zoneRates{"gw.example": 1e-6}}
+	mp, rd := manual(t)
+	s := NewSink(mp, r)
+	res := maskResult()
+	s.Observe(accountant.RequestMeta{RequestID: "r1", Model: "m1", At: time.Now(), Billing: apiBilling},
+		accountant.Usage{Input: 10}, 5, res, "gw.example", 10, false)
+	for _, name := range []string{"llm.inference.cost_usd", "llm.inference.estimated_cost_usd", "llm.cache.miss_cost_usd"} {
+		if got := sum(t, rd, name, nil); got != 0 {
+			t.Errorf("%s = %v, want 0 for a credits-billed endpoint", name, got)
+		}
+	}
+	// The token counter is not gated: the same request happened whatever currency bills it.
+	if got := sum(t, rd, "llm.inference.tokens", map[string]string{"tier": "input"}); got != 10 {
+		t.Errorf("llm.inference.tokens{tier=input} = %v, want 10", got)
+	}
+
+	s.CountPing("m1", "gw.example", PingTimeout, 0.5, accountant.BillingAPI)
+	for _, name := range []string{"llm.keepalive.cost_usd", "llm.keepalive.estimated_cost_usd"} {
+		if got := sum(t, rd, name, nil); got != 0 {
+			t.Errorf("%s = %v, want 0 for a credits-billed endpoint", name, got)
+		}
+	}
+}
+
 // A dry-run spend and one the library refused to price are recorded by the ledger, flagged
 // Projected or Refused, and add nothing to any total; the sink books neither. Both outputs say 0
 // for them, and an applied spend still counts in both.
