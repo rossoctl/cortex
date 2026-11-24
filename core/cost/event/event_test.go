@@ -613,6 +613,34 @@ func TestFigures_SplitsByBasis(t *testing.T) {
 	}
 }
 
+// A basis-usd spend whose own Currency differs from the record's must not enter
+// PluginSpendMicros: its call priced at a different rate table than the primary request's (a
+// credits-billed gateway beside a USD-endpoint operator call), so adding its figure in would mix
+// units into one total (review finding). A spend with no Currency (the default, same as the
+// record's own empty Currency) still counts, matching every other test's fixtures above.
+func TestFigures_SkipsASpendInACurrencyNotTheRecordsOwn(t *testing.T) {
+	ev := Event{
+		Spends: []SpendRecord{
+			{Basis: BasisUSD, USD: 0.01},              // same currency (both default/USD): counted
+			{Basis: BasisUSD, USD: 5, Currency: "CR"}, // a different currency: skipped
+		},
+	}
+	if got := ev.Figures().PluginSpendMicros; got != 10_000 {
+		t.Errorf("PluginSpendMicros = %d, want 10000 (only the same-currency spend)", got)
+	}
+
+	credits := Event{
+		Currency: "CR",
+		Spends: []SpendRecord{
+			{Basis: BasisUSD, USD: 5, Currency: "CR"}, // same currency as the record: counted
+			{Basis: BasisUSD, USD: 0.01},              // USD (the default): skipped here
+		},
+	}
+	if got := credits.Figures().PluginSpendMicros; got != 5_000_000 {
+		t.Errorf("PluginSpendMicros = %d, want 5000000 (only the credits-currency spend)", got)
+	}
+}
+
 // A penalty bigger than the saving is a real net cost: AvoidedAPIEquivalentMicros and
 // AvoidedUnknownMicros must go negative, the same way PenaltyUnits already can exceed
 // AvoidedUnits on the same line (review finding: both used to floor at 0 via MicrosOrZero,

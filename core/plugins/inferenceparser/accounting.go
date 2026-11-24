@@ -37,9 +37,23 @@ func (p *InferenceParser) SetAccounting(h *accounting.Host) {
 }
 
 // accountant asks the accountant for this request's savings, once, at the first settle pass that
-// has usage (the Result prices the bill, so a pass with no usage has nothing for it), and keeps
-// the answer on the request for any later pass. The zero value — no figure — with accounting off
-// or before the usage arrives: with accounting off, no saving is recorded (design §5.3).
+// has usage OR a reported op, and keeps the answer on the request for any later pass. The zero
+// value — no figure — with accounting off or before either arrives: with accounting off, no
+// saving is recorded (design §5.3).
+//
+// A REPORTED OP IS ASKED FOR EVEN AT A ZERO PROMPT TOTAL. Savings prices from the upstream
+// prompt-tier counters, so a request with none of them has nothing for Savings to price — but
+// Spends does not depend on those counters at all (each spend record prices from its own
+// operator call, spendRecord, savings.go), and the one caller of this method, withAccountant,
+// copies Spends from the same Extras. Gating on the prompt total alone used to drop every spend
+// on an error status with no prompt usage, or on a request a context-guru component billed
+// before an inference-router resend took it past one round (review finding): the completed,
+// accepted call never reached the ledger, /v1/usage or the sessions API for either. Checking
+// ReportedOps too, rather than dropping the prompt-total check outright, keeps this method from
+// asking on the pass before ANY data has arrived (TestSettleCost_CallsAccountingOnce's first
+// call, inference extension allocated but nothing on it yet) — that pass has no ops either.
+// Host.Compute's own checks (PlausibleUsage, SkipReason) still refuse what they always refused;
+// this just stops refusing spends for a count Savings alone needed.
 //
 // NOT ASKED WHEN SETTLE REFUSED THE COUNTS (settled.UsageRefused, or RejectedImplausibleUsage): the
 // accountant prices its savings from those same counters, so an impossible report would produce an
@@ -48,7 +62,10 @@ func (p *InferenceParser) SetAccounting(h *accounting.Host) {
 // counts is still asked; Host.Compute refuses implausible counts on its own too.
 func (p *InferenceParser) accountant(pctx *pipeline.Context, settled settle.Settled) accounted {
 	inf := pctx.Extensions.Inference
-	if p.acct == nil || inf == nil || inf.InputTokens+inf.CacheReadTokens+inf.CacheWriteTokens == 0 {
+	if p.acct == nil || inf == nil {
+		return accounted{}
+	}
+	if inf.InputTokens+inf.CacheReadTokens+inf.CacheWriteTokens == 0 && len(pctx.ReportedOps()) == 0 {
 		return accounted{}
 	}
 	if settled.UsageRefused || settled.RejectedReason == event.RejectedImplausibleUsage {

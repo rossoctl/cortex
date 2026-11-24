@@ -35,9 +35,9 @@ func rateOf(r cases.Rate) func(model, host string, tt accountant.TierTokens) (fl
 // spend path does, via spendRecord reading Call.Usage.CostUSD first — the case fixtures always
 // set CostUSD on a spend's usage, so spendOf is never asked to price one).
 func spendOf(c cases.Case) SpendPrice {
-	return func(call *accountant.ModelCall, host string) (float64, bool) {
+	return func(call *accountant.ModelCall, host string) (float64, bool, string) {
 		rate := c.ModelRate(call.Model)
-		return float64(rate.CallPicos(call.Usage)) / 1e12, false
+		return float64(rate.CallPicos(call.Usage)) / 1e12, false, ""
 	}
 }
 

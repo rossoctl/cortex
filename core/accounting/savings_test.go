@@ -207,6 +207,21 @@ func TestSavingsBilled_SpendBasisFollowsTheMode(t *testing.T) {
 	}
 }
 
+// A spend's own Currency, from its SpendPrice closure, reaches the record even though the
+// primary request's Currency isn't threaded through SavingsBilled at all: the two are
+// independent (the call's host can resolve to a different rate table than the request's — a
+// credits-billed gateway beside a USD-endpoint operator call, review finding), and
+// event.Figures, not this layer, is where a mismatch is caught.
+func TestSavingsBilled_SpendCurrencyFollowsItsOwnCall(t *testing.T) {
+	res := accountant.Result{Ops: []accountant.PricedOp{{Kind: accountant.KindSpend, Operator: "context-guru.summarize",
+		Call: &accountant.ModelCall{Model: "m", Usage: accountant.CallUsage{Usage: accountant.Usage{CacheRead: 1000}}}}}}
+	spend := func(c *accountant.ModelCall, host string) (float64, bool, string) { return 5, false, "CR" }
+	_, ex := SavingsBilled(res, (&pricer{}).price, spend, "m", "h", accountant.BillingAPI, config.DefaultSubscriptionWeights())
+	if len(ex.Spends) != 1 || ex.Spends[0].Currency != "CR" {
+		t.Errorf("spends = %+v, want one with Currency CR", ex.Spends)
+	}
+}
+
 // An operator with applied and dry-run ops gets two savings: the applied figure, and a projected
 // one, so a "would have saved" amount never enters an applied figure.
 func TestSavings_DryRunAmountsStayOutOfTheAppliedFigure(t *testing.T) {

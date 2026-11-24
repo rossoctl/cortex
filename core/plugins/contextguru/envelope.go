@@ -83,6 +83,14 @@ func toolsOps(cl, fw []gjson.Result) []accountant.Operation {
 		for i, d := range arr {
 			base := d.Get("name").String()
 			if base == "" {
+				// OpenAI chat tools nest the name one level down: {"type":"function","function":
+				// {"name":"..."}}, not a top-level "name" (the Responses/Anthropic shape this
+				// function otherwise matches). Falling back here, rather than adding a second
+				// lookup path, keeps a genuinely unnamed declaration (neither field set) sharing
+				// the "\x00" counter below.
+				base = d.Get("function.name").String()
+			}
+			if base == "" {
 				base = "\x00" // unnamed declarations share one counter
 			}
 			k := base

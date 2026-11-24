@@ -45,8 +45,12 @@ type Extras struct {
 
 // SpendPrice prices one model call an operator made: its whole bill, output included, at the
 // call's own model and host (host is the request's when the call names none) and its own prompt
-// size. estimated follows USD's rule.
-type SpendPrice func(c *accountant.ModelCall, host string) (usd float64, estimated bool)
+// size. estimated follows USD's rule. currency is the unit usd is denominated in, empty for the
+// default (USD) — event.SpendRecord.Currency's own convention — because the call's own host can
+// resolve to a different rate table than the primary request's (a credits-billed gateway beside
+// a USD-endpoint operator call, review finding): usd is never assumed to be the request's
+// currency just because the field is still named USD.
+type SpendPrice func(c *accountant.ModelCall, host string) (usd float64, estimated bool, currency string)
 
 // BasisOf is event.Saving.Basis for a billing mode: "usd" for api, "subscriptionEquivalent" for
 // subscription, "unknown" for anything else.
@@ -75,9 +79,9 @@ func Units(w config.SubscriptionWeights, tt accountant.TierTokens, output int) f
 // estimated. Host.Savings prices the output.
 func Savings(res accountant.Result, price func(model, host string, tt accountant.TierTokens) (float64, bool),
 	reqModel, reqHost string) ([]event.Saving, Extras) {
-	promptOnly := func(c *accountant.ModelCall, host string) (float64, bool) {
+	promptOnly := func(c *accountant.ModelCall, host string) (float64, bool, string) {
 		usd, est := price(c.Model, host, callTiers(c))
-		return usd, est || c.Usage.Output > 0
+		return usd, est || c.Usage.Output > 0, ""
 	}
 	return SavingsBilled(res, price, promptOnly, reqModel, reqHost, accountant.BillingAPI, config.DefaultSubscriptionWeights())
 }
@@ -261,10 +265,13 @@ func spendRecord(op accountant.PricedOp, spend SpendPrice, reqHost, basis string
 		Output: c.Usage.Output, Basis: basis, Estimated: op.Estimated || basis != BasisUSD,
 	}
 	if c.Usage.CostUSD > 0 {
+		// CostUSD is the provider's own fact, always dollars by the name's own contract
+		// (accountant.CallUsage's doc) — never the rate table's currency, so this is the one
+		// branch that does not ask spend for one.
 		r.USD = c.Usage.CostUSD
 	} else if spend != nil {
-		usd, est := spend(c, host)
-		r.USD, r.Estimated = usd, r.Estimated || est
+		usd, est, currency := spend(c, host)
+		r.USD, r.Estimated, r.Currency = usd, r.Estimated || est, currency
 	}
 	if basis == BasisSubscriptionEquivalent {
 		r.Units = Units(w, tt, c.Usage.Output)
@@ -297,14 +304,19 @@ func largestTier(t accountant.TierTokens) string {
 // the request's model, the endpoint it was sent to (after any redirect: the server that bills)
 // and its prompt total, in the billing mode the client's credential implied, with the configured
 // subscription weights. Extras.Thread is the request's accountant thread. ok is Compute's: false
-// when there is no Result, so there is no figure. Latched like Compute, so a repeated settle gets
-// the same answer.
+// when there is no Result, so there is no figure — EXCEPT that a request with a reported spend
+// (an operator's own model call, pctx.ReportedOps) still answers ok with just that spend, savings
+// excluded, when Compute refused for a reason that is about PRICING THE REQUEST rather than about
+// the request at all (review finding: an error status with no prompt usage, or a context-guru
+// call billed before an inference-router resend took the request past one round, used to lose
+// the spend along with the never-priced savings). A spend prices from its own operator call
+// (spendRecord) — it does not need the library's Compute, which is what makes this safe to do
+// without it: Compute's thread-state transition is skipped entirely, so a multi-round request's
+// mismatched usage/body pair cannot corrupt the thread's cache-effect tracking for later
+// requests, which is the actual reason Compute refuses one. Latched like Compute, so a repeated
+// settle gets the same answer either way.
 func (h *Host) Savings(pctx *pipeline.Context) ([]event.Saving, Extras, bool) {
 	if h == nil || pctx == nil {
-		return nil, Extras{}, false
-	}
-	res, ok := h.Compute(pctx)
-	if !ok {
 		return nil, Extras{}, false
 	}
 	model := ""
@@ -320,18 +332,39 @@ func (h *Host) Savings(pctx *pipeline.Context) ([]event.Saving, Extras, bool) {
 	if b := pipeline.GetState[accountant.Billing](pctx, billingKey); b != nil {
 		mode = b.Mode
 	}
-	// The request's own ops price at the request's prompt size, so its long-context tier applies.
-	price := func(m, at string, tt accountant.TierTokens) (float64, bool) {
-		return TierUSD(h.resolver, at, m, promptTotal, tt)
-	}
 	// An operator's model call is a request of its own: its prompt tiers and its output price at
-	// its own prompt size, so a small call never takes the request's long-context premium.
-	spend := func(c *accountant.ModelCall, at string) (float64, bool) {
+	// its own prompt size, so a small call never takes the request's long-context premium. Its
+	// currency is its own host's, which can differ from the primary request's (a credits-billed
+	// gateway beside a USD-endpoint operator call, review finding) — pricing.UnitOf, not assumed.
+	spend := func(c *accountant.ModelCall, at string) (float64, bool, string) {
 		tt := callTiers(c)
 		total := tt.Input + tt.CacheWrite5m + tt.CacheWrite1h + tt.CacheRead
 		usd, est := TierUSD(h.resolver, at, c.Model, total, tt)
 		out, outEst := USD(h.resolver, at, c.Model, total, pricing.TierOutput, int64(c.Usage.Output))
-		return usd + out, est || outEst
+		return usd + out, est || outEst, pricing.UnitOf(h.resolver, at, c.Model)
+	}
+	res, ok := h.Compute(pctx)
+	if !ok {
+		ex := Extras{Thread: ThreadOf(pctx).ID}
+		for _, op := range pctx.ReportedOps() {
+			if op.Kind != accountant.KindSpend || op.DryRun || op.Call == nil {
+				continue
+			}
+			ex.Spends = append(ex.Spends, spendRecord(accountant.PricedOp{
+				OpID: op.ID, Kind: op.Kind, Operator: op.Operator, ChangeID: op.ChangeID, Call: op.Call,
+			}, spend, host, BasisOf(mode), h.weights))
+		}
+		if len(ex.Spends) == 0 {
+			return nil, Extras{}, false
+		}
+		for i := range ex.Spends {
+			ex.Spends[i].Thread = ex.Thread
+		}
+		return nil, ex, true
+	}
+	// The request's own ops price at the request's prompt size, so its long-context tier applies.
+	price := func(m, at string, tt accountant.TierTokens) (float64, bool) {
+		return TierUSD(h.resolver, at, m, promptTotal, tt)
 	}
 	ss, ex := SavingsBilled(res, price, spend, model, host, mode, h.weights)
 	// The rate table's level for the request's own rates, on every saving that has a dollar

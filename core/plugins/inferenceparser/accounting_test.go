@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rossoctl/accountant"
 	"github.com/rossoctl/cortex/core/accounting"
 	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/cost/pricing"
@@ -140,6 +141,31 @@ func TestSettleCost_PublishesTheAccountantsExtras(t *testing.T) {
 	}
 	if got := ev.Figures().PluginSpendMicros; got != 20_000 {
 		t.Errorf("PluginSpendMicros = %d, want 20000", got)
+	}
+}
+
+// A zero prompt total must not drop an already-completed operator spend: Savings prices from
+// the upstream prompt-tier counters, but a spend prices from its own operator call, independent
+// of them (review finding — an error status with no prompt usage, or a context-guru call billed
+// before an inference-router resend, used to lose the spend along with the never-priced
+// savings). A reported op, here a plain KindSetting stand-in (its kind does not matter to the
+// gate, only its presence), is what tells accountant() this is a real pass and not the one
+// before any data arrived (TestSettleCost_CallsAccountingOnce).
+func TestSettleCost_KeepsSpendAtZeroPromptTotal(t *testing.T) {
+	spend := event.SpendRecord{Operator: "context-guru.extract_llm", Model: "m", USD: 0.02, Basis: event.BasisUSD}
+	p := NewInferenceParser()
+	acc := &countingAccountant{extras: accounting.Extras{Spends: []event.SpendRecord{spend}}}
+	p.acct = acc
+	pctx := &pipeline.Context{Path: "/v1/messages", ResponseHeaders: http.Header{}, StatusCode: 500}
+	pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "m"}
+	pctx.ReportOps(accountant.Operation{Kind: accountant.KindSetting, Operator: "context-guru"})
+	p.settleCost(pctx)
+	if acc.calls != 1 {
+		t.Fatalf("Savings called %d times, want 1 at a zero prompt total with a reported op", acc.calls)
+	}
+	ev, ok := publishedCost(t, pctx)
+	if !ok || len(ev.Spends) != 1 || ev.Spends[0] != spend {
+		t.Errorf("record = %+v ok=%v, want the accountant's spend kept at a zero prompt total", ev, ok)
 	}
 }
 

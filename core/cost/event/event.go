@@ -321,8 +321,15 @@ type SpendRecord struct {
 	CacheRead    int `json:"cacheRead,omitempty"`
 	Output       int `json:"output,omitempty"`
 	// USD is the cost the call's response stated, or else its tokens priced at the call's own
-	// model, host and prompt size, output included.
+	// model, host and prompt size, output included. THE FIELD NAME IS HISTORICAL, same as
+	// Event.CostUSD's: see Currency for the unit it is actually in.
 	USD float64 `json:"usd,omitempty"`
+	// Currency is the unit USD is denominated in, empty for the default (USD) — Event.Currency's
+	// own convention, and independent of it: the call's own host can resolve to a different rate
+	// table than the request's (a credits-billed gateway beside a USD-endpoint operator call), so
+	// a consumer that sums Spends into a total must skip a record whose Currency differs from the
+	// total's own rather than mix units (review finding; Figures does this).
+	Currency string `json:"currency,omitempty"`
 	// Basis follows the request's billing mode, as Saving.Basis does: only "usd" is money.
 	Basis string `json:"basis,omitempty"`
 	// Units are the call's tokens in usage-limit units, on a subscriptionEquivalent record only.
@@ -530,7 +537,14 @@ func (e Event) Figures() Figures {
 		}
 		switch sp.Basis {
 		case BasisUSD:
-			spendUSD += sp.USD
+			// A spend's Currency can differ from the record's own (the call's host resolved to
+			// a different rate table than the primary request's, review finding): adding it
+			// here would mix units into PluginSpendMicros, so a record whose own money is in
+			// credits does not also get a stray USD figure, and vice-versa. Dropped, not
+			// re-bucketed: this layer has no second-currency total to put it in.
+			if sp.Currency == e.Currency {
+				spendUSD += sp.USD
+			}
 		case BasisSubscriptionEquivalent:
 			spendUnits += sp.Units
 		case BasisUnknown:

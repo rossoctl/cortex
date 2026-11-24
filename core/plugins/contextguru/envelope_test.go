@@ -40,6 +40,10 @@ var (
 	smallTool = `{"name":"Read","description":"read a file","input_schema":{"type":"object"}}`
 	convo     = `[{"role":"user","content":[{"type":"text","text":"hi` + strings.Repeat(" lorem ipsum dolor", 400) +
 		`","cache_control":{"type":"ephemeral"}}]}]`
+	// OpenAI chat tools, where the name is nested in function.name rather than top-level — see
+	// TestEnvelope_ChatToolRemovalMatchesByNestedFunctionName.
+	bigChatTool   = `{"type":"function","function":{"name":"Big","description":"` + strings.Repeat("x", 4000) + `","parameters":{"type":"object"}}}`
+	smallChatTool = `{"type":"function","function":{"name":"Read","description":"read a file","parameters":{"type":"object"}}}`
 )
 
 func body(tools, system string) []byte {
@@ -126,6 +130,22 @@ func TestEnvelope_ToolfilterIsReportedAndPriced(t *testing.T) {
 	if !saved {
 		t.Errorf("the removal saved nothing: %+v", res.Ops)
 	}
+}
+
+// toolsOps matches a removed OpenAI chat tool by its function.name, not just a top-level "name":
+// on the chat wire a tool is {"type":"function","function":{"name":...}}, so reading only "name"
+// treats every chat tool as unnamed, a removal among them can't be placed, and the request falls
+// back to the no-saving path (review finding).
+func TestEnvelope_ChatToolRemovalMatchesByNestedFunctionName(t *testing.T) {
+	system := `"be brief"`
+	client := body(bigChatTool+`,`+smallChatTool, system)
+	forwarded := body(smallChatTool, system)
+	res, ops := priced(t, client, forwarded)
+	if len(ops) != 1 || ops[0].Operator != "context-guru.toolfilter" || !strings.HasPrefix(ops[0].ChangeID, "cg:toolfilter:decl-removed:") ||
+		ops[0].SizeBefore.Bytes != len(bigChatTool) || ops[0].SizeAfter.Bytes != 0 {
+		t.Fatalf("ops = %+v, want one context-guru.toolfilter removal of the chat-shaped Big tool", ops)
+	}
+	noSumFailure(t, res)
 }
 
 // A request on which only messages changed has no envelope op: the engine's own ops cover it.
