@@ -2725,9 +2725,8 @@ func (m *model) paneContent() (title, body string) {
 		title += m.scopeSuffix(m.agentScope, m.projectScope)
 		body = m.usageBody()
 	case paneAgents:
-		// The window is in the title because the figures are a day's, not a lifetime's, and
-		// this pane has no window cycle of its own to make that discoverable.
-		title = fmt.Sprintf("%s · %s · agents · %s", m.appName(), m.endpoint, m.agentsWindowLabel())
+		// No window here: the COST column header and the footer's `w` hint already name it.
+		title = fmt.Sprintf("%s · %s · agents", m.appName(), m.endpoint)
 		// THE HIGHLIGHTED ROW, not the committed scope: the band and the drawer follow the
 		// cursor here (spendScopeAgent), so the row is what every figure on screen describes.
 		// It used to name the committed scope, which put "scoped to claude-code" over a band

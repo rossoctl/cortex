@@ -171,14 +171,17 @@ func TestAgentsTitle_NamesTheHighlightedRow(t *testing.T) {
 	}
 }
 
-// `w` ON THE AGENTS PANE MOVES THE PANE'S WINDOW, drawer open or closed: the rows, the title and
-// the drawer all answer for one span. The title used to say "today" whatever `w` did, because `w`
-// moved only the drawer and the rows were fixed at today.
-func TestAgentsPane_WCyclesOneWindowForRowsTitleAndDrawer(t *testing.T) {
+// `w` ON THE AGENTS PANE MOVES THE PANE'S WINDOW, drawer open or closed: the rows, the COST
+// header and the drawer all answer for one span. The title does not name the window: the COST
+// header and the footer's `w` hint already do.
+func TestAgentsPane_WCyclesOneWindowForRowsHeaderAndDrawer(t *testing.T) {
 	m, asked := cursorScopeModel(t)
-	title := func() string { return strings.SplitN(m.paneView(), "\n", 2)[0] }
-	if !strings.Contains(title(), "· today") {
-		t.Fatalf("title %q: the pane must still open on today", title())
+	view := func() (title, rest string) {
+		parts := strings.SplitN(m.paneView(), "\n", 2)
+		return parts[0], parts[1]
+	}
+	if title, rest := view(); !strings.Contains(rest, "COST TODAY") || strings.Contains(title, "today") {
+		t.Fatalf("title %q: the pane must open on today, named in the COST header and not in the title", title)
 	}
 
 	pressKey(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
@@ -186,8 +189,10 @@ func TestAgentsPane_WCyclesOneWindowForRowsTitleAndDrawer(t *testing.T) {
 	if len(rows) != 1 || rows[0] != "7d" {
 		t.Errorf("after `w` with the drawer closed, rows requested windows %v; want one, for 7d", rows)
 	}
-	if !strings.Contains(title(), "· 7 days") {
-		t.Errorf("title %q after `w` does not name the 7-day window", title())
+	// runCmds drops the rows reply, so rebuild the table as agentRowsLoadedMsg does.
+	m.rebuildAgentsTable()
+	if title, rest := view(); !strings.Contains(rest, "COST 7 DAYS") || strings.Contains(title, "7 days") {
+		t.Errorf("after `w` the COST header must name the 7-day window and the title %q must not", title)
 	}
 
 	m.spend.expanded = true
