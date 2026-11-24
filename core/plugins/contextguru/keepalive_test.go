@@ -681,6 +681,47 @@ func TestKeepAliveHoldFollowsTheBilledTier(t *testing.T) {
 	}
 }
 
+// 12 minutes is the hold with no wait plan (above), or with the wait plan on but no cause to
+// classify (every fixture there sets keepalive_wait_plan: false precisely so it cannot catch
+// this). With the wait plan on -- the real default -- a thread waiting on its own tool call
+// gets up to cache.keepalive_tool_wait_max_pings (8 by default) pings instead of
+// cache.keepalive_max_pings (2), so its hold is up to 36 minutes, not 12 (review finding: the
+// docs said a flat 12 minutes, and this was the one case no existing test could disprove that).
+func TestKeepAliveHoldIsLongerForAToolWaitUnderTheWaitPlan(t *testing.T) {
+	p := configured(t, `{"engine": {"cache": {"keepalive": true, "keepalive_min_prefix_tokens": 1}}}`)
+	if err := p.Init(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Shutdown(t.Context()) })
+
+	turn := func(pctx *pipeline.Context) keepalive.EntryView {
+		t.Helper()
+		pctx.StartedAt = time.Now()
+		invokeReq(p, pctx)
+		p.OnFinish(t.Context(), pctx)
+		e, _ := p.keeper.Entry(keepalive.Key{Session: sessionID(pctx)})
+		return e
+	}
+	toolWaitPctx := func() *pipeline.Context {
+		pctx := finishedPctx(200, pipeline.AgentRoleMain)
+		pctx.Extensions.Inference.FinishReason = "tool_use"
+		pctx.Extensions.Inference.ToolCalls = []pipeline.InferenceToolCall{{Name: "Bash"}}
+		return pctx
+	}
+	// Turn 0 is counted but never tracked (the engine's first-request gate).
+	turn(toolWaitPctx())
+	e := turn(toolWaitPctx())
+	if e.TTL1h || e.Policy.Idle == 0 {
+		t.Fatalf("5-minute thread: entry %+v", e)
+	}
+	if e.Policy.MaxPings != keepalive.DefaultToolWaitMaxPings {
+		t.Fatalf("MaxPings = %d, want the wait plan's tool-wait default %d", e.Policy.MaxPings, keepalive.DefaultToolWaitMaxPings)
+	}
+	if hold := time.Duration(e.Policy.MaxPings+1) * e.Policy.Idle; hold != 36*time.Minute {
+		t.Fatalf("tool-wait thread holds for %v, want 36 minutes", hold)
+	}
+}
+
 // destRouter redirects and, when translate is set, translates every request, as inference-router does.
 type destRouter struct{ translate, upstreamHeader bool }
 
