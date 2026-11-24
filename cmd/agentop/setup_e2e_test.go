@@ -758,3 +758,44 @@ func TestSetupReadyInLeavesOutThePrompt(t *testing.T) {
 		t.Errorf("ready in %ss, want 1.0s: the hour at the prompt is counted", m[1])
 	}
 }
+
+// With CORTEX_SETUP_STARTED, ready in counts from when the caller started, so a build or
+// a download is in it, and the prompt is still left out. The caller started at 940 and
+// the clock reads 1000 first, so ready in is 60s plus the two 1s steps outside the prompt. A
+// time in the future is ignored. Setup removes the variable, so a process it starts
+// cannot take it.
+func TestSetupReadyInCountsFromTheCaller(t *testing.T) {
+	for _, c := range []struct{ started, want string }{{"940", "62.0"}, {"99999999999", "1.0"}} {
+		sc := newSetupScene(t, ok200)
+		animated(t)
+		var mu sync.Mutex
+		clock := time.Unix(1000, 0)
+		savedNow, savedConfirm := setupNow, setupConfirm
+		setupNow = func() time.Time {
+			mu.Lock()
+			defer mu.Unlock()
+			now := clock
+			clock = clock.Add(time.Second)
+			return now
+		}
+		setupConfirm = func(io.Writer) bool {
+			mu.Lock()
+			defer mu.Unlock()
+			clock = clock.Add(time.Hour)
+			return true
+		}
+		t.Cleanup(func() { setupNow, setupConfirm = savedNow, savedConfirm })
+		t.Setenv(callerStartedEnv, c.started)
+		code, out := sc.run(t, "--from", sc.stage)
+		m := regexp.MustCompile(`\n    v9\.9\.9 ready in (\d+\.\d)s\n`).FindStringSubmatch(onScreen(out))
+		if code != 0 || m == nil {
+			t.Fatalf("started %s: exit %d, no ready in:\n%s", c.started, code, onScreen(out))
+		}
+		if m[1] != c.want {
+			t.Errorf("started %s: ready in %ss, want %ss", c.started, m[1], c.want)
+		}
+		if _, set := os.LookupEnv(callerStartedEnv); set {
+			t.Errorf("started %s: %s is still set", c.started, callerStartedEnv)
+		}
+	}
+}

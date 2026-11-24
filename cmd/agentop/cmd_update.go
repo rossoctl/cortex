@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -203,6 +204,7 @@ const cpexStatusNote = "cpex build removed; now the default cortex"
 // downloaded, checked and staged here, then handed to the staged agentop setup;
 // any other ref runs the website installer.
 func installRelease(env *setupEnv, ref string, flags []string, stdout, stderr io.Writer) error {
+	began := time.Now() // setup's ready in counts from here
 	if ref == "" {
 		// Fail closed: falling back to the installer would skip the check (D1).
 		if ref = latestRelease(); !releaseTag.MatchString(ref) {
@@ -241,6 +243,7 @@ func installRelease(env *setupEnv, ref string, flags []string, stdout, stderr io
 			c := exec.Command(filepath.Join(stage, "agentop"), args...)
 			c.Stdin, c.Stdout, c.Stderr = os.Stdin, stdout, stderr
 			c.Env = slices.DeleteFunc(os.Environ(), func(e string) bool { return strings.HasPrefix(e, installerDrewEnv+"=") })
+			c.Env = append(c.Env, callerStartedEnv+"="+strconv.FormatInt(began.Unix(), 10))
 			return c
 		}
 		run = func() (err error) {
