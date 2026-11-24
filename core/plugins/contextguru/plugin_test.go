@@ -13,7 +13,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	bschemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/rossoctl/accountant"
@@ -636,6 +635,8 @@ func TestCgModel_MaxConcurrentBoundsInFlightCalls(t *testing.T) {
 	const maxConc, n = 2, 6
 	var inFlight, peak atomic.Int64
 	release := make(chan struct{})
+	atCap := make(chan struct{})
+	var atCapOnce sync.Once
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		cur := inFlight.Add(1)
 		for {
@@ -643,6 +644,9 @@ func TestCgModel_MaxConcurrentBoundsInFlightCalls(t *testing.T) {
 			if cur <= p || peak.CompareAndSwap(p, cur) {
 				break
 			}
+		}
+		if cur >= maxConc {
+			atCapOnce.Do(func() { close(atCap) })
 		}
 		<-release
 		inFlight.Add(-1)
@@ -666,11 +670,9 @@ func TestCgModel_MaxConcurrentBoundsInFlightCalls(t *testing.T) {
 			}
 		}()
 	}
-	// Give every goroutine a chance to reach the server before releasing any of them, so the
-	// peak this observes is the steady state, not a race against goroutine scheduling.
-	deadline := make(chan struct{})
-	go func() { time.Sleep(200 * time.Millisecond); close(deadline) }()
-	<-deadline
+	// Wait for the cap to actually bind before releasing, so the peak this observes is the
+	// steady state, not a race against goroutine scheduling.
+	<-atCap
 	close(release)
 	wg.Wait()
 	pctx.ClearCurrentPlugin()

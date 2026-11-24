@@ -176,10 +176,7 @@ func TestKeeperPingReachesTheCostRecorder(t *testing.T) {
 	if n := k.Sweep(now); n != 1 {
 		t.Fatalf("sweep sent %d pings, want 1", n)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && len(rec.events()) == 0 {
-		time.Sleep(time.Millisecond)
-	}
+	// Go runs the ping inline (set above), so Sweep returning means it already finished.
 	evs := rec.events()
 	if len(evs) != 1 {
 		t.Fatalf("cost recorder got %d events, want 1", len(evs))

@@ -110,10 +110,7 @@ func TestCortexSubstitutesCacheAwareSummarizerForAPing(t *testing.T) {
 	if n := k.Sweep(now.Add(281 * time.Second)); n != 1 {
 		t.Fatalf("the due ping did not fire (%d)", n)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && k.Stats().SummarySubstituted == 0 {
-		time.Sleep(time.Millisecond)
-	}
+	// Go runs the ping inline (set above), so Sweep returning means it already finished.
 	stats := k.Stats()
 	if stats.SummarySubstituted != 1 {
 		t.Fatalf("SummarySubstituted = %d, want 1", stats.SummarySubstituted)

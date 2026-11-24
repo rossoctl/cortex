@@ -465,8 +465,9 @@ func TestPing_ConcurrentRequestsCreditOneRescue(t *testing.T) {
 	// A two-party barrier in factsHook, which runs on each record's goroutine right after its
 	// peek of the ping facts and before the record is ended. Compute cannot drop the facts
 	// before its record is ended, so with both goroutines held here neither request can be
-	// priced until both have read the same facts: the race this test is about, every run.
-	// The wait is bounded well under computeWait, so a broken barrier fails rather than hangs.
+	// priced until both have read the same facts: the race this test is about, every run. A
+	// broken barrier hangs rather than fails fast; go test's own -timeout ends it with every
+	// goroutine's stack.
 	var (
 		mu      sync.Mutex
 		facts   []accountant.EntryFacts
@@ -479,11 +480,7 @@ func TestPing_ConcurrentRequestsCreditOneRescue(t *testing.T) {
 			close(release)
 		}
 		mu.Unlock()
-		select {
-		case <-release:
-		case <-time.After(time.Second):
-			t.Error("the barrier was not reached by both records")
-		}
+		<-release
 	}
 
 	now = pingT0.Add(8 * time.Minute)
