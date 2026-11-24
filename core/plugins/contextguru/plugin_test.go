@@ -88,6 +88,33 @@ func TestConfigure_RejectsBadEngine(t *testing.T) {
 	}
 }
 
+// model and paths are retired top-level keys, same as keep_alive: json.Unmarshal into
+// contextGuruConfig silently drops an unknown field, which would otherwise let `model: {...}`
+// or `paths: [...]` look respected when neither does anything any more -- cheap_model's rename
+// from model, and the hardcoded paths list, were both silent (review finding).
+func TestConfigure_WarnsOnRetiredModelAndPathsKeys(t *testing.T) {
+	for _, tc := range []struct {
+		name, cfg, want string
+	}{
+		{"model", `{"model":{"base_url":"http://x","model":"m"}}`, "model is retired"},
+		{"paths", `{"paths":["/v1/messages"]}`, "paths is retired"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			old := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+			defer slog.SetDefault(old)
+
+			if err := New().Configure(json.RawMessage(tc.cfg)); err != nil {
+				t.Fatalf("configure: %v", err)
+			}
+			if got := buf.String(); !strings.Contains(got, tc.want) {
+				t.Fatalf("log = %q, want it to contain %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestProviderFor(t *testing.T) {
 	if providerFor("/v1/messages") != bschemas.Anthropic {
 		t.Fatal("/v1/messages should map to anthropic")

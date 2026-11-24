@@ -1,6 +1,8 @@
 package contextguru
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -73,6 +75,39 @@ func TestAnInFlightSubagentDoesNotPauseTheMainThread(t *testing.T) {
 	invokeReq(p, agentPctx(pipeline.AgentRoleSubagent, "ab12")) // arrives, never finishes
 	if n := p.keeper.Sweep(time.Unix(1_700_000_000, 0).Add(281 * time.Second)); n != 1 {
 		t.Fatalf("sweep sent %d pings, want the main thread's 1", n)
+	}
+}
+
+// cache.strategy: 1-hour-always must not relabel a subagent's request: keepalive.Keeper.
+// OneHourFirst refuses a non-empty threadID, and a subagent's own thread is "a:"+its agent id
+// (agentThreadPrefix, the same convention keeperKey uses). Before this, oneHourFirstFor always
+// passed threadID="" -- the apply library's own res.Trace.Thread.ID, which this plugin does not
+// wire -- so a named subagent's request was asked, and relabelled, as if it were the main thread
+// at the 2x 1-hour write premium (review finding).
+func TestOneHourAlwaysDoesNotRelabelASubagentsRequest(t *testing.T) {
+	p := configured(t, `{"engine":{"cache":{"strategy":"1-hour-always"}}}`)
+	if err := p.Init(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Shutdown(t.Context()) })
+	body, _ := json.Marshal(map[string]any{
+		"model": "claude-sonnet-4-5",
+		"tools": []map[string]any{
+			{"name": "Read", "description": "read a file", "input_schema": map[string]any{"type": "object"},
+				"cache_control": map[string]any{"type": "ephemeral"}},
+		},
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	pctx := inferencePctx("/v1/messages", body)
+	pctx.Headers.Set(pipeline.ClaudeCodeAgentIDHeader, "ab12")
+	if act := invokeReq(p, pctx); act.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", act.Type)
+	}
+	if pctx.BodyMutated() {
+		t.Fatalf("a subagent's request must not be relabelled under 1-hour-always: %s", pctx.Body)
+	}
+	if got := string(pctx.Body); strings.Contains(got, `"ttl":"1h"`) {
+		t.Fatalf("subagent body carries a 1h mark it should not: %s", got)
 	}
 }
 

@@ -274,6 +274,20 @@ func TestKeepAliveFalseWithNoStrategyStaysOff(t *testing.T) {
 	}
 }
 
+// An engine: key whose children are all commented out (or an engine: with no value) reaches
+// Configure as JSON "null", not "{}": yaml.Unmarshal into injectDefaultCacheStrategy's
+// map[string]yaml.Node then leaves the map nil with no error, and doc["cache"] = cache would
+// panic -- assignment to entry in nil map (review finding, a startup crash, and a crash of a
+// running proxy on config reload since plugins/deps.go's Configure call has no recover).
+// cgconfig.LoadBytes("null") itself already returns a zero config with no error, so this stays
+// a no-op: injectDefaultCacheStrategy must not add a cache: key to a null engine.
+func TestConfigure_NullEngineDoesNotPanic(t *testing.T) {
+	p := configured(t, `{"engine": null}`)
+	if p.keeper != nil || p.disp != nil {
+		t.Fatal("a keeper was built from a null engine")
+	}
+}
+
 func TestKeepAliveCanBeTurnedOff(t *testing.T) {
 	p := configured(t, `{"engine": {"cache": {"strategy": "none"}}}`)
 	if p.keeper != nil || p.disp != nil {

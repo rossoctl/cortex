@@ -370,7 +370,7 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 		if err := json.Unmarshal(raw, &decoded); err != nil {
 			return fmt.Errorf("context-guru config: %w", err)
 		}
-		warnOnRetiredKeepAliveKey(raw)
+		warnOnRetiredTopLevelKeys(raw)
 	}
 	if decoded.CacheMode != "" && !validCacheModes[decoded.CacheMode] {
 		return fmt.Errorf("context-guru config: cache_mode %q is not one of: auto, on, off", decoded.CacheMode)
@@ -496,12 +496,14 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 	return nil
 }
 
-// warnOnRetiredKeepAliveKey logs one WARN when raw still carries the retired `keep_alive:` key,
-// naming it and where its settings live now -- the same pattern context-guru's own
-// decodeWithModelHint uses for a retired key (drop it, never refuse the document, always say so).
-// json.Unmarshal into contextGuruConfig silently ignores an unknown field by default, which would
-// otherwise let `keep_alive: {enabled: true}` look respected when it no longer does anything.
-func warnOnRetiredKeepAliveKey(raw json.RawMessage) {
+// warnOnRetiredTopLevelKeys logs one WARN per retired top-level key raw still carries -- naming
+// it and where its settings live now -- the same pattern context-guru's own
+// decodeWithModelHint uses for a retired key (drop it, never refuse the document, always say
+// so). json.Unmarshal into contextGuruConfig silently ignores an unknown field by default, which
+// would otherwise let `keep_alive: {enabled: true}`, `model: {...}` or `paths: [...]` look
+// respected when none of them does anything any more (review finding for the latter two: hardcoded
+// paths and cheap_model's rename from model were both silent).
+func warnOnRetiredTopLevelKeys(raw json.RawMessage) {
 	var keys map[string]json.RawMessage
 	if json.Unmarshal(raw, &keys) != nil {
 		return
@@ -510,6 +512,14 @@ func warnOnRetiredKeepAliveKey(raw json.RawMessage) {
 		slog.Warn("context-guru config: keep_alive is retired and is not applied; " +
 			"set engine.cache.strategy (or cache.keepalive_* directly) instead -- see " +
 			"docs/context-guru-plugin.md")
+	}
+	if _, present := keys["model"]; present {
+		slog.Warn("context-guru config: model is retired and is not applied; " +
+			"set cheap_model instead -- see docs/context-guru-plugin.md")
+	}
+	if _, present := keys["paths"]; present {
+		slog.Warn("context-guru config: paths is retired and is not applied; " +
+			"the paths this plugin acts on are hardcoded -- see docs/context-guru-plugin.md")
 	}
 }
 
@@ -531,6 +541,15 @@ func injectDefaultCacheStrategy(engine []byte) []byte {
 	var doc map[string]yaml.Node
 	if err := yaml.Unmarshal(engine, &doc); err != nil {
 		return engine // malformed YAML: let cgconfig.LoadBytes produce the real error
+	}
+	if doc == nil {
+		// An engine: key with every child commented out reaches here as the JSON/YAML text
+		// "null" (an engine: with no value decodes the same way): yaml.Unmarshal leaves doc nil
+		// with no error, and doc["cache"] = cache below would panic -- assignment to entry in
+		// nil map (review finding, reproduced). Treat it as an absent engine: cgconfig.LoadBytes
+		// already gives a config with no error for "null", so this stays a no-op rather than
+		// also setting cache.strategy on an engine that names nothing else.
+		return engine
 	}
 	if _, present := doc["cache"]; present {
 		return engine
@@ -625,7 +644,7 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 		CacheMode:       p.cfg.CacheMode,
 		HeadTTL1h:       p.kaPol.HeadTTL1h,
 		HeadTTLMinBytes: p.kaPol.HeadTTLMinBytes,
-		OneHourFirst:    p.oneHourFirstFor(provider, pctx.Host),
+		OneHourFirst:    p.oneHourFirstFor(pctx, provider, pctx.Host),
 	})
 	if res.Trace.Session != "" {
 		p.cgSessions.set(sid, res.Trace.Session)
@@ -855,17 +874,29 @@ func providerFor(path string) bschemas.ModelProvider {
 // context-guru-proxy's keepalive.Handler.oneHourFirstFor relies on.
 //
 // keepalive.Keeper.OneHourFirst takes a tenant id this single-process plugin has no equivalent
-// of (one process, one deployment, not the proxy's multi-tenant registry) and a route this
-// plugin does not resolve either (the proxy's own cost-routing concept) -- both passed "", which
-// OneHourFirst's own doc does not require non-empty. endpoint is the request's host, closed over
-// once per request rather than threaded through apply.Opts a second way.
-func (p *ContextGuru) oneHourFirstFor(provider bschemas.ModelProvider, endpoint string) func(session, threadID, model string, toolsDeclared bool) bool {
+// of (one process, one deployment, not the proxy's multi-tenant registry), passed "". route is
+// pctx.Path, the same value recordFor gives keepalive.Record.Route (keepalive.go), so
+// oneHourRoute keys this call's st.off/st.costly lookups the same way the keeper's own
+// bookkeeping does.
+//
+// threadID is captured from pctx here, at the same call that reads it for keeperKey
+// (keepalive.go), rather than taken from the library's own apply.Opts.ThreadOf/res.Trace.Thread,
+// which this plugin does not wire (review finding: that left threadID always "", so a named
+// subagent's request was asked -- and relabelled -- as if it were the main thread). The two
+// agree on one convention, agentThreadPrefix + pctx.Subagent(), so this call's Key{Thread:...}
+// and the keeper's own Arrive/Depart/Record calls for the same request key identically.
+func (p *ContextGuru) oneHourFirstFor(pctx *pipeline.Context, provider bschemas.ModelProvider, endpoint string) func(session, threadID, model string, toolsDeclared bool) bool {
 	if p.keeper == nil || (!p.kaPol.OneHourOnWait && !p.kaPol.OneHourAlways) {
 		return nil
 	}
 	mode := keepalive.OneHourMode{Always: p.kaPol.OneHourAlways, RebuildTokens: int64(p.kaPol.OneHourRebuildTokens)}
-	return func(session, threadID, model string, toolsDeclared bool) bool {
-		return p.keeper.OneHourFirst("", session, threadID, provider, endpoint, "", model, toolsDeclared, mode)
+	threadID := ""
+	if agent := pctx.Subagent(); agent != "" {
+		threadID = agentThreadPrefix + agent
+	}
+	route := pctx.Path
+	return func(session, _ /* unused: the library never resolves this without Opts.ThreadOf */, model string, toolsDeclared bool) bool {
+		return p.keeper.OneHourFirst("", session, threadID, provider, endpoint, route, model, toolsDeclared, mode)
 	}
 }
 
