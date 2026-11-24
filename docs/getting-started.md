@@ -99,7 +99,7 @@ LAST 1H    TODAY   7 DAYS    MONTH
 - `UPDATED` shows the time since the last event.
 - `EVENTS` shows the event count.
 - `TOKENS` and `COST` show the totals for the full session.
-- `SAVED~` shows what `tool-prune` saved.
+- `SAVED~` shows what the context operators saved.
 - `CTX(1M)` shows how full the context was on the last turn, against a window of one million tokens.
 - The footer shows the connection state and the keys.
 

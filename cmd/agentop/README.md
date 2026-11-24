@@ -583,7 +583,7 @@ agentop is for, and the others are surfaces you visit and leave.
   DURATION for how long it stayed open and, in BYTES, what it carried each way.
   That STATUS is the CONNECT's own (200, or 502 when the destination could not be
   reached), never the destination's, which travels inside the client's TLS.
-  TOKENS reads prompt→output. TOKENS and COST carry what `tool-prune` saved in
+  TOKENS reads prompt→output. TOKENS and COST carry what the context operators saved in
   parentheses — `−` for a counted saving, `~` for a projected one.
 - **Detail**: one exchange in full, at the full width of the terminal: a
   REQUEST section, then a RESPONSE section, each the event as the proxy recorded
@@ -1149,8 +1149,8 @@ Column ids, in display order — the same headers the picker shows:
 | `STATUS` | HTTP status of the response: blank while it is on its way, `lost` when none came for 10 minutes |
 | `DURATION` | how long the exchange took |
 | `BYTES` | body bytes: ↑ request sent, ↓ response received; blank when the proxy counted nothing |
-| `TOKENS` | prompt→output tokens, and what `tool-prune` saved |
-| `COST` | the exchange's estimated cost, and what `tool-prune` saved |
+| `TOKENS` | prompt→output tokens, and what the context operators saved |
+| `COST` | the exchange's estimated cost, and what the context operators saved |
 | `HOST` | host the message was sent to |
 
 A narrow terminal also hides columns to fit, with a `→ N more columns` note in the
@@ -1604,6 +1604,16 @@ inside agentop. `agentop script` installs one in a single step:
   `loaded` and `notStarted`.
 
 `--config PATH` names another Cortex config, as for `agentop server`.
+
+### Finding unused tools (`agentop tools scan`)
+
+`agentop tools scan` reads your agent transcripts and proposes the tools to stop
+sending. Without `--write`, it prints the YAML block. With `--write CONFIG`, it
+changes one line in CONFIG: the `remove:` list under
+`engine.components.toolfilter` of the `context-guru` entry. When CONFIG has no
+`context-guru` entry, it changes the `remove:` list of the `tool-prune` entry. A
+second run with the same result changes nothing. Flags and details:
+[`tool-prune-plugin.md`](../../docs/tool-prune-plugin.md#where-the-list-comes-from).
 
 ### What your agents have spent (`agentop cost`)
 

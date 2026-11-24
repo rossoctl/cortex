@@ -28,7 +28,7 @@
 #
 # The rest are in `--help`. Each one this script shares with setup is passed on.
 #
-# There is deliberately only one config. It carries the parsers AND tool-prune,
+# There is deliberately only one config. It carries the parsers AND context-guru,
 # and the proxy preserves edits to it, so a second "cost-optimised" config had
 # nothing to do that filling in one list did not already do — while costing a
 # second CA, a second set of paths, and a second page of instructions that read

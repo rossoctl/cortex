@@ -771,9 +771,10 @@ it explicitly to change the default; `agentop service restart` applies it.
 
 ### The `accounting:` configuration
 
-The accountant prices what the context operators (`context-guru`, `tool-prune`) saved, and
+The accountant prices what the context operators saved, and
 what the keep-alive pings cost. Its figures land in the cost records' `avoided[]` and `spends[]`
 (see [pricing.md](pricing.md#cost-records)). The block is the same on a laptop and in a cluster.
+On a local install, the context operator is `context-guru`.
 
 ```yaml
 accounting:
@@ -816,9 +817,8 @@ metrics_push:
   interval: 30s
 ```
 
-A `~/.cortex/config.yaml` written before this block was added has no `metrics_push:` block, so
-it pushes nothing. To turn the push on there, add the block above, then run
-`agentop service restart`.
+A `~/.cortex/config.yaml` written before this block was added has no `metrics_push:` block.
+The next upgrade adds it (see [the upgrade migrations](#the-upgrade-migrations)).
 
 **To turn the push off:**
 
@@ -875,6 +875,47 @@ log.
 The push starts with the accountant, so it needs `accounting` to be on. The block is read
 once at startup: a reload that changes it is refused, and `agentop service restart` applies
 it.
+
+### The upgrade migrations
+
+`agentop setup` (which `agentop update` runs) and `agentop service install` bring an
+existing `~/.cortex/config.yaml` to the built-in config in two steps. Each step that
+changes the file first keeps the previous file as a backup. Each run that changes the file
+writes the backup again. A run with nothing to change does not touch the file.
+
+**context-guru.** The step adds the `context-guru` entry when the outbound list has none. It
+puts the entry after every body reader (the parsers). When the list has no parser, or a
+body reader such as `sparc` comes after the parsers, the step stops with an error: add the
+entry by hand, as in the built-in config. A `tool-prune` entry moves into context-guru: its
+names go to `engine.components.toolfilter.remove`, and the `tool-prune` entry goes. The
+names move only when all of these are true:
+
+- The `tool-prune` entry has no `on_error`, or `on_error: enforce`.
+- The `tool-prune` entry has no `paths`.
+- No name is `mcp__<server>` alone. In toolfilter, that name removes every tool of the
+  server, so it does not mean the same thing.
+- No name starts with `skill__`, and each name is a valid tool name.
+- An existing `context-guru` entry has no `on_error: off`, and its `engine` is absent or
+  uses one of the presets `house`, `housellm`, `conservative`, `medium`, `high` or `xhigh`
+  with no `pipeline:`.
+
+When one of these is false, `tool-prune` stays, and the step prints one line that names the
+condition. The backup is `config.yaml.before-agentop-context-guru`.
+
+A reload applies this change, so the proxy does not restart, except when the config had no
+context operator before. Then the accountant must start, and the upgrade restarts the proxy.
+
+context-guru runs preset `xhigh`. Its model-backed steps make calls on your agent's own
+key. To stop them, keep the entry and set `on_error: off` on it. The next upgrade leaves
+that entry alone. If you delete the entry, the next upgrade adds it again.
+
+**Metrics push.** The step adds the `metrics_push:` block above when the config has no
+top-level `metrics_push:` key. A `metrics_push:` key with any value stays as it is. The
+backup is `config.yaml.before-agentop-metrics`. The push starts only after a restart, so
+this change always restarts the proxy. What it sends is in
+[the `metrics_push:` configuration](#the-metrics_push-configuration). To stop it, set
+`metrics_push.enabled: false` in the file, or `METRICS_PUSH=false` in the proxy's
+environment.
 
 ### The `tls_bridge:` configuration
 
