@@ -181,9 +181,10 @@ On a tool row, it opens at the tool call, with the output of the tool below it:
 ## See what your agents spent
 
 - The band at the top shows the spend for each period.
+- `$` opens the spend breakdown. In the breakdown, `a` changes the axis (model, endpoint or agent), and `w` changes the period.
+
 ![The spend breakdown: the spend for each price tier, and the spend for each model](assets/agentop/spend.svg)
 
-- `$` opens the spend breakdown. In the breakdown, `a` changes the axis (model, endpoint or agent), and `w` changes the period.
 - `A` opens the Agents pane. It has one row for each agent, with its sessions and its spend. `Enter` on an agent shows only the sessions of that agent. When the sessions record a project, `Enter` opens the agent into its projects.
 
 ![The Agents pane: an All agents row, and one row for each coding agent with its sessions and its cost today](assets/agentop/agents.svg)
