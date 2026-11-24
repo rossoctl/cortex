@@ -32,11 +32,11 @@ const legacyTagEscape = "allow-legacy-plugin-tag"
 // core/plugins/injection_coverage_test.go for the pattern.
 var blankPluginImport = regexp.MustCompile(`_\s+"github\.com/rossoctl/cortex/core/plugins/(\w+)"`)
 
-// profileInvocations match the shapes a call site uses to name a profile. All
-// three deliberately require the name to start with a letter, so a shell
+// profileInvocations match the shapes a call site uses to name a profile. Each
+// deliberately requires the name to start with a letter, so a shell
 // indirection (`"${profile}"`, `"$1"`) does not match — those values live in
-// loops this cannot evaluate, and the loop's literal list is caught by the third
-// pattern instead.
+// loops this cannot evaluate, and the loop's literal list is caught by the last
+// two patterns instead.
 var profileInvocations = []*regexp.Regexp{
 	// Direct: go -C .../profile-tags run . full
 	regexp.MustCompile(`profile-tags run \. "?([a-z][a-z0-9_]*)`),

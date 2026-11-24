@@ -132,16 +132,16 @@ func Tags(profile ProfileName) ([]string, error) {
 			}
 		}
 	}
-	// Fail closed on an empty profile: an empty CSV becomes `go build -tags ""`,
-	// which under an all-opt-in convention links no plugins at all and would ship
-	// a proxy that refuses every config it is handed.
-	if len(tags) == 0 {
-		return nil, fmt.Errorf("profile %q carries no plugins", profile)
-	}
 	for driver, carriedBy := range drivers {
 		if slices.Contains(carriedBy, profile) {
 			tags = append(tags, "include_driver_"+string(driver))
 		}
+	}
+	// Fail closed on an empty profile: an empty CSV becomes `go build -tags ""`,
+	// which under an all-opt-in convention links no plugins at all and would ship
+	// a proxy that refuses every config it is handed.
+	if len(tags) == 0 {
+		return nil, fmt.Errorf("profile %q carries no plugins or drivers", profile)
 	}
 	sort.Strings(tags)
 	return tags, nil
