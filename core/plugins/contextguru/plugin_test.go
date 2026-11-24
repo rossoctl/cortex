@@ -721,8 +721,14 @@ func TestCgModel_ConcurrentCompleteOnOneRequest(t *testing.T) {
 func TestCgModel_MaxConcurrentBoundsInFlightCalls(t *testing.T) {
 	const maxConc, n = 2, 6
 	release := make(chan struct{})
+	var inFlight, peak atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		<-release
+		// Lower the count here, while the call is still inside Complete and so still holds its
+		// slot. Lowering it after Complete returns would race: Complete frees the slot in a
+		// deferred receive before it returns, so a waiting call can acquire and count itself
+		// before this call is uncounted, and a correct cap would report maxConc+1.
+		inFlight.Add(-1)
 		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`)
 	}))
 	t.Cleanup(srv.Close)
@@ -743,7 +749,6 @@ func TestCgModel_MaxConcurrentBoundsInFlightCalls(t *testing.T) {
 	// HTTP server on the other end of Complete could delay. The real call still goes on to that
 	// server and blocks on release there, which is what lets this holding pattern exist for the
 	// test to observe at all.
-	var inFlight, peak atomic.Int64
 	atCap := make(chan struct{})
 	var atCapOnce sync.Once
 	cm.onAcquire = func() {
@@ -767,7 +772,6 @@ func TestCgModel_MaxConcurrentBoundsInFlightCalls(t *testing.T) {
 			if _, err := cm.Complete(context.Background(), "summarize"); err != nil {
 				t.Errorf("Complete: %v", err)
 			}
-			inFlight.Add(-1)
 		}()
 	}
 	// Wait for the cap to actually bind before releasing: a genuinely bounded run reaches

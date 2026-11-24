@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/rossoctl/cortex/cmd/agentop/money"
 	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
@@ -613,7 +614,7 @@ func (m *model) spendHourAndDaySummary() spendSummary {
 		// column, so the arithmetic still holds) rather than being dropped, so tampering
 		// shows.
 		WindowLabel: sanitizeLabel(snap.Window),
-		Priced:      snap.Priced,
+		Priced:      money.SpendPriced(snap), // a ping-only window has a charge too
 		Priceable:   snap.Totals.PriceableRequests,
 		// Carried whether or not the window is priced: a snapshot cannot report an inexact
 		// figure without reporting a priced one, but reading it unconditionally means the
@@ -631,7 +632,7 @@ func (m *model) spendHourAndDaySummary() spendSummary {
 	// in depth. Reported as UNPRICED rather than clamped, so the strip renders "cost
 	// unavailable" — the same treatment the Cost pane already chose, because "$-5.0000
 	// /1h" on the strip reads as a refund nobody issued.
-	if negativeCost(snap.Totals.CostMicros) {
+	if negativeCost(money.SpendMicros(snap.Totals)) {
 		out.Priced = false
 	}
 	// Priceable minus priced, NOT requests minus priced. Requests counts every
@@ -662,7 +663,9 @@ func (m *model) spendHourAndDaySummary() spendSummary {
 	// reading the wire flag here would hand the renderer a figure the summary has
 	// already declined to publish.
 	if out.Priced {
-		out.WindowUSD = float64(snap.Totals.CostMicros) / 1e6
+		// The requests and the keep-alive pings on an API key (money.SpendMicros), as `agentop
+		// cost` heads its window: a ping is billed like any request.
+		out.WindowUSD = float64(money.SpendMicros(snap.Totals)) / 1e6
 	}
 	// The volume figures are read OUTSIDE the Priced guard: tokens, errors and the cache
 	// ratio are counted for traffic nothing could price, and suppressing them alongside
@@ -840,8 +843,8 @@ func unitCosts(snap *usage.Snapshot) map[string]int64 {
 	series := usage.FoldSeriesAcrossWindow(snap.Buckets)
 	out := make(map[string]int64, len(snap.Currencies))
 	for _, u := range snap.Currencies {
-		if c := series[u]; c.PricedRequests > 0 {
-			out[u] = c.CostMicros
+		if c := series[u]; money.HasSpend(c) {
+			out[u] = money.SpendMicros(c)
 		}
 	}
 	return out
@@ -1075,7 +1078,7 @@ func (m *model) applyTodayFigure(out *spendSummary) {
 	if snap.Window != usage.WindowToday {
 		return
 	}
-	if !snap.Priced {
+	if !money.SpendPriced(snap) {
 		return
 	}
 	// And it must not be NEGATIVE. Declined by leaving HasToday unset, which is this
@@ -1083,10 +1086,10 @@ func (m *model) applyTodayFigure(out *spendSummary) {
 	// Cost pane give an impossible number — the strip then falls back to its rolling
 	// figure rather than printing "$-5.0000 today". See negativeCost: the guarantee is
 	// upstream in core/sessionapi, and this is defence in depth.
-	if negativeCost(snap.Totals.CostMicros) {
+	if negativeCost(money.SpendMicros(snap.Totals)) {
 		return
 	}
-	out.TodayUSD = float64(snap.Totals.CostMicros) / 1e6
+	out.TodayUSD = float64(money.SpendMicros(snap.Totals)) / 1e6
 	out.HasToday = true
 	// Priceable minus priced, for the reason the window figure's gap is computed that
 	// way: Requests counts traffic that could never carry a price, so it never reaches
@@ -1267,8 +1270,8 @@ func (m *model) spanReadings() [numSpendSpans]spanReading {
 			// at "<$0.0001"; the events table reads through it, this does not.) See
 			// TestRenderSpendBand_UnpricedZeroAndSubCentAreThreeDifferentCells, which pins all
 			// three cells.
-			if snap.Priced && !negativeCost(snap.Totals.CostMicros) {
-				r.USD = float64(snap.Totals.CostMicros) / 1e6
+			if money.SpendPriced(snap) && !negativeCost(money.SpendMicros(snap.Totals)) {
+				r.USD = float64(money.SpendMicros(snap.Totals)) / 1e6
 				r.Priced = true
 			}
 			r.Units, r.ByUnit = snap.Currencies, c.byUnit

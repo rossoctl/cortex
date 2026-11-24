@@ -1321,3 +1321,35 @@ func TestSpendTick_AZeroCadenceDoesNotFireImmediately(t *testing.T) {
 			"proxy once per loop iteration", got)
 	}
 }
+
+// An idle hour with only keep-alive pings has no priced request, and still a charge: the strip
+// shows it instead of "cost unavailable" (money.SpendPriced).
+func TestSpendSummary_APingOnlyWindowHasAFigure(t *testing.T) {
+	m := &model{}
+	m.spend.chains[spanHour].snap = &usage.Snapshot{
+		Window: "1h",
+		Totals: usage.Counts{KeepAliveMicros: 20_000, KeepAlivePings: 3},
+	}
+	got := m.spendSummary()
+	if !got.Priced || got.WindowUSD != 0.02 {
+		t.Errorf("Priced, WindowUSD = %v, %v; want true, 0.02", got.Priced, got.WindowUSD)
+	}
+	// Pings on a subscription login are not money: still no figure.
+	m.spend.chains[spanHour].snap = &usage.Snapshot{
+		Window: "1h",
+		Totals: usage.Counts{KeepAliveUnits: 5_000, KeepAliveAPIEquivalentMicros: 20_000, KeepAlivePings: 3},
+	}
+	if got := m.spendSummary(); got.Priced {
+		t.Errorf("a window of subscription pings only is Priced, WindowUSD = %v", got.WindowUSD)
+	}
+}
+
+// An agent whose only spend is keep-alive pings on an API key shows it in COST.
+func TestAgentCostCell_APingOnlyAgentHasAFigure(t *testing.T) {
+	if got := agentCostCell(usage.Counts{KeepAliveMicros: 20_000, KeepAlivePings: 3}); got != "$0.02" {
+		t.Errorf("agentCostCell = %q, want $0.02", got)
+	}
+	if got := agentCostCell(usage.Counts{KeepAliveUnits: 5_000, KeepAlivePings: 3}); got != emptyCell {
+		t.Errorf("agentCostCell = %q for subscription pings only, want %q", got, emptyCell)
+	}
+}

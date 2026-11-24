@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  labels:
+    app.kubernetes.io/name: otel-collector
+spec:
+  selector:
+    app.kubernetes.io/name: otel-collector
+  ports:
+    - {name: otlp-cortex, port: 4318, targetPort: otlp-cortex}
+    - {name: otlp-cg, port: 4319, targetPort: otlp-cg}
+    - {name: metrics, port: 8888, targetPort: metrics}

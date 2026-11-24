@@ -1,0 +1,87 @@
+# Still screens for docs/using-agentop.md, one SVG for each beat.
+#
+# Regenerate after editing:  go run . -stills
+# CI fails if docs/assets/agentop/*.svg does not match this file.
+#
+# Each beat is one screen of the real agentop, captured after its keys. The beat's
+# label is the file name, and its alt is the image's description. Keys accumulate:
+# a beat starts where the beat before it ended. hold has no effect on a still, but
+# the storyboard format needs it, and the holds must add up to the act's runtime.
+#
+# The fixture is the demo's: see demo.yaml and testdata/README.md.
+
+total: 10s
+grid:
+  cols: 100
+  rows: 30
+
+acts:
+  - name: tour
+    kind: tui
+    runtime: 10s
+    beats:
+      - label: sessions
+        at: 12m30s
+        keys: []
+        hold: 2s
+        alt: "The agentop Sessions pane. A spend band at the top shows the spend for the last hour, today, 7 days and this month. Below it, a table has one row for each of three sessions, with its title, the time of its last event, its events, tokens, cost, savings and a bar that shows how full its context is."
+      # w widens the window from the last 5 minutes to the whole session.
+      - label: timeline
+        keys: ["T", "w"]
+        hold: 2s
+        alt: "The agentop Timeline pane for one session. The main agent and five subagents each have a row of bars on one time axis, with their model time, tool time and tokens per second at the right. Below them, each host that the session called has a row with its request count, and a legend names the colours: tools, model, retrying, waiting on subagents and waiting on you."
+      # The cursor starts on the newest event. Two up is the Bash call under 549.
+      - label: events
+        keys: ["esc", "enter", "up", "up"]
+        hold: 1s
+        alt: "The agentop Events pane for one session. Each row is one event, with its number, time, direction, action, plugin, model or method, and host. A tool call shows as its own row under the model request that asked for it, and the cursor is on a Bash call."
+      # As in demo.yaml: the dark-mode session's last Bash call, then down to its output.
+      - label: tool-call
+        keys: ["esc", "esc", "down", "enter", "G", "up", "enter",
+               "down", "down", "down", "down", "down", "down", "down", "down",
+               "down", "down", "down", "down", "down", "down", "down", "down"]
+        hold: 1s
+        alt: "The agentop Detail pane for a Bash tool call. It shows the command that the agent asked to run, and the output of the command below it."
+      - label: spend
+        keys: ["esc", "esc", "up", "$"]
+        hold: 1s
+        alt: "The agentop spend breakdown, open over the Sessions pane. At the left, a bar for each price tier shows where the money went: cache read, cache write, output, reasoning and input. At the right, the spend of each model, with its count of requests."
+      - label: agents
+        keys: ["$", "A"]
+        hold: 1s
+        alt: "The agentop Agents pane. It has an All agents row and one row for each coding agent, with its count of sessions, the time it was last seen, and its cost today."
+      - label: search
+        keys: ["enter", "/", "dark"]
+        hold: 1s
+        alt: "A search on the agentop Sessions pane. The search line at the top shows the text dark, the matching session row is highlighted, and the footer shows the match count."
+      - label: pipeline
+        keys: ["esc", "P"]
+        hold: 1s
+        alt: "The agentop Pipeline pane. It lists the plugins that run, in order, with their direction and whether each one reads the body: inference-parser, mcp-parser, a2a-parser and inference-router."
+
+    fixture:
+      # The outbound plugins a laptop install runs. Stand-ins: see fixturepipeline.go.
+      pipeline:
+        - {name: inference-parser, reads_body: true}
+        - {name: mcp-parser, reads_body: true}
+        - {name: a2a-parser, reads_body: true}
+        - {name: inference-router, reads_body: true, writes_request_body: true}
+      replay:
+        file: testdata/timeline-replay.json.gz
+        id: api-7f3c
+        title: "audit the repo before release"
+      sessions:
+        - id: web-2a91
+          title: "add dark mode toggle"
+          model: claude-opus-5
+          turns:
+            - {messages: 2, tools: 15, input: 1200, cache_read: 0, cache_write: 6400, output: 120, reasoning: 60, prompt_usd: 0.031, output_usd: 0.009}
+            - {messages: 4, tools: 15, input: 600, cache_read: 7600, cache_write: 900, output: 140, reasoning: 70, prompt_usd: 0.012, output_usd: 0.011}
+            - {messages: 6, tools: 15, input: 500, cache_read: 8500, cache_write: 700, output: 260, reasoning: 120, prompt_usd: 0.011, output_usd: 0.020}
+            - {messages: 8, tools: 15, input: 500, cache_read: 9200, cache_write: 800, output: 110, reasoning: 50, prompt_usd: 0.012, output_usd: 0.008}
+            - {messages: 10, tools: 15, input: 700, cache_read: 10000, cache_write: 900, output: 180, reasoning: 90, prompt_usd: 0.014, output_usd: 0.014}
+        - id: infra-55de
+          title: "debug the helm chart"
+          model: claude-sonnet-5
+          turns:
+            - {messages: 4, tools: 15, input: 800, cache_read: 12000, cache_write: 3200, output: 240, reasoning: 132, prompt_usd: 0.012, output_usd: 0.004}

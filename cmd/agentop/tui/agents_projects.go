@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/rossoctl/cortex/cmd/agentop/money"
 	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/session"
 )
@@ -314,7 +315,7 @@ func (m *model) addProjectRows(add agentRowAdder, agent string, a *agentRow, now
 			agentCostCellIn(named[i].Counts, named[i].units, m.agentsSplits[agentsSplitKey{agent, named[i].label, window}], budget), "")
 	}
 	od := agentRowDesc{agent: agent, kind: agentRowProjectOther}
-	if count, _ := m.subRowSessions(od); other.CostMicros == 0 && count == 0 {
+	if count, _ := m.subRowSessions(od); money.SpendMicros(other.Counts) == 0 && count == 0 { // keep-alive spend keeps the row
 		return
 	}
 	n, last = sessions(od)

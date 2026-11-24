@@ -27,6 +27,12 @@
 # one's and counts each job that ran the "Run the macOS release smoke test" step.
 # Renaming that step means updating the collector's jq to match.
 name: Release Smoke Test (macOS)
+# release-promote.yaml reads which release run started this one off the end of
+# this title, ", release run <id>": a run started by workflow_run records it
+# nowhere else. Change the two together.
+run-name: >-
+  Release Smoke Test (macOS) for ${{ github.event.workflow_run.head_branch }},
+  release run ${{ github.event.workflow_run.id }}
 
 on:
   workflow_run:

@@ -66,6 +66,7 @@ type Window struct {
 // State is one full screen on the timeline.
 type State struct {
 	Label   string // for diagnostics and the Chrome verification pass
+	Alt     string // a still's aria-label; empty on the animated demo
 	Rows    []Row
 	Windows []Window
 	At      time.Duration // absolute offset on the whole timeline

@@ -55,3 +55,34 @@ func TestCommittedAssetIsWithinBudget(t *testing.T) {
 		t.Errorf("asset is %d KB, over the %d KB budget", info.Size()>>10, budget>>10)
 	}
 }
+
+// TestCommittedStillsAreCurrent fails when docs/assets/agentop/ no longer matches
+// what stills.yaml and the current agentop produce, or holds a file stills.yaml
+// does not make.
+func TestCommittedStillsAreCurrent(t *testing.T) {
+	fresh := t.TempDir()
+	if err := runStills("stills.yaml", fresh); err != nil {
+		t.Fatalf("regenerate: %v", err)
+	}
+	want, err := os.ReadDir(fresh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	have, err := os.ReadDir(stillsDir)
+	if err != nil {
+		t.Fatalf("read committed stills: %v", err)
+	}
+	if len(have) != len(want) {
+		t.Errorf("%s has %d files, stills.yaml makes %d", stillsDir, len(have), len(want))
+	}
+	for _, e := range want {
+		got, _ := os.ReadFile(filepath.Join(fresh, e.Name()))
+		committed, err := os.ReadFile(filepath.Join(stillsDir, e.Name()))
+		if err != nil || string(committed) != string(got) {
+			t.Errorf(`%s/%s is stale.
+
+Regenerate the stills:
+    go -C scripts/readme-demo run . -stills`, stillsDir, e.Name())
+		}
+	}
+}

@@ -1,0 +1,76 @@
+# Release promote — #956
+#
+# release-binaries.yaml publishes a new stable tag (vX.Y.Z) as a prerelease, so
+# nothing installs it yet: the plain one-liner, `agentop update` and the
+# auto-updater all follow GitHub's Latest badge, which a prerelease never has. This
+# workflow runs after each release smoke run. When the Linux and the macOS smoke
+# tests have both passed for the release run that published the tag, it makes the
+# release a full release, and the Latest release when no higher stable version
+# exists. scripts/release_promote.sh does the work and says why.
+#
+# Two runs start for each release, one per smoke workflow. The one that finishes
+# first finds the other not done and does nothing; the second promotes. Both edits
+# are the same, so no concurrency group: one would let a queued run cancel the
+# pending one for a different release.
+#
+# By hand: `gh workflow run release-promote.yaml -f tag=vX.Y.Z` promotes without
+# checking the smoke tests. Use it only when they cannot pass for a reason that is
+# not the release's.
+#
+# GitHub runs at most three levels of workflow_run after the first workflow. This
+# chain uses two: Release binaries -> the smoke tests -> this one.
+name: Release promote
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch'
+  && format('Release promote for {0}, by hand', inputs.tag)
+  || format('Release promote after {0}', github.event.workflow_run.display_title) }}
+
+on:
+  workflow_run:
+    # Each must be byte-identical to that workflow's `name:`, and each needs the
+    # run-name ending ", release run <id>" that the script reads.
+    workflows: ["Release Smoke Test (Linux)", "Release Smoke Test (macOS)"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Stable tag to promote (vX.Y.Z). The smoke tests are not checked.'
+        required: true
+
+permissions: {}
+
+jobs:
+  promote:
+    name: Promote the release once both smoke tests passed
+    # A smoke run that failed promotes nothing, and has no need to look: the
+    # release stays a prerelease, and the failed run is already red. Nor does one
+    # for a merge to main, which every merge starts two of: main-latest is never
+    # promoted. The script refuses a tag that is not vX.Y.Z either way.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       !contains(github.event.workflow_run.display_title, ' for main, '))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      # gh release edit: clear the prerelease flag and set Latest.
+      contents: write
+      # Read the smoke workflows' runs and the release run.
+      actions: read
+    steps:
+      # The default ref: main for workflow_run, so the script that holds write access
+      # is main's, never a release's.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Promote
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PROMOTE_TAG: ${{ inputs.tag }}
+          SMOKE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SMOKE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          SMOKE_RUN_PATH: ${{ github.event.workflow_run.path }}
+          SMOKE_RUN_TITLE: ${{ github.event.workflow_run.display_title }}
+        run: sh scripts/release_promote.sh

@@ -766,6 +766,10 @@ func main() {
 		// pushed.
 		reqStats := reqstats.New(pushMP)
 		sessions.AddRecorder(reqStats)
+		// The session's own figures too: a ping is not an event of the session, so the store would
+		// never see one, and a session's cost would leave out what keeping its cache warm cost.
+		// AddKeepAlive adds the spend and nothing else; it does not make the session active.
+		acctHost.AddPingListener(func(p accounting.PingSpend) { sessions.AddKeepAlive(p.Session, p.Figures) })
 
 		// The durable cost ledger is a SECOND Recorder alongside the aggregator, not a
 		// reader of it: the aggregator keeps independent marginals (by-model,
