@@ -165,7 +165,7 @@
       "id": 14,
       "type": "table",
       "title": "Net saved by source",
-      "description": "Where NET SAVED comes from, as context-guru's dashboard splits it. Context rewrite: every operator that rewrites the request (its content, its tool declarations, its model), net of its own model calls and of the cache breaks the changes cause. Cache management: the keep-alive (its rescues, net of its pings), the prefix-cache split, the 1h head TTL and the breakpoints the proxy adds. Of baseline: each net as a share of what the traffic would have cost without the proxy (spend plus net saved); the two sources add up to the Total.",
+      "description": "Where NET SAVED comes from, as context-guru's dashboard splits it. Context rewrite: every operator that rewrites the request (its content, its tool declarations, its model), net of its own model calls and of the cache breaks the changes cause. Cache management: the keep-alive (its rescues, net of its pings), the prefix-cache split, the 1h head TTL and the breakpoints the proxy adds. Of baseline: each net as a share of what the traffic would have cost without the proxy (spend plus net saved); the two sources add up to the Total. For proxy=\"context-guru\", the split is right only for builds with rossoctl/context-guru#1362: an older build pushes the keep-alive, head-TTL and breakpoint operators as component=\"other\", which counts under Context rewrite. The Total is right for every build.",
       "datasource": {
         "type": "prometheus",
         "uid": "central-prom"

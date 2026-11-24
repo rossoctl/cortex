@@ -53,11 +53,17 @@ NET_LABELS = ("", "machine", "proxy", "preset")
 # The net saving split in two by source, as context-guru's own dashboard splits it (dash/savings.go,
 # savingsArithmetic: compaction, then the prefix-cache split and the keep-alive's net).
 #
-# The operators that manage the cache rather than rewrite the context. Both proxies use these names:
-# keeper is accountant.PingOps's operator (the keep-alive pings and their rescues); cachesplit,
-# headttl and tailbreakpoint are context-guru's (apply/ops.go, apply/headttl.go); cacheinject is
-# context-guru's breakpoint component. Every other operator rewrites the request: its content, its
-# tool declarations or (a setting) its model.
+# The operators that manage the cache rather than rewrite the context: keeper is
+# accountant.PingOps's operator (the keep-alive pings and their rescues); cachesplit, headttl and
+# tailbreakpoint are context-guru's (apply/ops.go, apply/headttl.go); cacheinject is context-guru's
+# breakpoint component. Every other operator rewrites the request: its content, its tool
+# declarations or (a setting) its model.
+#
+# The accountant's sink pushes an operator outside its WithComponents list as component="other".
+# Cortex lists all five names (core/accounting Components). context-guru lists keeper, headttl and
+# tailbreakpoint only from rossoctl/context-guru#1362 on; an older context-guru build pushes them as
+# "other", which this split counts under Context rewrite. The dashboard cannot tell that "other"
+# from an unlisted rewrite operator, so the fix is at the source, and the table's description says so.
 CACHE_COMPONENTS = ("keeper", "cachesplit", "cacheinject", "headttl", "tailbreakpoint")
 _CACHE_RE = "|".join(CACHE_COMPONENTS)
 # Context rewrite: the rewriting operators, their own model calls (a spend), and every cache break.
@@ -522,7 +528,8 @@ def source_table(pid, x, y, w, h):
         desc="Where NET SAVED comes from, as context-guru's dashboard splits it. "
         "Context rewrite: every operator that rewrites the request (its content, its tool declarations, its model), net of its own model calls and of the cache breaks the changes cause. "
         "Cache management: the keep-alive (its rescues, net of its pings), the prefix-cache split, the 1h head TTL and the breakpoints the proxy adds. "
-        "Of baseline: each net as a share of what the traffic would have cost without the proxy (spend plus net saved); the two sources add up to the Total.",
+        "Of baseline: each net as a share of what the traffic would have cost without the proxy (spend plus net saved); the two sources add up to the Total. "
+        'For proxy="context-guru", the split is right only for builds with rossoctl/context-guru#1362: an older build pushes the keep-alive, head-TTL and breakpoint operators as component="other", which counts under Context rewrite. The Total is right for every build.',
     )
     # A loss reads red, a saving green, in both value columns. The source column keeps the text colour.
     value = [

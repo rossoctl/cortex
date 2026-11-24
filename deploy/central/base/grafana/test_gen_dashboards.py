@@ -153,6 +153,15 @@ class SourceTest(unittest.TestCase):
         interaction = {"__name__": "llm_savings_interaction_usd_total", "direction": "saved"}
         self.assertEqual(self.source_of("saved", interaction), ["Cache management"])
 
+    def test_an_other_operator_is_context_rewrite(self):
+        # The accountant's sink pushes an operator outside its allow-list as "other". An old
+        # context-guru build pushes keeper, headttl and tailbreakpoint that way (the table's
+        # description says so); pin where those series land.
+        for side, metric in (("saved", "llm_savings_saved_usd_total"), ("added", "llm_savings_added_usd_total")):
+            for kind in ("rewrite", "spend", "setting"):
+                op = {"__name__": metric, "component": "other", "kind": kind}
+                self.assertEqual(self.source_of(side, op), ["Context rewrite"], (side, kind))
+
     def test_the_headline_shows_the_rate_and_no_tile_of_its_own_does(self):
         panels = {p["title"]: p for p in g.fleet()["panels"]}
         self.assertNotIn("Saving rate", panels)
