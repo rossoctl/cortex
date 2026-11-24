@@ -108,7 +108,10 @@ func New(mp metric.MeterProvider) session.Recorder {
 }
 
 // Record implements session.Recorder. A tunnel row (e.Tunnel) is skipped: its bytes are opaque
-// and it carries no HTTP status or meaningful duration for these dashboards. A nil recorder
+// and it carries no HTTP status or meaningful duration for these dashboards. A forwarded
+// WebSocket's 101 row (e.SplicedUpgrade) is skipped for the same reason: its Duration is the
+// socket's lifetime and its bytes are the relay's, so one long socket would dominate the
+// duration histogram's tail. The upgrade's request row is a real request and still counts. A nil recorder
 // field (the no-op case from New) makes every branch below a no-op, since each checks its own
 // instrument before using it.
 //
@@ -117,7 +120,7 @@ func New(mp metric.MeterProvider) session.Recorder {
 // event, model.SessionEvent doc), and the Requests dashboard wants a 4xx denial counted, not
 // silently absent from the total.
 func (r *recorder) Record(_ string, e *model.SessionEvent) {
-	if e == nil || e.Tunnel {
+	if e == nil || e.Tunnel || e.SplicedUpgrade() {
 		return
 	}
 	ctx := context.Background()

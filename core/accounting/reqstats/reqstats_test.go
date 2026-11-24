@@ -2,6 +2,7 @@ package reqstats
 
 import (
 	"context"
+	"net/http"
 	"testing"
 	"time"
 
@@ -86,6 +87,40 @@ func TestRecord_TunnelRowIsSkipped(t *testing.T) {
 	}
 	if got := sum(t, rd, "llm.inference.response_bytes"); got != 0 {
 		t.Errorf("tunnel row counted: llm.inference.response_bytes = %v, want 0", got)
+	}
+}
+
+// A forwarded WebSocket's 101 row carries the socket's lifetime and the relay's bytes
+// (forwardproxy/upgrade.go); counting it would put a 30-minute observation in a histogram
+// that tops out at 600 s. The upgrade's request row is a real request and still counts.
+func TestRecord_ForwardedWebSocket101IsSkipped(t *testing.T) {
+	mp, rd := manual(t)
+	r := New(mp)
+	r.Record("s1", &model.SessionEvent{Phase: model.SessionRequest, Direction: model.Outbound, BytesUp: 100})
+	r.Record("s1", &model.SessionEvent{Phase: model.SessionResponse, Direction: model.Outbound,
+		StatusCode: http.StatusSwitchingProtocols, Duration: 30 * time.Minute, BytesUp: 5 << 20, BytesDown: 50 << 20})
+
+	if got := sum(t, rd, "llm.inference.requests"); got != 0 {
+		t.Errorf("101 row counted: llm.inference.requests = %v, want 0", got)
+	}
+	if got := sum(t, rd, "llm.inference.response_bytes"); got != 0 {
+		t.Errorf("101 row counted: llm.inference.response_bytes = %v, want 0", got)
+	}
+	if got := sum(t, rd, "llm.inference.request_bytes"); got != 100 {
+		t.Errorf("upgrade request row: llm.inference.request_bytes = %v, want 100", got)
+	}
+}
+
+// The reverse proxy records its 101 at handshake time (Direction Inbound), so its Duration is
+// an ordinary latency and the row counts, as cost/usage counts it.
+func TestRecord_InboundWebSocket101IsCounted(t *testing.T) {
+	mp, rd := manual(t)
+	r := New(mp)
+	r.Record("s1", &model.SessionEvent{Phase: model.SessionResponse, Direction: model.Inbound,
+		StatusCode: http.StatusSwitchingProtocols, Duration: 20 * time.Millisecond})
+
+	if got := sum(t, rd, "llm.inference.requests"); got != 1 {
+		t.Errorf("inbound 101: llm.inference.requests = %v, want 1", got)
 	}
 }
 

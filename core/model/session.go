@@ -1170,6 +1170,18 @@ func (n *LenientInt64) UnmarshalJSON(raw []byte) error {
 	return nil
 }
 
+// SplicedUpgrade tells if e is the forward proxy's 101 row for a WebSocket it relayed
+// (forwardproxy/upgrade.go). That row is written after both splice directions end, so its
+// Duration is the socket's lifetime and its bytes are the relay's opaque frames, not a
+// request's latency or a response's body. Aggregations that read Duration or bytes as a
+// request's skip it, as they skip a Tunnel row; the session timeline keeps it.
+//
+// Scoped to Outbound: the reverse proxy records its own 101 (Direction Inbound) at
+// handshake time, so that row's Duration is an ordinary handshake latency.
+func (e *SessionEvent) SplicedUpgrade() bool {
+	return e.Direction == Outbound && e.StatusCode == http.StatusSwitchingProtocols
+}
+
 // Imported tells if an import wrote e. A live event gives false.
 func (e *SessionEvent) Imported() bool {
 	return strings.HasPrefix(e.Source, ImportedSourcePrefix)
