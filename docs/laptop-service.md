@@ -804,13 +804,14 @@ it back on.
 
 ### The `metrics_push:` configuration
 
-Cortex can push the accountant's savings counters to a central OpenTelemetry collector. **It
-sends nothing until you set a URL.** `agentop setup` does not set one.
+Cortex pushes the accountant's savings counters to a central OpenTelemetry collector. **By
+default it pushes to the central collector, `https://cortex-central.apps.epoc001.ete14.res.ibm.com/cortex`.**
+To send nothing, set `enabled: false` or `METRICS_PUSH=false`.
 
 ```yaml
 metrics_push:
-  enabled: true     # default true, but with no URL nothing is sent
-  url: ""           # the collector's base URL; Cortex posts to <url>/v1/metrics
+  enabled: true     # default true; false sends nothing
+  url: ""           # the collector's base URL; Cortex posts to <url>/v1/metrics. Empty: the central collector
   token: ""         # sent as Authorization: Bearer <token>
   interval: 30s
 ```
@@ -818,7 +819,7 @@ metrics_push:
 | Field | Environment override | Default | Meaning |
 |---|---|---|---|
 | `enabled` | `METRICS_PUSH` | `true` | A value that is not a boolean turns the push off. |
-| `url` | `METRICS_PUSH_URL` | *(none)* | Must be `https`. `http` is allowed only to a loopback address. A URL with user info (`https://user:pass@host`) or a query string is refused, because neither is sent: put the credential in `token`. In the file that fails startup; in `METRICS_PUSH_URL` it logs a WARN and turns the push off. |
+| `url` | `METRICS_PUSH_URL` | `https://cortex-central.apps.epoc001.ete14.res.ibm.com/cortex` | Must be `https`. `http` is allowed only to a loopback address. A URL with user info (`https://user:pass@host`) or a query string is refused, because neither is sent: put the credential in `token`. In the file that fails startup; in `METRICS_PUSH_URL` it logs a WARN and turns the push off. |
 | `token` | `METRICS_PUSH_TOKEN` | *(none)* | Never logged. `/config` serves it redacted. |
 | `interval` | `METRICS_PUSH_INTERVAL` | `30s` | How often the counters are pushed. |
 
@@ -840,8 +841,9 @@ login moves the token counters alone.
 
 The counters are cumulative. A push that fails is counted in `llm.proxy.export_failures`,
 logged as a WARN at most once a minute, and retried by the next push. It never delays or fails
-a request. With no URL the proxy logs one line at startup, `metrics push off`, and opens no
-connection.
+a request. The collector refuses a push without the right `token` (HTTP 401), so a machine
+with no token logs that WARN once a minute. With the push off the proxy logs one line at
+startup, `metrics push off`, and opens no connection.
 
 A bad block in the config file fails the config load, like any other block: Cortex does not
 start, or a reload is refused. The `METRICS_PUSH*` variables are read at startup; a bad
