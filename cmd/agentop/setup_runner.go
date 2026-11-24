@@ -124,8 +124,11 @@ func tildePath(home, p string) string {
 
 // shellPath is p as a fix line's command takes it: ~/… when the rest needs no
 // quoting, so the shell expands the ~; else the whole path, quoted.
-func (e *setupEnv) shellPath(p string) string {
-	t := e.tilde(p)
+func (e *setupEnv) shellPath(p string) string { return shellPathIn(e.home, p) }
+
+// shellPathIn is shellPath without a setupEnv, as tildePath is tilde without one.
+func shellPathIn(home, p string) string {
+	t := tildePath(home, p)
 	if rest, under := strings.CutPrefix(t, "~/"); (under && shellQuote(rest) == rest) || shellQuote(t) == t {
 		return t
 	}

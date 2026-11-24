@@ -823,6 +823,9 @@ func planUnrouteCodex(env *setupEnv) []removal {
 func keepRelativeCodexEntry(env *setupEnv, rel, state string) removal {
 	fix := strings.Split(codexByHand(env, rel, nil), "\n")
 	fix[0] = "in the directory you enabled Codex in, " + fix[0]
+	// The restart names that file's Codex home relatively too, so it holds only from there
+	// (#1781 review). The updater's stop matches by command line, from anywhere.
+	fix[2] = strings.Replace(fix[2], "then, if", "then, from that directory, if", 1)
 	return removal{
 		label: "unrouted",
 		keep: &kept{
@@ -865,13 +868,13 @@ func codexProxyIn(envPath string, want map[string]string) bool {
 // key changed since enable is the user's: disable leaves it, so it is this row's "Left
 // behind", as it is the Claude Code row's.
 //
-// Codex's auto-updater is stopped, and a running app-server restarted, as disable does,
-// so neither keeps the proxy that is about to stop: both read the file only when they
-// start (codexUpdaterPIDRel). The updater is stopped even when no app-server runs, since
-// Codex's daemon stop leaves it running and uninstall is the last time agentop can.
+// Codex's processes are settled as disable settles them (settleCodexProcs), so neither
+// keeps the proxy that is about to stop. That is so also when the file had nothing of
+// Cortex's left: a process started before the user's own edits may still have Cortex's
+// proxy, and uninstall is the last time agentop can stop it.
 func unrouteCodex(env *setupEnv, envPath, state string, want map[string]string) removal {
 	codexHome := filepath.Dir(envPath)
-	restartCmd := codexRestartCmdFor(env, codexHome)
+	restartCmd := codexRestartCmdFor(env.home, codexHome)
 	pl, planErr := planCodexDisable(envPath, state)
 	// Read here as well as by the plan: a file disable refuses, one defining a key twice,
 	// still names the keys to remove by hand and what may point into ~/.cortex.
@@ -897,25 +900,9 @@ func unrouteCodex(env *setupEnv, envPath, state string, want map[string]string) 
 	if !samePath(envPath, defaultCodexEnvPath(env.home)) {
 		suffix = " · " + env.tilde(envPath)
 	}
-	if _, running := runningCodexDaemon(codexHome); running {
+	changed := len(pl.present) > 0
+	if _, restart := codexSettles(checkCodexProcs(codexHome, cortexProxy, false), changed); planErr == nil && restart {
 		where += " · restarts its app-server, interrupting running turns"
-	}
-	// settleCodex stops Codex's auto-updater and restarts a running app-server once the
-	// file is settled, so neither keeps the proxy that is about to stop, and names what
-	// still has it. A failed stop is not the row's ✗, as it is not disable's: the restart
-	// still applies the change to the daemon. It is remembered, so the updater it left on
-	// the old proxy is named whether or not the restart works.
-	settleCodex := func(detail, notes string, left []string, running bool) (string, []string, error) {
-		stopFailed := codexStopUpdater(codexHome) != nil
-		if !running {
-			return detail + notes, append(left, codexUpdaterLeft(codexHome, cortexProxy, restartCmd, stopFailed)...), nil
-		}
-		if err := codexRestartDaemon(codexHome, want); err != nil {
-			left = append(left, "Codex's app-server, which may still use Cortex's proxy — restart it: "+restartCmd)
-			return detail + notes, append(left, codexUpdaterLeft(codexHome, cortexProxy, restartCmd, stopFailed)...), nil
-		}
-		left = append(left, codexDaemonLeft(codexHome, cortexProxy, restartCmd)...)
-		return detail + " · restarted its app-server" + notes, append(left, codexUpdaterLeft(codexHome, cortexProxy, restartCmd, stopFailed)...), nil
 	}
 	fix := remedy{byHand: codexByHand(env, envPath, keys)}
 	if planErr == nil {
@@ -931,11 +918,12 @@ func unrouteCodex(env *setupEnv, envPath, state string, want map[string]string) 
 			if planErr != nil {
 				return "", unchanged, planErr
 			}
-			if len(pl.present) == 0 {
+			var detail, notes string
+			if !changed {
 				// Nothing of Cortex's left in the file: every managed key it holds was
 				// changed after enable, or it holds none, removed by hand say. The record
 				// would otherwise outlive it.
-				detail := "nothing routed in " + env.tilde(envPath)
+				detail = "nothing routed in " + env.tilde(envPath)
 				if state != "" {
 					if err := removeIfExists(state); err != nil {
 						return "", []string{env.tilde(state)}, withFixes(err, manual("rm "+env.shellPath(state)))
@@ -945,52 +933,33 @@ func unrouteCodex(env *setupEnv, envPath, state string, want map[string]string) 
 				if len(pl.left) > 0 {
 					detail = "left " + someKeys(pl.left) + " as they are" + suffix
 				}
-				// An app-server started before those lines changed may still have Cortex's
-				// proxy, which uninstall is about to stop, so it gets the restart a changed
-				// file would have (#1783 review). cortexProxy is enable's record of it when
-				// the file no longer holds it.
-				if d, ok := runningCodexDaemon(codexHome); ok && d.EnvErr == nil && cortexProxy != "" && sameProxy(d.Proxy, cortexProxy) {
-					return settleCodex(detail, "", leftNote, true)
+			} else {
+				var errb bytes.Buffer
+				restored, err := applyCodexDisable(pl, state, &errb)
+				if err != nil {
+					return "", unchanged, err
 				}
-				return detail, leftNote, nil
+				// Not "no longer goes through Cortex" when a key was left: a left HTTPS_PROXY
+				// still points somewhere, and the row would contradict the note below it.
+				detail = "Codex no longer goes through Cortex" + suffix
+				if len(pl.left) > 0 {
+					detail = "removed what Cortex set" + suffix
+				}
+				if len(restored) > 0 {
+					detail += " · restored your " + strings.Join(restored, ", ")
+				}
+				notes = stderrNotes(env, errb.String())
 			}
-			_, running := runningCodexDaemon(codexHome)
-			var errb bytes.Buffer
-			restored, err := applyCodexDisable(pl, state, &errb)
-			if err != nil {
-				return "", unchanged, err
+			// A failed stop or restart is not the row's ✗, as it is not disable's: the file
+			// holds the change, and what still has Cortex's proxy is named under Left behind.
+			// cortexProxy is enable's record of it when the file no longer holds it.
+			procs := settleCodexProcs(codexHome, cortexProxy, want, false, changed, nil)
+			if procs.restarted {
+				detail += " · restarted its app-server"
 			}
-			// Not "no longer goes through Cortex" when a key was left: a left HTTPS_PROXY
-			// still points somewhere, and the row would contradict the note below it.
-			detail := "Codex no longer goes through Cortex" + suffix
-			if len(pl.left) > 0 {
-				detail = "removed what Cortex set" + suffix
-			}
-			if len(restored) > 0 {
-				detail += " · restored your " + strings.Join(restored, ", ")
-			}
-			return settleCodex(detail, stderrNotes(env, errb.String()), leftNote, running)
+			return detail + notes, append(leftNote, codexProcsLeft(procs, restartCmd)...), nil
 		},
 	}
-}
-
-// codexRestartCmdFor is codexDaemonRestartCmd as the user should run it for the app-server
-// of codexHome: with CODEX_HOME set when codexHome is not the home their shell's codex
-// uses, under the condition codexRun sets it on. Bare, it would restart another Codex's
-// app-server and leave this one on Cortex's proxy.
-func codexRestartCmdFor(env *setupEnv, codexHome string) string {
-	if defaultCodexEnvPath(env.home) == filepath.Join(codexHome, ".env") {
-		return codexDaemonRestartCmd
-	}
-	return codexHomeEnv + "=" + env.shellPath(codexHome) + " " + codexDaemonRestartCmd
-}
-
-// codexKillThenRestart is the command that ends a confirmed updater and restarts the
-// app-server once it has gone. kill only signals it, and Codex's restart starts a fresh
-// updater only when the record names no live process, so a restart run straight after
-// the kill could keep the old one, proxy and all. A kill that fails stops the line there.
-func codexKillThenRestart(pid int, restartCmd string) string {
-	return fmt.Sprintf("kill %d && while kill -0 %d 2>/dev/null; do sleep 1; done && %s", pid, pid, restartCmd)
 }
 
 // codexLeftNote is the Codex row's "Left behind" line for the keys disable did not touch
@@ -1029,7 +998,7 @@ func codexByHand(env *setupEnv, envPath string, keys []string) string {
 	}
 	return "in " + env.tilde(envPath) + ", remove the lines that set " + strings.Join(keys, ", ") + "\n" +
 		"then stop Codex's auto-updater and wait for it to exit: " + codexUpdaterStopByHand + "; " + codexUpdaterWaitByHand + "\n" +
-		"then, if Codex's app-server runs: " + codexRestartCmdFor(env, filepath.Dir(envPath))
+		"then, if Codex's app-server runs: " + codexRestartCmdFor(env.home, filepath.Dir(envPath))
 }
 
 // codexNeedsCortexDir is why --purge must keep ~/.cortex: the managed keys of envPath that
@@ -1085,48 +1054,34 @@ func codexNeedsCortexDir(env *setupEnv, envPath, state string, f *codexEnvFile, 
 	return someKeys(keys) + " in " + env.tilde(envPath) + " still points into it"
 }
 
-// codexDaemonLeft names the app-server the Codex row restarted when it still has Cortex's
-// proxy, which then reached it from somewhere other than the dotenv file.
-func codexDaemonLeft(codexHome, cortexProxy, restartCmd string) []string {
-	if cortexProxy == "" {
-		return nil
+// codexProcsLeft is the Codex row's Left behind lines for what still has Cortex's proxy
+// after settleCodexProcs, each with a command that works without agentop, which uninstall
+// removes. An updater gets a pid and a kill only when codexIsRecorded confirmed it, so a
+// reused pid is never given a kill command.
+func codexProcsLeft(p codexProcs, restartCmd string) []string {
+	var left []string
+	switch p.daemonState {
+	case codexNotRestarted:
+		left = append(left, "Codex's app-server, which may still use Cortex's proxy — restart it: "+restartCmd)
+	case codexDisagrees:
+		// Restarted, or left alone in a file nothing changed in, and still on Cortex's
+		// proxy, which then reached it from somewhere other than the dotenv file.
+		left = append(left, fmt.Sprintf("Codex's app-server (pid %d), which still has Cortex's proxy from the environment it started in — "+
+			"restart it from a shell without one: %s", p.daemon.PID, restartCmd))
 	}
-	if d, ok := runningCodexDaemon(codexHome); ok && d.EnvErr == nil && sameProxy(d.Proxy, cortexProxy) {
-		return []string{fmt.Sprintf("Codex's app-server (pid %d), which still has Cortex's proxy from the environment it started in — "+
-			"restart it from a shell without one: %s", d.PID, restartCmd)}
+	u := p.updater
+	switch p.updaterState {
+	case codexUnconfirmed:
+		left = append(left, "Codex's auto-updater, which agentop could not confirm picked up the change — "+
+			"if Codex cannot connect after its next update, restart your computer")
+	case codexNotStopped:
+		left = append(left, fmt.Sprintf("Codex's auto-updater (pid %d), which agentop could not stop, so it may still have Cortex's proxy — "+
+			"stop it, then restart the app-server: %s", u.PID, codexKillThenRestart(u.PID, restartCmd)))
+	case codexDisagrees:
+		left = append(left, fmt.Sprintf("Codex's auto-updater (pid %d), which still has Cortex's proxy — "+
+			"stop it, then restart the app-server: %s", u.PID, codexKillThenRestart(u.PID, restartCmd)))
 	}
-	return nil
-}
-
-// codexUpdaterLeft names an auto-updater that may still have Cortex's proxy after the
-// Codex row ran, since the app-server it starts after its next update inherits that
-// proxy. stopFailed is whether the row's stop failed. That updater is named whatever its
-// environment reads, or fails to: it was not replaced, so it still has the environment
-// it started with. Otherwise only one whose environment shows Cortex's proxy is. It names
-// a pid only when codexIsRecorded confirms the process, as reportRestartedUpdater does,
-// so a reused pid is never given a kill command.
-func codexUpdaterLeft(codexHome, cortexProxy, restartCmd string, stopFailed bool) []string {
-	u, ok := runningCodexUpdater(codexHome)
-	if !ok {
-		return nil
-	}
-	switch codexIsRecorded(u) {
-	case codexRecordStale:
-		// A restart finds the record stale and starts a fresh updater.
-		return nil
-	case codexRecordUnknown:
-		return []string{"Codex's auto-updater, which agentop could not confirm picked up the change — " +
-			"if Codex cannot connect after its next update, restart your computer"}
-	}
-	switch {
-	case stopFailed:
-		return []string{fmt.Sprintf("Codex's auto-updater (pid %d), which agentop could not stop, so it may still have Cortex's proxy — "+
-			"stop it, then restart the app-server: %s", u.PID, codexKillThenRestart(u.PID, restartCmd))}
-	case u.EnvErr == nil && cortexProxy != "" && sameProxy(u.Proxy, cortexProxy):
-		return []string{fmt.Sprintf("Codex's auto-updater (pid %d), which still has Cortex's proxy — "+
-			"stop it, then restart the app-server: %s", u.PID, codexKillThenRestart(u.PID, restartCmd))}
-	}
-	return nil
+	return left
 }
 
 // planUnrouteBob removes IBM Bob's proxy setting when it may be Cortex's: one
