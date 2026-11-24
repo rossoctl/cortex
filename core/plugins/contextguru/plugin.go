@@ -72,7 +72,15 @@ type modelConfig struct {
 	APIKey    string `json:"api_key"`    // optional bearer
 	MaxTokens int    `json:"max_tokens"` // completion cap; 0 → 4096
 	TimeoutMs int    `json:"timeout_ms"` // per-call ceiling; 0 → defaultModelTimeout
+	// MaxConcurrent bounds concurrent calls to this static model, process-wide, across every
+	// request. 0 → defaultModelMaxConcurrent (4) -- the same default as context-guru-proxy's
+	// --cheap-model-concurrent flag, which this mirrors (cortex has no equivalent today
+	// otherwise: an unbounded number of concurrent summarize/extract calls could fire).
+	MaxConcurrent int `json:"max_concurrent"`
 }
+
+// defaultModelMaxConcurrent mirrors context-guru-proxy's --cheap-model-concurrent default.
+const defaultModelMaxConcurrent = 4
 
 // logEmitter is context-guru's telemetry sink: it logs what the engine did on
 // each request so operators can observe the plugin from AuthBridge's own logs
@@ -132,7 +140,17 @@ type contextGuruConfig struct {
 	KeepAlive keepAliveConfig `json:"keep_alive"`
 	// ContextWindow says where model windows come from, for the engine's fraction triggers.
 	ContextWindow windowsConfig `json:"context_window"`
+	// CacheMode overrides whether the engine places prompt-cache breakpoints on the outbound
+	// request at all: "auto" (default), "on" or "off". It is apply.Opts.CacheMode, threaded
+	// through unchanged -- the SAME field and the SAME three values as context-guru-proxy's
+	// CACHE_MODE environment variable, so a value means the same thing in both. "" behaves as
+	// "auto", exactly as an unset CacheMode always has. Validated at Configure.
+	CacheMode string `json:"cache_mode"`
 }
+
+// validCacheModes are apply.Opts.CacheMode's only legal values ("" counts as "auto" and is not
+// listed here, since Configure treats an absent key as unset, not as the literal string).
+var validCacheModes = map[string]bool{"auto": true, "on": true, "off": true}
 
 // cgModel adapts an llmclient.Client to context-guru's components.Model interface
 // (single prompt in, text out). model/host identify the call for accounting
@@ -155,6 +173,11 @@ type cgModel struct {
 	host        string
 	report      pipeline.OpReporter
 	lateDropped *atomic.Int64
+	// sem bounds concurrent calls to this model, process-wide. A channel, not a pointer: every
+	// per-request copy of cgModel (staticModelFor) shares the one built in Configure. nil only on
+	// a zero cgModel{} (tests that build one directly without going through Configure); Complete
+	// treats a nil sem as unbounded.
+	sem chan struct{}
 }
 
 // pluginName is the plugin's registered name, and the Operator of its model-call spend ops.
@@ -172,6 +195,14 @@ func (m cgModel) spend(usage accountant.CallUsage) {
 }
 
 func (m cgModel) Complete(ctx context.Context, prompt string) (string, error) {
+	if m.sem != nil {
+		select {
+		case m.sem <- struct{}{}:
+			defer func() { <-m.sem }()
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
 	resp, err := m.c.CallRaw(ctx, &llmclient.ChatRequest{
 		Temperature: 0,
 		MaxTokens:   m.maxTokens,
@@ -332,6 +363,9 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 			return fmt.Errorf("context-guru config: %w", err)
 		}
 	}
+	if decoded.CacheMode != "" && !validCacheModes[decoded.CacheMode] {
+		return fmt.Errorf("context-guru config: cache_mode %q is not one of: auto, on, off", decoded.CacheMode)
+	}
 	p.cfg = decoded
 	if len(p.cfg.Paths) == 0 {
 		p.cfg.Paths = []string{"/v1/chat/completions", "/v1/completions", "/v1/messages"}
@@ -416,7 +450,13 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 			// Exactly one set is almost always a typo/empty ${VAR} expansion that
 			// would silently disable the cheap model. Fail loud instead.
 			return fmt.Errorf("context-guru model config: base_url and model must both be set (got base_url=%q model=%q)", m.BaseURL, m.Model)
+		case m.MaxConcurrent < 0:
+			return fmt.Errorf("context-guru model config: max_concurrent must not be negative (got %d)", m.MaxConcurrent)
 		default:
+			maxConcurrent := m.MaxConcurrent
+			if maxConcurrent == 0 {
+				maxConcurrent = defaultModelMaxConcurrent
+			}
 			p.static = &cgModel{
 				c: llmclient.New(llmclient.Options{
 					Endpoint:           m.BaseURL,
@@ -430,6 +470,7 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 				maxTokens: p.modelMax,
 				model:     m.Model,
 				host:      hostOf(m.BaseURL),
+				sem:       make(chan struct{}, maxConcurrent),
 			}
 		}
 	}
@@ -511,6 +552,7 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 		Models:      models,
 		Window:      window,
 		WindowExact: exact,
+		CacheMode:   p.cfg.CacheMode,
 	})
 	if res.Trace.Session != "" {
 		p.cgSessions.set(sid, res.Trace.Session)
@@ -820,10 +862,14 @@ func sessionID(pctx *pipeline.Context) string {
 func (p *ContextGuru) ConfigSchema() []pipeline.FieldSchema {
 	return []pipeline.FieldSchema{
 		{Name: "paths", Type: "[]string", Description: "Inference request paths to compact (default: chat/completions, completions, messages)."},
-		{Name: "model", Type: "object", Description: "Optional static cheap model for LLM-backed components (summarize, extract:code). Its calls honour HTTPS_PROXY except on a local install, where it points at Cortex itself."},
-		{Name: "engine", Type: "object", Description: "Native context-guru config: preset / pipeline / per-component (marker_mode) / store."},
+		{Name: "model", Type: "object", Description: "Optional static cheap model for LLM-backed components (summarize, extract:code). Its calls honour HTTPS_PROXY except on a local install, where it points at Cortex itself. max_concurrent bounds concurrent calls to it, process-wide; default 4, the same default as context-guru-proxy's --cheap-model-concurrent flag."},
+		{Name: "engine", Type: "object", Description: "Native context-guru config: preset / pipeline / per-component (marker_mode) / store / cache. " +
+			"cache.strategy picks a named prompt-cache policy -- none, auto, 1-ping, 2-ping, 1-hour-head, 1-hour-on-wait, 1-hour-always, 30-min-ping -- " +
+			"resolved by context-guru itself (config.LookupStrategy), not reimplemented here; see context-guru's docs/how-to/cache-strategies.md. " +
+			"Unset: cache.strategy's own default (auto) is NOT applied -- the keep_alive block below decides keep-alive instead, unchanged from before."},
 		{Name: "context_window", Type: "object", Description: "Where model context windows come from, for fraction-of-window triggers (cache_aware_summarizer's 0.9): model_info (litellm | off; default litellm on a local install, off elsewhere, and litellm wherever model_info_url is set), model_info_url, windows (model id -> tokens, exact)."},
 		{Name: "keep_alive", Type: "object", Description: "Prompt-cache keep-alive, on by default: enabled (true), idle_seconds (240), max_pings (2), max_usd_per_ping (0.50), min_prefix_tokens (80000). Pings bill the caller's own credential; each is accounted through the accountant host where accounting is on (the cost ledger and /v1/usage book it as purpose keep-alive, apart from the agent's requests: keepAlivePings, and its spend by the thread's billing basis — keepAliveMicros on an API key, keepAliveUnits on a subscription, keepAliveUnknownMicros otherwise), and otherwise only logged."},
+		{Name: "cache_mode", Type: "string", Description: "Override whether the engine places prompt-cache breakpoints on the outbound request at all: \"auto\" (default), \"on\" or \"off\". The same field and the same three values as context-guru-proxy's CACHE_MODE environment variable."},
 	}
 }
 

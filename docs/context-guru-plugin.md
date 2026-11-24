@@ -18,7 +18,9 @@ config enables it by default (preset `xhigh`). `lite`, `envoy` and
   - `api_key` — optional bearer token.
   - `max_tokens` — completion cap, default 4096.
   - `timeout_ms` — per-call timeout, default 150000.
-- `engine` (object) — native context-guru config (preset / pipeline / per-component / store), passed through verbatim. Default: `preset: balanced`.
+  - `max_concurrent` — bounds concurrent calls to this model, process-wide, across every request. Default 4 — the same default as `context-guru-proxy`'s `--cheap-model-concurrent` flag, which this mirrors. A call that would exceed it waits for a slot, or returns the request's own context error if that context is canceled first.
+- `engine` (object) — native context-guru config (preset / pipeline / per-component / store / cache), passed through verbatim. Default: `preset: balanced`.
+  - `cache.strategy` — picks a named prompt-cache policy: `none`, `auto`, `1-ping`, `2-ping`, `1-hour-head`, `1-hour-on-wait`, `1-hour-always`, `30-min-ping`. Resolved by context-guru itself (`config.LookupStrategy`/`applyStrategy`), not reimplemented in this plugin — see context-guru's own [`docs/how-to/cache-strategies.md`](https://github.com/rossoctl/context-guru/blob/main/docs/how-to/cache-strategies.md). This is the SAME `cache:` block `context-guru-proxy`'s `--config` loads, so a strategy behaves identically in both. Unset: `keep_alive` (below) decides keep-alive instead, exactly as before this key existed — `keep_alive: {enabled: false}` still always wins over any strategy, as a kill switch.
 
 **The request's own model (`model.source: incoming`).** A component configured with `model.source: incoming` calls the model the agent itself is using, on the agent's own credential. OpenAI Chat Completions only: through `llmclient`, on the request's endpoint and `Authorization`. On other dialects the component uses the `model` block, or degrades to deterministic. Each such call is reported to the request it was made for as a spend op (`pluginSpendMicros`). A call that returns after its request was accounted is dropped and counted in the `late_model_calls_dropped` metric.
 
@@ -79,6 +81,8 @@ provider has cached stays the same.
   - A thread whose request asks `ttl: "1h"` on every cache breakpoint, and whose cache the provider billed at the 1-hour tier: the engine's 1-hour schedule, one ping at 59 minutes, so 118 minutes. It is never more than 236 minutes (context-guru's `keepalive.MaxHold1h`). The `keep_alive` block has no setting for this schedule.
 
   **Hot-reload:** every config hot-reload tears down and rebuilds the pipeline, which drops all keep-alive tracking state. During the drain window, the outgoing instance may still send one more ping for a session the new instance no longer tracks.
+
+- `cache_mode` (string) — override whether the engine places prompt-cache breakpoints on the outbound request at all: `"auto"` (default; unset behaves the same), `"on"` or `"off"`. This is `apply.Opts.CacheMode`, threaded through unchanged — the same field and the same three values as `context-guru-proxy`'s `CACHE_MODE` environment variable, so a value means the same thing in both. A bad value is a config error at `Configure`, not a silent fallback to `auto`.
 
 ## Where its own model calls go
 

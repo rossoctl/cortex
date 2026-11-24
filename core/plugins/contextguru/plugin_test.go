@@ -11,7 +11,9 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	bschemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/rossoctl/accountant"
@@ -175,12 +177,37 @@ func TestOnRequest_NoSession_Skips(t *testing.T) {
 	}
 }
 
+func TestConfigure_RejectsBadCacheMode(t *testing.T) {
+	if err := New().Configure(json.RawMessage(`{"cache_mode":"always"}`)); err == nil {
+		t.Fatal("expected error for cache_mode \"always\"")
+	}
+	for _, mode := range []string{"", "auto", "on", "off"} {
+		p := New()
+		if err := p.Configure(json.RawMessage(`{"cache_mode":"` + mode + `"}`)); err != nil {
+			t.Fatalf("cache_mode %q: unexpected error: %v", mode, err)
+		}
+		// Plumbing only: apply.Opts.CacheMode's own resolution (resolveCacheAware) is
+		// context-guru's behavior, not this plugin's, so this pins that the value reaches
+		// p.cfg (and so OnRequest's apply.Opts.CacheMode), not what the engine then does with it.
+		if p.cfg.CacheMode != mode {
+			t.Fatalf("cache_mode %q: p.cfg.CacheMode = %q", mode, p.cfg.CacheMode)
+		}
+	}
+}
+
 func TestConfigure_RejectsPartialModel(t *testing.T) {
 	if err := New().Configure(json.RawMessage(`{"model":{"base_url":"http://x"}}`)); err == nil {
 		t.Fatal("expected error when model.model is unset but base_url is set")
 	}
 	if err := New().Configure(json.RawMessage(`{"model":{"model":"gpt-4o-mini"}}`)); err == nil {
 		t.Fatal("expected error when model.base_url is unset but model is set")
+	}
+}
+
+func TestConfigure_RejectsNegativeMaxConcurrent(t *testing.T) {
+	cfg := `{"model":{"base_url":"http://x","model":"m","max_concurrent":-1}}`
+	if err := New().Configure(json.RawMessage(cfg)); err == nil {
+		t.Fatal("expected error for a negative model.max_concurrent")
 	}
 }
 
@@ -522,6 +549,61 @@ func TestCgModel_ConcurrentCompleteOnOneRequest(t *testing.T) {
 		if op.Operator != "context-guru" || op.DryRun {
 			t.Errorf("op = {Operator:%q DryRun:%v}, want {context-guru false}", op.Operator, op.DryRun)
 		}
+	}
+}
+
+// TestCgModel_MaxConcurrentBoundsInFlightCalls proves the cap actually bounds concurrency
+// (model.max_concurrent, mirroring context-guru-proxy's --cheap-model-concurrent): with the cap
+// at 2 and 6 calls fired at once against a server that blocks until released, no more than 2 are
+// ever in flight together, and all 6 still complete once released.
+func TestCgModel_MaxConcurrentBoundsInFlightCalls(t *testing.T) {
+	const maxConc, n = 2, 6
+	var inFlight, peak atomic.Int64
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		cur := inFlight.Add(1)
+		for {
+			p := peak.Load()
+			if cur <= p || peak.CompareAndSwap(p, cur) {
+				break
+			}
+		}
+		<-release
+		inFlight.Add(-1)
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	p := configured(t, `{"model":{"base_url":"`+srv.URL+`","model":"cheap-model","max_concurrent":`+
+		"2"+`}}`)
+	pctx := inferencePctx("/v1/chat/completions", nil)
+	pctx.SetCurrentPlugin("context-guru", pipeline.InvocationPhaseRequest)
+	m := p.staticModelFor(pctx)
+
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := m.Complete(context.Background(), "summarize"); err != nil {
+				t.Errorf("Complete: %v", err)
+			}
+		}()
+	}
+	// Give every goroutine a chance to reach the server before releasing any of them, so the
+	// peak this observes is the steady state, not a race against goroutine scheduling.
+	deadline := make(chan struct{})
+	go func() { time.Sleep(200 * time.Millisecond); close(deadline) }()
+	<-deadline
+	close(release)
+	wg.Wait()
+	pctx.ClearCurrentPlugin()
+
+	if got := peak.Load(); got > maxConc {
+		t.Fatalf("peak concurrent calls = %d, want at most %d (max_concurrent)", got, maxConc)
+	}
+	if ops := pctx.ReportedOps(); len(ops) != n {
+		t.Fatalf("ops = %d, want %d -- every call must still complete once released", len(ops), n)
 	}
 }
 
