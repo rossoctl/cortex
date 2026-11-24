@@ -583,6 +583,34 @@ func TestCodexStatus_ReportsTheDaemon(t *testing.T) {
 	wantAll(t, "status output", out.String(), "enabled in "+envPath, "running with its old settings", codexDaemonRestartCmd)
 }
 
+// status names no updater, as before #2029 (review). Its "not enabled" means not all five
+// keys are set, and a file with only some of them still routes HTTPS_PROXY to Cortex: the
+// stop-and-restart line it printed for an updater on Cortex's proxy would start a fresh
+// updater on the same proxy.
+func TestCodexStatus_NamesNoUpdater(t *testing.T) {
+	envPath, cfgPath := codexFixture(t, "")
+	enableCodex(t, envPath, cfgPath)
+	var kept []string
+	for _, l := range strings.SplitAfter(readFile(t, envPath), "\n") {
+		if !strings.HasPrefix(l, envSSLCert+"=") {
+			kept = append(kept, l)
+		}
+	}
+	if err := os.WriteFile(envPath, []byte(strings.Join(kept, "")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stubCodexDaemon(t, filepath.Dir(envPath), &fakeCodexDaemon{pid: 5613, env: onCortex, updaterPID: 5600, updaterEnv: onCortex})
+
+	var out bytes.Buffer
+	if code := codexStatus(envPath, cfgPath, &out); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	wantAll(t, "status output", out.String(), "not fully enabled")
+	if strings.Contains(out.String(), "auto-updater") || strings.Contains(out.String(), "kill 5600") {
+		t.Errorf("status named the updater:\n%s", out.String())
+	}
+}
+
 // No daemon, or one whose pid file outlived it, needs nothing: the next codex starts a
 // fresh daemon that reads the file enable just wrote.
 func TestCodexEnable_NothingToRestartWithoutALiveDaemon(t *testing.T) {

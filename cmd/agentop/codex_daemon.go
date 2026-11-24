@@ -504,7 +504,9 @@ func codexStateOf(d codexDaemon, running bool, cortexProxy string, configured bo
 // updater, by stopping it, and on a running app-server, by restarting it. changed is
 // whether the dotenv file changed. When it did, both are settled, since both read the
 // file only when they start. When it did not, only one that disagrees is: restarting an
-// app-server that already agrees would interrupt its turns for nothing.
+// app-server that already agrees would interrupt its turns for nothing. An updater stopped
+// beside such an app-server is not replaced until that app-server next starts, so
+// auto-updates pause until then (#2029 review).
 func codexSettles(p codexProcs, changed bool) (stop, restart bool) {
 	stop = changed || p.updaterState == codexDisagrees
 	restart = p.daemonState != codexNotRunning && (changed || p.daemonState == codexDisagrees)
@@ -662,10 +664,13 @@ func proxyOrNone(p string) string {
 // cortexProxy. status asks for a line in every case; enable, finding nothing to change,
 // and disable, finding nothing to remove, say only what needs doing or what they confirmed.
 //
-// It names the updater too when it still has Cortex's proxy and the file does not route
-// Codex there: the app-server it starts after its next update would go back to Cortex. One
-// without Cortex's proxy after enable needs no line, since an app-server's own dotenv load
-// adds the proxy it did not inherit (codexUpdaterPIDRel).
+// Outside status, it names the updater too when it still has Cortex's proxy and the file
+// does not route Codex there: the app-server it starts after its next update would go back
+// to Cortex. One without Cortex's proxy after enable needs no line, since an app-server's
+// own dotenv load adds the proxy it did not inherit (codexUpdaterPIDRel). status names no
+// updater, as it did before #2029 (review): its configured means all five keys are set,
+// and a file with only some of them can still route a fresh updater to Cortex, so the
+// stop-and-restart line would change nothing.
 func reportCodexDaemon(codexHome, cortexProxy string, configured, status bool, stdout io.Writer) {
 	p := checkCodexProcs(codexHome, cortexProxy, configured)
 	restartCmd := codexRestartCmdHere(codexHome)
@@ -706,7 +711,7 @@ func reportCodexDaemon(codexHome, cortexProxy string, configured, status bool, s
 				"    %s   # open Codex windows reconnect\n", d.PID, startedSuffix(d), restartCmd)
 		}
 	}
-	if !configured && p.updaterState == codexDisagrees {
+	if !configured && !status && p.updaterState == codexDisagrees {
 		printCodexUpdater(p, configured, restartCmd, stdout)
 	}
 }

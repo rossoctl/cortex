@@ -563,7 +563,10 @@ lsof -nP -a -p "$(pgrep -f 'codex app-server --listen')" -iTCP -sTCP:ESTABLISHED
 removes Cortex's values, leaves and names a variable you changed since `enable`, deletes
 the record, stops Codex's auto-updater, and restarts a running app-server. When the file
 has nothing of Cortex's left, because you changed every variable, it stops the updater and
-restarts the app-server only if they still have Cortex's proxy. It does this for the file enable's record names, wherever `--env`
+restarts the app-server only if they still have Cortex's proxy. An app-server that is
+already off Cortex's proxy is not restarted, so its turns are not interrupted. If the
+updater was stopped beside it, Codex starts a new one only when that app-server next
+restarts, so auto-updates pause until then. It does this for the file enable's record names, wherever `--env`
 or a `CODEX_HOME` put it, and for the default file when one of its proxy lines is the
 proxy `enable` would write now. When it cannot change a file, for example when a
 variable is defined twice, the step fails with the lines to remove by hand, and
