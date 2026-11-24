@@ -102,7 +102,9 @@ func set(words ...string) map[string]bool {
 // checked as a secret name, so "strong" or "12" is kept but a generated token still is not.
 func nameTier(name string) tier {
 	parts := splitName(name)
-	t := wordTier(parts)
+	// In capitals, an environment variable's name: DB_PASS1 and PASS2 are passwords, though a
+	// lowercase pass1 is a compiler pass.
+	t := wordTier(parts, strings.ToUpper(name) == name)
 	if t == tierPassword && len(parts) > 1 && modifierWords[parts[len(parts)-1]] {
 		return tierSecret
 	}
@@ -111,8 +113,9 @@ func nameTier(name string) tier {
 
 // wordTier is the highest tier any word of the name, or two adjacent words, gives. A secret
 // word's trailing digits do not count: password2, token1, api_key2 (a letter-to-digit change does
-// not split a name). "pass" and "auth" keep theirs: pass1 is a compiler pass, auth0 a company.
-func wordTier(parts []string) tier {
+// not split a name). "pass" and "auth" keep theirs (pass1 is a compiler pass, auth0 a company),
+// except "pass" in a name in capitals (envName: DB_PASS1).
+func wordTier(parts []string, envName bool) tier {
 	t := tierNone
 	for i, p := range parts {
 		words := []string{p}
@@ -120,7 +123,7 @@ func wordTier(parts []string) tier {
 			words = append(words, p+parts[i+1])
 		}
 		for _, w := range words {
-			if d := strings.TrimRight(w, "0123456789"); d != w && d != "pass" && d != "auth" {
+			if d := strings.TrimRight(w, "0123456789"); d != w && (d != "pass" || envName) && d != "auth" {
 				w = d
 			}
 			switch {
@@ -522,7 +525,18 @@ func isReference(v string) bool {
 	}
 	switch v[0] {
 	case '$':
-		return variableName(leadingName(v[1:]))
+		// $NAME: at the end of the value, or before what follows a variable in a path, a
+		// drive, a member or a lookup ($HOME/.pw, $env:X, $this->x, $user.pw, $__env{X}).
+		// A name ending in digits is a variable's only in capitals ($DB_PASS2): "$Summer2024"
+		// and "$Summer2024!" are passwords.
+		name := leadingName(v[1:])
+		if rest := v[1+len(name):]; rest != "" && strings.IndexByte("/:.-}{[", rest[0]) < 0 {
+			return false
+		}
+		if strings.TrimRight(name, "0123456789") != name && strings.ToUpper(name) != name {
+			return false
+		}
+		return variableName(name)
 	case '%':
 		// %NAME%, %env(NAME)%: a name, then "%" or "("
 		name := leadingName(v[1:])

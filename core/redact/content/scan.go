@@ -232,18 +232,28 @@ func wrappedBlock(text string, i int) []b64Run {
 }
 
 // lastLineOK reports whether r, a line shorter than block's or padded, is the block's last line:
-// it ends the line (a line break, a quote, a backslash, a space, the end), it completes the
-// base64 (a multiple of 4 with its padding), and it is padded or follows two full lines. "\nok"
-// or "\nPORT=8080" after a run is the text that follows it, not its last line.
+// it ends the line (a line break, a quote, a backslash, a space, the end), and it completes the
+// base64 (a multiple of 4 with its padding). "\nok" or "\nPORT=8080" after a run is the text that
+// follows it, not its last line. A short word that happens to complete the base64 ("\nDone") is
+// taken, but blockEdit leaves it out of the edit unless a secret reaches into it.
 func lastLineOK(text string, block []b64Run, r b64Run) bool {
 	if r.end < len(text) && strings.IndexByte("\n\r\"\\ \t", text[r.end]) < 0 {
 		return false
+	}
+	// A line followed by another of its own width starts a block of its own (a 64-wide block
+	// below a longer line, a digest or a one-line value): it is not this block's last line.
+	if w := r.e - r.s; r.end == r.e && w >= 16 && w%4 == 0 {
+		if b := lineBreakAt(text, r.end); b > 0 && r.end+b < len(text) {
+			if next := encodedRunAt(text, r.end+b); next.e-next.s == w {
+				return false
+			}
+		}
 	}
 	total := r.end - r.s
 	for _, l := range block {
 		total += l.e - l.s
 	}
-	return total%4 == 0 && (r.end > r.e || len(block) >= 2)
+	return total%4 == 0
 }
 
 // blockEdit decodes a wrapped block of two or more runs as one, and returns the edit for it when

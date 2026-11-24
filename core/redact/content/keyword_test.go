@@ -107,6 +107,8 @@ func TestNameTier(t *testing.T) {
 		{"sha256", tierNone}, {"utf8", tierNone}, {"v2", tierNone},
 		// ... but not for "pass" and "auth": compiler passes, two-pass encodes, Auth0
 		{"pass1", tierNone}, {"test_pass2", tierNone}, {"auth0", tierNone}, {"AUTH0_CLIENT_ID", tierNone},
+		// ... but "pass" in a name in capitals is a password: DB_PASS1, PASS2
+		{"DB_PASS1", tierPassword}, {"PASS2", tierPassword},
 	} {
 		if got := nameTier(tc.name); got != tc.want {
 			t.Errorf("nameTier(%q) = %d, want %d", tc.name, got, tc.want)

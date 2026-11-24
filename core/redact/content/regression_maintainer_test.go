@@ -38,6 +38,53 @@ func TestRegression_NamesEndingInADigit(t *testing.T) {
 // Wrapped base64 (GNU base64 wraps at 76 columns; MIME and PEM at 64 or 76) is decoded as one run,
 // so a secret that crosses a line break is found, in text and in raw JSON, and the block is
 // replaced whole.
+// The maintainer's sweep: .env bodies of 60 to 110 bytes ending in a 40-character API_TOKEN,
+// wrapped at 76. A two-line block whose base64 needs no padding is decoded as one run too.
+func TestRegression_WrappedBase64TwoLineSweep(t *testing.T) {
+	tok := mixed(40)
+	for n := 60; n <= 110; n++ {
+		tail := "\nAPI_TOKEN=" + tok
+		env := "# " + strings.Repeat("x", max(0, n-len(tail)-2)) + tail
+		enc := base64.StdEncoding.EncodeToString([]byte(env))
+		var lines []string
+		for i := 0; i < len(enc); i += 76 {
+			lines = append(lines, enc[i:min(len(enc), i+76)])
+		}
+		for name, in := range map[string]string{
+			"text":     "env:\n" + strings.Join(lines, "\n") + "\n",
+			"raw JSON": `{"out":"` + strings.Join(lines, `\n`) + `\n"}`,
+		} {
+			if out, st := redact(in); st[catEncoded] != 1 || strings.Contains(out, enc[len(enc)-12:]) {
+				t.Errorf("%d bytes (%d of base64), %s: not replaced whole: %q", len(env), len(enc), name, out)
+			}
+		}
+	}
+}
+
+// A longer line just above a narrower wrapped block (a digest, a one-line base64 value) does not
+// take the block's first line as its own last line: the block is decoded from its first line.
+func TestRegression_WrappedBlockBelowALongLine(t *testing.T) {
+	gh := fakes()["github"]
+	env := "DB_HOST=db.internal.example\nAPI_TOKEN=" + gh + "\nLOG_LEVEL=info\nREGION=eu\n"
+	enc := base64.StdEncoding.EncodeToString([]byte(env))
+	var lines []string
+	for i := 0; i < len(enc); i += 64 {
+		lines = append(lines, enc[i:min(len(enc), i+64)])
+	}
+	block := strings.Join(lines, "\n")
+	one := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("one line value ", 4)))[:76]
+	for name, above := range map[string]string{
+		"hex digest":        strings.Repeat("3f9a0c7e", 12),
+		"a one-line value":  one,
+		"a 128-char digest": "SHA2-512(.env)= " + strings.Repeat("ab12cd34", 16),
+	} {
+		in := above + "\n" + block + "\n"
+		if out, st := redact(in); st[catEncoded] == 0 || strings.Contains(out, lines[1]) {
+			t.Errorf("%s above: the block was not found: %q (%v)", name, out, st)
+		}
+	}
+}
+
 func TestRegression_WrappedBase64(t *testing.T) {
 	tok, pw := mixed(54), hntPassword()+"Rt9k"+"Wm2q"
 	env := "APP_NAME=demo\nDB_HOST=db.internal\nAPI_TOKEN=" + tok + "\nDB_PASSWORD=" + pw + "\nLOG_LEVEL=info\n"
@@ -180,11 +227,29 @@ func TestRegression_ReferenceShapes(t *testing.T) {
 		// Symfony, Puppet, Azure Pipelines, Compose, batch, PHP
 		"secret: '%env(APP_SECRET)%'", "password: '%env(DATABASE_PASSWORD)%'", `password: "%{lookup('db_password')}"`,
 		`password: "%{DB_PASSWORD}"`, `password: "$[variables.dbPassword]"`, "PASSWORD=$$DB_PASSWORD",
-		`password: "{$password}"`, `password: "[$DB_PASSWORD]"`, `password: "%~dp0secret.txt"`, "password=$Password1",
+		`password: "{$password}"`, `password: "[$DB_PASSWORD]"`, `password: "%~dp0secret.txt"`, "password=$DB_PASS2", "password=$HOME/.pw",
 	} {
 		if out, st := redact(in); out != in || len(st) != 0 {
 			t.Errorf("%q changed: %q", in, out)
 		}
+	}
+}
+
+// A chosen password after "$" (a word and digits, perhaps a symbol) is no reference: "$NAME"
+// needs capitals to end in digits, and to stand at the end or before "/ : . - } { [".
+func TestRegression_DollarWordAndDigits(t *testing.T) {
+	for _, tc := range []struct{ in, secret string }{
+		{"DB_PASSWORD=$Summer" + "2024", "Summer2024"},
+		{`{"password":"$Summer` + `2024!"}`, "Summer2024"},
+		{`{"password":"$hunter` + `22"}`, "hunter22"},
+		{`password: "$Wel` + `come1"`, "Welcome1"},
+	} {
+		if out, _ := redact(tc.in); strings.Contains(out, tc.secret) {
+			t.Errorf("%q: leaked: %q", tc.in, out)
+		}
+	}
+	if e := New().Find("$Summer"+"2024", Context{Key: "password"}); len(e) != 1 {
+		t.Errorf("Find under password: %v", e)
 	}
 }
 
