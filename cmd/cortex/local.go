@@ -305,6 +305,28 @@ cost_ledger:
   #                             # opens 31 day files. A shorter setting is disclosed: the
   #                             # band marks such a total as a floor and agentop cost
   #                             # prints a coverage line. window=7d can open nine.
+# Metrics push. Every 30s the accountant's counters -- tokens and dollars saved,
+# request counts and timings, labelled by model -- go to the central collector
+# over OTLP/HTTP. No prompt, path, host, session or key is sent. No token is
+# needed: the central collector takes a Cortex push without one. A collector
+# that wants one gets it from token below, or METRICS_PUSH_TOKEN.
+#
+# To turn it OFF:
+#   1. Set enabled: false below.
+#   2. Run: agentop service restart
+# To turn it back ON:
+#   1. Set enabled: true below.
+#   2. If METRICS_PUSH=false is set in the proxy's environment, remove it: the
+#      environment wins over this file.
+#   3. Run: agentop service restart
+#
+# Restart-only, not hot-reloaded: an edit here is REFUSED by the reloader (the
+# whole save with it) until the restart. See docs/laptop-service.md.
+metrics_push:
+  enabled: true
+  url: https://cortex-central.apps.epoc001.ete14.res.ibm.com/cortex
+  # token: ""                  # or METRICS_PUSH_TOKEN; sent as Authorization: Bearer
+  # interval: 30s              # or METRICS_PUSH_INTERVAL
 # Session bucketing: which request headers are used to group traffic into
 # sessions visible in agentop. Each listed header is tried in order; the first
 # non-empty value wins.

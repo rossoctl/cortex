@@ -105,6 +105,13 @@ on your machine, runs it through a pipeline of plugins, and sends it on re-encry
 - **Loopback only.** Cortex contacts the servers your agent asks for, or the one you
   route it to. Its own calls: LiteLLM's public [price list](./docs/pricing.md), hourly
   (`pricing.bundled: false` turns it off), and the model list of any server you add.
+- **Savings metrics go to a central collector.** Every 30s Cortex pushes its counters (tokens
+  and dollars saved, request counts and timings, by model) to
+  `https://cortex-central.apps.epoc001.ete14.res.ibm.com/cortex`. No prompt, path, host,
+  session or key is sent. [Details](./docs/laptop-service.md#the-metrics_push-configuration).
+  - To turn it off: in `~/.cortex/config.yaml`, set `metrics_push.enabled: false`, then run
+    `agentop service restart`.
+  - To turn it back on: set `metrics_push.enabled: true`, then run `agentop service restart`.
 - **Your own CA,** created locally in `~/.cortex/ca`. Never added to a keychain by Cortex.
 - **Bad certificates aren't intercepted.** When a server's certificate fails, Cortex
   leaves that connection encrypted end to end.

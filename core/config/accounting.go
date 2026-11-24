@@ -174,8 +174,8 @@ func (c *Config) AccountingOn() bool {
 //	  token: ""         # METRICS_PUSH_TOKEN; sent as Authorization: Bearer <token>
 //	  interval: 30s     # METRICS_PUSH_INTERVAL
 //
-// There is no default URL, and `agentop setup` sets none: nothing leaves the machine until the
-// user names a collector. The block is the same in a cluster and on a laptop.
+// There is no default URL in code: with no URL nothing leaves the machine. The built-in
+// ~/.cortex/config.yaml (cmd/cortex/local.go) writes the central collector's URL. The block is the same in a cluster and on a laptop.
 //
 // NOT HOT-RELOADABLE: the push is started once at boot, so a reload that changes the block is
 // refused (reloader.validateReloadable), as for listener.*. The token is never logged; /config

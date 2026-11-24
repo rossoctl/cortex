@@ -804,29 +804,54 @@ it back on.
 
 ### The `metrics_push:` configuration
 
-Cortex can push the accountant's savings counters to a central OpenTelemetry collector. **It
-sends nothing until you set a URL.** `agentop setup` does not set one.
+Cortex can push the accountant's savings counters to a central OpenTelemetry collector. The
+`~/.cortex/config.yaml` that `agentop setup` writes turns the push **on**, to the central
+collector at `https://cortex-central.apps.epoc001.ete14.res.ibm.com/cortex`. With no URL, nothing is sent.
 
 ```yaml
 metrics_push:
   enabled: true     # default true, but with no URL nothing is sent
-  url: ""           # the collector's base URL; Cortex posts to <url>/v1/metrics
+  url: https://cortex-central.apps.epoc001.ete14.res.ibm.com/cortex   # Cortex posts to <url>/v1/metrics
   token: ""         # sent as Authorization: Bearer <token>
   interval: 30s
 ```
 
+A `~/.cortex/config.yaml` written before this block was added has no `metrics_push:` block, so
+it pushes nothing. To turn the push on there, add the block above, then run
+`agentop service restart`.
+
+**To turn the push off:**
+
+1. Open `~/.cortex/config.yaml`.
+2. Under `metrics_push:`, set `enabled: false`.
+3. Run `agentop service restart`.
+
+**To turn the push back on:**
+
+1. Open `~/.cortex/config.yaml`.
+2. Under `metrics_push:`, set `enabled: true`.
+3. If `METRICS_PUSH=false` is set in the proxy's environment, remove it. The environment wins
+   over the file.
+4. Run `agentop service restart`.
+
+The block is not hot-reloaded. If you save a change to it while the proxy runs, the reloader
+refuses the whole save until the restart.
+
 | Field | Environment override | Default | Meaning |
 |---|---|---|---|
 | `enabled` | `METRICS_PUSH` | `true` | A value that is not a boolean turns the push off. |
-| `url` | `METRICS_PUSH_URL` | *(none)* | Must be `https`. `http` is allowed only to a loopback address. A URL with user info (`https://user:pass@host`) or a query string is refused, because neither is sent: put the credential in `token`. In the file that fails startup; in `METRICS_PUSH_URL` it logs a WARN and turns the push off. |
+| `url` | `METRICS_PUSH_URL` | *(none; the built-in config sets the central collector)* | Must be `https`. `http` is allowed only to a loopback address. A URL with user info (`https://user:pass@host`) or a query string is refused, because neither is sent: put the credential in `token`. In the file that fails startup; in `METRICS_PUSH_URL` it logs a WARN and turns the push off. |
 | `token` | `METRICS_PUSH_TOKEN` | *(none)* | Never logged. `/config` serves it redacted. |
 | `interval` | `METRICS_PUSH_INTERVAL` | `30s` | How often the counters are pushed. |
 
 What is sent: the `llm.savings.*` counters (tokens saved and added by tier and component, their
 dollar value, cache effects, request and check counts); `llm.inference.tokens` / `cost_usd` /
 `estimated_cost_usd`, `llm.keepalive.pings` / `cost_usd` / `estimated_cost_usd` and
-`llm.cache.misses` / `miss_cost_usd`, each labelled with the model; `llm.proxy.export_failures`;
-and `llm.proxy.info`: a gauge that is always 1, with the build's `version` as its label. It is sent
+`llm.cache.misses` / `miss_cost_usd`, each labelled with the model; the transport-level
+`llm.inference.requests` / `duration_seconds` / `ttfb_seconds` / `added_seconds` /
+`request_bytes` / `response_bytes`, which count every request the listener handles, not only
+the ones the accountant priced; `llm.proxy.export_failures`; and `llm.proxy.info`: a gauge that
+is always 1, with the build's `version` as its label. It is sent
 on every push, also before the first request, so the central dashboards list an idle machine and
 the `MachineSilent` alert sees when a machine stops pushing. The
 resource carries `service.name=cortex`, `service.version` and `service.instance.id`: a random
@@ -837,8 +862,9 @@ login moves the token counters alone.
 
 The counters are cumulative. A push that fails is counted in `llm.proxy.export_failures`,
 logged as a WARN at most once a minute, and retried by the next push. It never delays or fails
-a request. With no URL the proxy logs one line at startup, `metrics push off`, and opens no
-connection.
+a request. The central collector takes a Cortex push with no `token`; a collector that requires
+one answers 401 without it, and the proxy logs that WARN once a minute. With the push off, or no URL, the proxy logs
+one line at startup, `metrics push off`, and opens no connection.
 
 A bad block in the config file fails the config load, like any other block: Cortex does not
 start, or a reload is refused. The `METRICS_PUSH*` variables are read at startup; a bad

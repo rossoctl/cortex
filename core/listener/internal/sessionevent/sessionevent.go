@@ -169,6 +169,7 @@ func Response(pctx *pipeline.Context, dir pipeline.Direction, status int, fail *
 		Error:          pipeline.EventErrorOr(pctx, fail),
 		Duration:       pipeline.DurationSince(pctx.StartedAt),
 		Ttfb:           pipeline.DurationBetween(pctx.StartedAt, pctx.ResponseHeadersAt),
+		Added:          pipeline.DurationBetween(pctx.StartedAt, pctx.UpstreamSentAt),
 		Client:         pctx.ClientInfo(),
 		Subagent:       pctx.Subagent(),
 		ParentSubagent: pctx.ParentSubagent(),

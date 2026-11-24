@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"log/slog"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -255,6 +256,15 @@ type SessionEvent struct {
 	// answered, then trickled", which is a different problem than a large one.
 	// Tunnel rows carry none: an opaque tunnel has no headers to time.
 	Ttfb time.Duration
+
+	// Added is the wall-clock time from request entry into the listener
+	// (pctx.StartedAt) to the request being handed to the upstream
+	// (pctx.UpstreamSentAt): the time the proxy's own request-side work — the
+	// inbound pipeline, body rewrites, header sync — added before the origin saw
+	// anything. It is the figure llm.inference.added_seconds reports, and what
+	// tells an operator whether Cortex or the origin is slow. Zero when the
+	// request never left, and on request-phase and tunnel rows.
+	Added time.Duration
 
 	// TLS, when non-nil, carries connection-level identity for events
 	// that arrived over TLS: negotiated version, cipher, and the peer's
@@ -698,9 +708,15 @@ type sessionEventWire struct {
 	// an instant answer instead. Same wire-skew safety as DurationMs: an old
 	// agentop ignores the key, and an event from a proxy that predates the
 	// field decodes to zero and omits.
-	TtfbMs int64     `json:"ttfbMs,omitempty"`
-	TLS    *EventTLS `json:"tls,omitempty"`
-	Tunnel bool      `json:"tunnel,omitempty"`
+	TtfbMs int64 `json:"ttfbMs,omitempty"`
+	// AddedMs omitempty, like TtfbMs: zero means the request never reached the
+	// upstream (or the proxy added under a millisecond, which the in-process
+	// metric still records exactly). Same wire-skew safety as TtfbMs. Lenient, like
+	// Source/NoRecord/ParentSession/ParentProject: a writer that sends a wrong type
+	// (a float millisecond figure, say) must not cost the row (review of #2063).
+	AddedMs LenientInt64 `json:"addedMs,omitempty"`
+	TLS     *EventTLS    `json:"tls,omitempty"`
+	Tunnel  bool         `json:"tunnel,omitempty"`
 	// omitempty so both skew directions are safe: an old agentop ignores an unknown
 	// key, and a new agentop against an old proxy sees "" and renders exactly what it
 	// renders today.
@@ -771,6 +787,7 @@ func (e SessionEvent) MarshalJSON() ([]byte, error) {
 		RequestedHost:   e.RequestedHost,
 		DurationMs:      e.Duration.Milliseconds(),
 		TtfbMs:          e.Ttfb.Milliseconds(),
+		AddedMs:         LenientInt64(e.Added.Milliseconds()),
 		TLS:             e.TLS,
 		Tunnel:          e.Tunnel,
 		TunnelReason:    e.TunnelReason,
@@ -822,6 +839,7 @@ func (e *SessionEvent) UnmarshalJSON(data []byte) error {
 		RequestedHost:   w.RequestedHost,
 		Duration:        time.Duration(w.DurationMs) * time.Millisecond,
 		Ttfb:            time.Duration(w.TtfbMs) * time.Millisecond,
+		Added:           time.Duration(w.AddedMs) * time.Millisecond, // LenientInt64 converts like int64
 		TLS:             w.TLS,
 		Tunnel:          w.Tunnel,
 		TunnelReason:    w.TunnelReason,
@@ -1128,6 +1146,40 @@ func (b *LenientBool) UnmarshalJSON(raw []byte) error {
 	}
 	*b = LenientBool(v)
 	return nil
+}
+
+// LenientInt64 decodes a JSON integer as itself, a JSON float with no fractional part (3.0, the
+// form a non-Go producer's float-typed millisecond figure takes) as the same integer, and any
+// other JSON value (a fractional float, a string, a bool, an object) as 0 — for the reason
+// LenientString gives: one bad-typed key must not cost the whole line. Used for a field another
+// writer can set, where 0 is already the "not measured" value (an omitempty wire field).
+type LenientInt64 int64
+
+func (n *LenientInt64) UnmarshalJSON(raw []byte) error {
+	var v int64
+	if json.Unmarshal(raw, &v) == nil {
+		*n = LenientInt64(v)
+		return nil
+	}
+	var f float64
+	if json.Unmarshal(raw, &f) == nil && f == math.Trunc(f) {
+		*n = LenientInt64(f)
+		return nil
+	}
+	*n = 0
+	return nil
+}
+
+// SplicedUpgrade tells if e is the forward proxy's 101 row for a WebSocket it relayed
+// (forwardproxy/upgrade.go). That row is written after both splice directions end, so its
+// Duration is the socket's lifetime and its bytes are the relay's opaque frames, not a
+// request's latency or a response's body. Aggregations that read Duration or bytes as a
+// request's skip it, as they skip a Tunnel row; the session timeline keeps it.
+//
+// Scoped to Outbound: the reverse proxy records its own 101 (Direction Inbound) at
+// handshake time, so that row's Duration is an ordinary handshake latency.
+func (e *SessionEvent) SplicedUpgrade() bool {
+	return e.Direction == Outbound && e.StatusCode == http.StatusSwitchingProtocols
 }
 
 // Imported tells if an import wrote e. A live event gives false.

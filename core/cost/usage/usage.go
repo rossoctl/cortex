@@ -14,7 +14,6 @@
 package usage
 
 import (
-	"net/http"
 	"strconv"
 	"sync"
 	"time"
@@ -1084,7 +1083,7 @@ func (a *Aggregator) Record(sessionID string, e *model.SessionEvent) {
 	// warns about, in the other direction. Pinned both ways by
 	// TestRecord_WebSocket101IsNotARequestLatency and
 	// TestRecord_InboundWebSocket101IsStillARequest (#1549 review).
-	if e.Tunnel || (e.Direction == model.Outbound && e.StatusCode == http.StatusSwitchingProtocols) {
+	if e.Tunnel || e.SplicedUpgrade() {
 		return
 	}
 

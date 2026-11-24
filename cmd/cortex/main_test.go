@@ -493,3 +493,34 @@ func TestMain_WiresTheLedgerAndFlushesItOnFatalPaths(t *testing.T) {
 		t.Error("the closure assigned to closeLedgerOnFatal never calls Close: the flush is a no-op")
 	}
 }
+
+// TestMain_PassesReqStatsRecorderToAddRecorder guards the Tier 2 (reqstats) wiring: a
+// self-contained AST walk, separate from TestMain_WiresTheLedgerAndFlushesItOnFatalPaths above
+// (which is a ledger-specific fatal-path check), scoped only to AddRecorder.
+func TestMain_PassesReqStatsRecorderToAddRecorder(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "main.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	addRecorder := false
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "AddRecorder" {
+			return true
+		}
+		for _, a := range call.Args {
+			if id, ok := a.(*ast.Ident); ok && id.Name == "reqStats" {
+				addRecorder = true
+			}
+		}
+		return true
+	})
+	if !addRecorder {
+		t.Error("main.go never passes reqStats to AddRecorder: Tier 2 metrics would never be recorded")
+	}
+}
