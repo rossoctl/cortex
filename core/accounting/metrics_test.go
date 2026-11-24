@@ -276,7 +276,7 @@ func ledgerSpends(r pricing.Resolver, res accountant.Result, model, host string,
 	price := func(m, at string, tt accountant.TierTokens) (float64, bool) {
 		return TierUSD(r, at, m, promptTotal, tt)
 	}
-	spend := func(c *accountant.ModelCall, at string) (float64, bool) { return CallUSD(r, c, at) }
+	spend := func(c *accountant.ModelCall, at string) (float64, bool, string) { return CallUSDCurrency(r, c, at) }
 	_, ex := SavingsBilled(res, price, spend, model, host, accountant.BillingAPI, config.DefaultSubscriptionWeights())
 	var out []float64
 	for _, s := range ex.Spends {
@@ -430,7 +430,7 @@ func TestSpends_DryRunAndRefusedCountInNeitherOutput(t *testing.T) {
 	for _, mode := range []accountant.BillingMode{accountant.BillingAPI, accountant.BillingSubscription, accountant.BillingUnknown} {
 		t.Run(string(mode), func(t *testing.T) {
 			price := func(m, at string, tt accountant.TierTokens) (float64, bool) { return TierUSD(zone, at, m, 30000, tt) }
-			spend := func(c *accountant.ModelCall, at string) (float64, bool) { return CallUSD(zone, c, at) }
+			spend := func(c *accountant.ModelCall, at string) (float64, bool, string) { return CallUSDCurrency(zone, c, at) }
 			_, ex := SavingsBilled(res, price, spend, "m1", "api.example", mode, config.DefaultSubscriptionWeights())
 			if len(ex.Spends) != 3 {
 				t.Fatalf("spends = %+v, want all three recorded", ex.Spends)
