@@ -12,9 +12,10 @@
 #
 # Two ways in:
 #   - After a smoke run passed (the workflow_run trigger). SMOKE_RUN_ID,
-#     SMOKE_RUN_ATTEMPT, SMOKE_RUN_PATH and SMOKE_RUN_TITLE describe that run. The title is the smoke
-#     workflow's run-name, "... for <tag>, release run <id>": a run started by
-#     workflow_run records nothing else that names the run that started it.
+#     SMOKE_RUN_ATTEMPT, SMOKE_RUN_PATH and SMOKE_RUN_TITLE describe that run.
+#     The title is the smoke workflow's run-name, "... for <tag>, release run
+#     <id>": a run started by workflow_run records nothing else that names the run
+#     that started it.
 #   - By hand (workflow_dispatch). PROMOTE_TAG names the tag, and the smoke tests
 #     are NOT checked: this is the override for when they cannot pass for a reason
 #     that is not the release's, such as a runner outage.
@@ -62,8 +63,8 @@ is_stable() {
 # workflow for that release run as "<id> <attempt> <status> <conclusion>", or
 # nothing. There can be more than one: re-running the release run starts a second
 # smoke run. The newest decides. Re-running a smoke run keeps its id and raises its
-# attempt, and the API lists only its latest attempt. A workflow it cannot read is an error, not "not started": that
-# would wait for ever without a word.
+# attempt, and the API lists only its latest attempt. A workflow it cannot read is
+# an error, not "not started": that would wait for ever without a word.
 smoke_state() {
 	_runs=$(gh api --paginate \
 		"repos/${REPO}/actions/workflows/$1/runs?event=workflow_run&created=%3E%3D${release_created}&per_page=100" \
