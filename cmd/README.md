@@ -131,7 +131,8 @@ proxy on a MOCA host. It is the one build that links the moca driver
 [`core/listener/vmcontrol`](../core/listener/vmcontrol/CLAUDE.md) describes, and
 it carries `static-inject`. CI builds and tests it; nothing publishes it yet.
 Every other `cortex` build ignores the VM control channel's variables
-(`MOCA_EGRESS_CONTROL_*`, `MOCA_TENANCY`, `MOCA_EGRESS_MAX_*`).
+(`MOCA_EGRESS_CONTROL_*`, `MOCA_TENANCY`, `MOCA_EGRESS_MAX_*`), and warns at
+startup when `MOCA_EGRESS_CONTROL_SOCK` is set.
 
 ## cpex builds
 

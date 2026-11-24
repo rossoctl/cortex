@@ -478,11 +478,11 @@ jobs:
             TAGS=$(go -C ../../scripts/profile-tags run . "${profile}")
             go vet -tags "${TAGS}" ./...
             go build -v -tags "${TAGS}" ./...
-            # A here-string, not a pipe, so the check holds under pipefail too.
             if [ "${profile}" = hostegress ]; then
               GOOS=darwin go build -o /dev/null -tags "${TAGS}" .
               GOOS=windows go build -o /dev/null -tags "${TAGS}" .
             else
+              # A here-string, not a pipe, so the check holds under pipefail too.
               deps=$(go list -deps -tags "${TAGS}" .)
               if grep -q core/listener/vmcontrol <<<"${deps}"; then
                 echo "profile ${profile} links core/listener/vmcontrol"; exit 1
