@@ -531,7 +531,7 @@ func TestServerRemove_TheOnlyServerWritesNothingIfTheRouterChanged(t *testing.T)
 	}
 	t.Cleanup(func() { serverConfirm = prev })
 	code, out, errOut := runServerCmd(t, "", "remove", "ete", "--config", path)
-	if code != 1 || !strings.Contains(flat(errOut), "the inference-router entry changed since agentop read it, so nothing was removed; "+
+	if code != 1 || !strings.Contains(flat(errOut), "the inference-router entry changed since agentop read it, so nothing was written; "+
 		"run agentop server remove ete again") {
 		t.Fatalf("exit %d:\n%s%s", code, out, errOut)
 	}
@@ -1705,12 +1705,24 @@ func TestServerRename_WantsTwoNames(t *testing.T) {
 	}
 }
 
+// routedSessionsAPI is sessionsAPI with session s<i> routed by the router to servers[i]
+// on hosts[i], as the proxy records it.
+func routedSessionsAPI(t *testing.T, hosts, servers []string) string {
+	t.Helper()
+	store := session.New(0, 0, 0)
+	for i, h := range hosts {
+		store.Append(fmt.Sprintf("s%d", i), routedInferenceTo(h, servers[i]))
+	}
+	return serveSessions(t, store)
+}
+
 // The router pins a running session to its server by name and cannot rename its pins,
-// so rename moves each running session on the old name with it, by the sessions: entry
-// agentop server move would write, in the same write. It asks nothing.
+// so rename moves each running session it routed to the old name, by the sessions:
+// entry agentop server move would write, in the same write. It asks nothing.
 func TestServerRename_MovesTheRunningSessions(t *testing.T) {
 	asks := stubConfirm(t, false)
-	sessions := sessionsAPI(t, "glm.example.com:8443", "GLM.example.com:8443", "ete.example.com")
+	sessions := routedSessionsAPI(t,
+		[]string{"glm.example.com:8443", "GLM.example.com:8443", "ete.example.com"}, []string{"glm", "glm", "ete"})
 	path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), sessions, routerBlock)
 	before := readConfig(t, path)
 	code, out, errOut := runServerCmd(t, "", "rename", "glm", "zai", "--config", path)
@@ -1735,10 +1747,30 @@ func TestServerRename_MovesTheRunningSessions(t *testing.T) {
 	}
 }
 
+// A session that only sent to the server's host, with no server recorded, was not routed
+// by the router, so it holds no pin to the old name. An entry would pull it into the
+// router, onto the new name's key, so it gets none, and the warning says why (#2083
+// review).
+func TestServerRename_LeavesAnUnroutedSessionOnTheHostAlone(t *testing.T) {
+	sessions := sessionsAPI(t, "glm.example.com:8443")
+	path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), sessions, routerBlock)
+	code, out, errOut := runServerCmd(t, "", "rename", "glm", "zai", "--config", path)
+	if code != 0 || strings.Contains(out, "move to zai with it") {
+		t.Fatalf("exit %d: %s%s", code, out, errOut)
+	}
+	if strings.Contains(readConfig(t, path), "sessions:") {
+		t.Errorf("wrote a sessions: entry for a session the router did not route:\n%s", readConfig(t, path))
+	}
+	if want := "agentop server rename: warning: 1 running session last sent inference to glm with no server recorded, so none " +
+		"of them moves. One the proxy routed there gets an error asking for a new session: agentop server move <session-id> zai moves it."; !strings.Contains(flat(errOut), want) {
+		t.Errorf("want %q in stderr:\n%s", want, errOut)
+	}
+}
+
 // A session that already has a sessions: entry naming the server follows by the entry's
 // rewrite, so it is counted, and gets no second entry.
 func TestServerRename_RewritesAMovedSessionsEntryOnce(t *testing.T) {
-	sessions := sessionsAPI(t, "glm.example.com:8443", "glm.example.com:8443")
+	sessions := routedSessionsAPI(t, []string{"glm.example.com:8443", "glm.example.com:8443"}, []string{"glm", "glm"})
 	path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), sessions, routerBlock+"          sessions:\n            s0: glm\n")
 	code, out, errOut := runServerCmd(t, "", "rename", "glm", "zai", "--config", path)
 	if code != 0 || !strings.Contains(out, "2 running sessions on glm move to zai with it.") {
@@ -1754,7 +1786,7 @@ func TestServerRename_RewritesAMovedSessionsEntryOnce(t *testing.T) {
 // server as its last, but its sessions: entry is the user's choice: rename leaves it,
 // and does not count it.
 func TestServerRename_LeavesASessionMovedElsewhere(t *testing.T) {
-	sessions := sessionsAPI(t, "glm.example.com:8443")
+	sessions := routedSessionsAPI(t, []string{"glm.example.com:8443"}, []string{"glm"})
 	path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), sessions, routerBlock+"          sessions:\n            s0: ete\n")
 	code, out, errOut := runServerCmd(t, "", "rename", "glm", "zai", "--config", path)
 	if code != 0 || strings.Contains(out, "running session") {
@@ -1765,20 +1797,56 @@ func TestServerRename_LeavesASessionMovedElsewhere(t *testing.T) {
 	}
 }
 
-// A session list that cannot be read moves nothing, so rename says so, with the command
-// that moves one session.
+// A session list that cannot be read adds no entry, but an entry that already names the
+// server is still rewritten, so the warning says only those move, and gives the command
+// that moves another (#2083 review).
 func TestServerRename_WarnsWhenTheSessionsCannotBeRead(t *testing.T) {
-	path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), closedAddr(t), routerBlock)
+	path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), closedAddr(t), routerBlock+"          sessions:\n            s0: glm\n")
 	code, out, errOut := runServerCmd(t, "", "rename", "glm", "zai", "--config", path)
 	if code != 0 || !strings.Contains(out, "Renamed glm to zai.") {
 		t.Fatalf("exit %d: %s%s", code, out, errOut)
 	}
-	if want := "agentop server rename: warning: agentop could not read the proxy's running sessions, so none was moved to zai. " +
-		"One the proxy routed to glm gets an error asking for a new session: agentop server move <session-id> zai moves it."; !strings.Contains(flat(errOut), want) {
+	if want := "agentop server rename: warning: agentop could not read the proxy's running sessions, so only a session whose " +
+		"sessions: entry named glm moves to zai. Another the proxy routed to glm gets an error asking for a new session: " +
+		"agentop server move <session-id> zai moves it."; !strings.Contains(flat(errOut), want) {
 		t.Errorf("want %q in stderr:\n%s", want, errOut)
 	}
-	if strings.Contains(readConfig(t, path), "sessions:") {
-		t.Errorf("wrote a sessions: entry:\n%s", readConfig(t, path))
+	if got := readConfig(t, path); !strings.HasSuffix(got, "          sessions:\n            s0: zai\n") {
+		t.Errorf("want only s0's entry, rewritten:\n%s", got)
+	}
+}
+
+// rename decides its entries from one read of the file and writes on a later one, so a
+// server move written between them, for a session it moves, must stop the write, not be
+// replaced by it (CodeRabbit on #2083).
+func TestServerRename_WritesNothingIfTheRouterChanged(t *testing.T) {
+	store := session.New(0, 0, 0)
+	store.Append("s0", routedInferenceTo("glm.example.com:8443", "glm"))
+	api := sessionapi.New(":0", store).Server().Handler
+	var path string
+	var moved atomic.Bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Another agentop moves s0 to ete while this rename reads the sessions.
+		if moved.CompareAndSwap(false, true) {
+			if err := os.WriteFile(path, []byte(readConfig(t, path)+"          sessions:\n            s0: ete\n"), 0o600); err != nil {
+				t.Error(err)
+			}
+		}
+		api.ServeHTTP(w, r)
+	}))
+	t.Cleanup(func() {
+		ts.Close()
+		store.Close()
+	})
+	path = serverEnvWithSessions(t, newFakeStats(t, 0).addr(), strings.TrimPrefix(ts.URL, "http://"), routerBlock)
+	code, out, errOut := runServerCmd(t, "", "rename", "glm", "zai", "--config", path)
+	if code != 1 || !strings.Contains(flat(errOut), "the inference-router entry changed since agentop read it, so nothing was written; "+
+		"run agentop server rename glm zai again") {
+		t.Fatalf("exit %d:\n%s%s", code, out, errOut)
+	}
+	got := readConfig(t, path)
+	if !strings.HasSuffix(got, "          sessions:\n            s0: ete\n") || !strings.Contains(got, "            glm:\n") {
+		t.Errorf("want the move to ete kept and nothing renamed:\n%s", got)
 	}
 }
 

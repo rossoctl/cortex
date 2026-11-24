@@ -455,15 +455,8 @@ func removeLastServer(stdout, stderr io.Writer, path, statsURL string, c routerc
 			return exitDeclined
 		}
 	}
-	unchanged := func(now *config.Config) error {
-		if got, _, err := readRouter(now); err != nil || !reflect.DeepEqual(got, c) {
-			return fmt.Errorf("the %s entry changed since agentop read it, so nothing was removed; "+
-				"run agentop server remove %s again", routerName, name)
-		}
-		return nil
-	}
 	ch := edit.ConfigChange{Chain: "outbound", Plugin: routerName, RemoveEntry: true}
-	return runServerWriteIf(stdout, stderr, path, statsURL, []edit.ConfigChange{ch}, unchanged, writeReport{
+	return runServerWriteIf(stdout, stderr, path, statsURL, []edit.ConfigChange{ch}, routerUnchanged(c, "agentop server remove "+name), writeReport{
 		done: fmt.Sprintf("Removed %s, the only server, and the %s entry with it.", name, routerName),
 		live: "Requests now go where each agent sends them.",
 	})
@@ -475,11 +468,15 @@ func removeLastServer(stdout, stderr io.Writer, path, statsURL string, c routerc
 // the config would not load.
 //
 // The router pins a running session to its server by name, and cannot rename its pins.
-// So each running session on old is moved with the rename, in the same write, by the
-// sessions: entry agentop server move would write: the entry beats the pin, and the pin
-// follows it on the session's next request. One that already has an entry follows by the
-// rewrite. A session the proxy no longer holds, idle or not resumed since a restart, is
-// not seen, and gets the removed server's error if it is resumed.
+// So each running session the router routed to old is moved with the rename, in the same
+// write, by the sessions: entry agentop server move would write: the entry beats the pin,
+// and the pin follows it on the session's next request. One whose entry names old follows
+// by the rewrite, whether or not the proxy holds it. A session the proxy no longer holds,
+// idle or not resumed since a restart, is not seen: with no entry it gets the removed
+// server's error if it is resumed.
+//
+// The write applies only while the router's entry is the one this read: a server move
+// written meanwhile for a session this moves would be lost.
 func serverRename(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("server rename", flag.ContinueOnError)
 	cfgPath := flags.String("config", "", "Cortex config file (default ~/.cortex/config.yaml)")
@@ -542,26 +539,44 @@ func serverRename(args []string, stdout, stderr io.Writer) int {
 		done = fmt.Sprintf("Renamed %s to %s. New %s sessions go to %s.", old, name, strings.Join(agents, " and "), name)
 	}
 	// Only against a proxy that answered: its session API is the one with the pins.
-	moving := 0
+	moving, unsure := 0, 0
 	var unread error
 	if statsURL != "" {
-		var ids []string
-		ids, unread = runningOnIDs(dialURL(cfg.Listener.SessionAPIAddr), c, old)
-		slices.Sort(ids) // the entries in id order, as sessionsOn gives them
-		for _, id := range ids {
-			switch to, has := c.Sessions[id]; {
-			case !has && routerconfig.CheckSessionID(id) == nil:
-				changes = append(changes, servers.SessionChanges(id, name)...)
-				moving++
-			case to == old:
+		var list []session.SessionSummary
+		list, unread = runningOnSessions(dialURL(cfg.Listener.SessionAPIAddr), c, old)
+		// The entries in id order, as sessionsOn gives them.
+		slices.SortFunc(list, func(a, b session.SessionSummary) int { return strings.Compare(a.ID, b.ID) })
+		for _, sum := range list {
+			to, has := c.Sessions[sum.ID]
+			switch {
+			case has && to == old:
 				moving++ // its entry, rewritten above, moves it
+			case has:
+				// Its entry names another server: the user's move, made before the
+				// session's next request, which stays.
+			case string(sum.InferenceServer) != old:
+				// Matched by host alone: the proxy recorded no server for it, which means
+				// the router did not route it, so it holds no pin to old. An entry would
+				// pull it into the router, onto name's key, partway through its
+				// conversation (#2083 review). A proxy older than the field, or a session
+				// resumed from a session.json written before it, records none for a
+				// routed session either, so it gets the warning below.
+				unsure++
+			case routerconfig.CheckSessionID(sum.ID) == nil:
+				changes = append(changes, servers.SessionChanges(sum.ID, name)...)
+				moving++
 			}
 		}
 	}
 	if unread != nil {
-		fmt.Fprintf(stderr, "agentop server rename: warning: agentop could not read the proxy's running sessions, so none "+
-			"was moved to %s. One the proxy routed to %s gets an error asking for a new session: "+
-			"agentop server move <session-id> %s moves it.\n", name, old, name)
+		fmt.Fprintf(stderr, "agentop server rename: warning: agentop could not read the proxy's running sessions, so only "+
+			"a session whose sessions: entry named %s moves to %s. Another the proxy routed to %s gets an error asking for a "+
+			"new session: agentop server move <session-id> %s moves it.\n", old, name, old, name)
+	}
+	if unsure > 0 {
+		fmt.Fprintf(stderr, "agentop server rename: warning: %s last sent inference to %s with no server recorded, so "+
+			"none of them moves. One the proxy routed there gets an error asking for a new session: "+
+			"agentop server move <session-id> %s moves it.\n", runningSessions(unsure), old, name)
 	}
 	live := ""
 	if moving == 1 {
@@ -569,7 +584,7 @@ func serverRename(args []string, stdout, stderr io.Writer) int {
 	} else if moving > 1 {
 		live = fmt.Sprintf("%d running sessions on %s move to %s with it.", moving, old, name)
 	}
-	return runServerWrite(stdout, stderr, path, statsURL, changes, writeReport{
+	return runServerWriteIf(stdout, stderr, path, statsURL, changes, routerUnchanged(c, "agentop server rename "+old+" "+name), writeReport{
 		done: done,
 		live: live,
 		note: routerInactive(cfg, path),
@@ -594,6 +609,19 @@ func keyRouteRenames(c routerconfig.Config, old, name string) []edit.ConfigChang
 	return changes
 }
 
+// routerUnchanged is the precondition (edit.ConfigWrite.Precondition) for a write decided
+// from c, the router's config as read before it: the write applies only while the router's
+// entry is still c, since a change made meanwhile could be lost with it. cmd is the command
+// to run again.
+func routerUnchanged(c routerconfig.Config, cmd string) func(*config.Config) error {
+	return func(now *config.Config) error {
+		if got, _, err := readRouter(now); err != nil || !reflect.DeepEqual(got, c) {
+			return fmt.Errorf("the %s entry changed since agentop read it, so nothing was written; run %s again", routerName, cmd)
+		}
+		return nil
+	}
+}
+
 // runningOn counts the sessions the proxy at sessionsURL holds in memory whose inference
 // traffic last went to server name: the ones a remove can leave asking for a new session,
 // or, when name is the only server, sends where their agent sends them.
@@ -615,12 +643,12 @@ func keyRouteRenames(c routerconfig.Config, old, name string) []edit.ConfigChang
 // The last server's question takes it as unknown, and asks. With no proxy to ask
 // (sessionsURL ""), nothing runs, so that is 0 and no error.
 func runningOn(sessionsURL string, c routerconfig.Config, name string) (int, error) {
-	ids, err := runningOnIDs(sessionsURL, c, name)
-	return len(ids), err
+	list, err := runningOnSessions(sessionsURL, c, name)
+	return len(list), err
 }
 
-// runningOnIDs is the ids of the sessions runningOn counts.
-func runningOnIDs(sessionsURL string, c routerconfig.Config, name string) ([]string, error) {
+// runningOnSessions is the sessions runningOn counts.
+func runningOnSessions(sessionsURL string, c routerconfig.Config, name string) ([]session.SessionSummary, error) {
 	if sessionsURL == "" {
 		return nil, nil
 	}
@@ -630,16 +658,16 @@ func runningOnIDs(sessionsURL string, c routerconfig.Config, name string) ([]str
 	if err != nil {
 		return nil, err
 	}
-	var ids []string
+	var out []session.SessionSummary
 	for _, s := range list {
 		if !session.IsConversation(s.ID) {
 			continue
 		}
 		if on, ok := servers.ForSession(c, s); ok && on == name {
-			ids = append(ids, s.ID)
+			out = append(out, s)
 		}
 	}
-	return ids, nil
+	return out, nil
 }
 
 // sessionsOn is the session ids whose sessions: entry names server, sorted.
