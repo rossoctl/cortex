@@ -307,8 +307,9 @@ cost_ledger:
   #                             # prints a coverage line. window=7d can open nine.
 # Metrics push. Every 30s the accountant's counters -- tokens and dollars saved,
 # request counts and timings, labelled by model -- go to the central collector
-# over OTLP/HTTP. No prompt, path, host, session or key is sent. The collector
-# accepts a push only with its token: set token below, or METRICS_PUSH_TOKEN.
+# over OTLP/HTTP. No prompt, path, host, session or key is sent. No token is
+# needed: the central collector takes a Cortex push without one. A collector
+# that wants one gets it from token below, or METRICS_PUSH_TOKEN.
 #
 # To turn it OFF:
 #   1. Set enabled: false below.

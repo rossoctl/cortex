@@ -312,8 +312,11 @@ saving is valued in units. `metrics_push:` (`enabled`, `url`, `token`, `interval
 `llm.savings.*` and Tier 1 `llm.inference.*`/`llm.keepalive.*`/`llm.cache.*` counters, plus
 Tier 2's transport-level `llm.inference.requests`/`duration_seconds`/`ttfb_seconds`/
 `added_seconds`/`request_bytes`/`response_bytes` (`core/accounting/reqstats`), over
-OTLP/HTTP (`core/accounting/push`). It has **no default URL**, so
-nothing leaves the machine until a user sets one. Its URL must be https, or http to loopback, and
+OTLP/HTTP (`core/accounting/push`). The code has **no default URL**, but the built-in config
+that `cortex --local --write-config` writes (`cmd/cortex/local.go`) names the central collector,
+so a default local install pushes every 30s. `metrics_push.enabled: false` or `METRICS_PUSH=false`
+turns it off. The token is optional: the central collector's Cortex receiver takes a push with no
+token (`deploy/central`). Its URL must be https, or http to loopback, and
 carry no user info or query string (neither is sent; the credential goes in `token`). The
 token is never logged. The pushed dollars come from the same `accounting.USD` as the ledger's,
 and `core/accounting.Components` (the `component` label allow-list) is a copy of context-guru's

@@ -862,8 +862,8 @@ login moves the token counters alone.
 
 The counters are cumulative. A push that fails is counted in `llm.proxy.export_failures`,
 logged as a WARN at most once a minute, and retried by the next push. It never delays or fails
-a request. The collector refuses a push without the right `token` (HTTP 401), so a machine
-with no token logs that WARN once a minute. With the push off, or no URL, the proxy logs
+a request. The central collector takes a Cortex push with no `token`; a collector that requires
+one answers 401 without it, and the proxy logs that WARN once a minute. With the push off, or no URL, the proxy logs
 one line at startup, `metrics push off`, and opens no connection.
 
 A bad block in the config file fails the config load, like any other block: Cortex does not
