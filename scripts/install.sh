@@ -65,6 +65,9 @@
 # dash/ash. The repo-wide `set -euo pipefail` convention applies to bash scripts.
 set -eu
 
+# When this script started, for setup's "ready in": the download and the checks count.
+script_started=$(date +%s 2>/dev/null) || script_started=""
+
 REPO="rossoctl/cortex"
 # CHANNEL_TAG is the release the developer channel's assets hang off. Deliberately
 # NOT "main": a GitHub release needs a git tag, and a tag named `main` would collide
@@ -1119,6 +1122,15 @@ hand_off() {
 	else
 		unset CORTEX_INSTALLER_DREW
 	fi
+	# CORTEX_SETUP_STARTED makes setup's "ready in" count from the start of this script.
+	# An environment variable for the same reason, and only a whole number of seconds.
+	case "${script_started}" in
+		'' | *[!0-9]*) unset CORTEX_SETUP_STARTED ;;
+		*)
+			CORTEX_SETUP_STARTED=${script_started}
+			export CORTEX_SETUP_STARTED
+			;;
+	esac
 	trap - EXIT
 	# Tried in a subshell: a redirection that fails on `exec` ends the shell it is in.
 	if (exec </dev/tty) 2>/dev/null; then
