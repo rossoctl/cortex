@@ -112,21 +112,16 @@ func TestStartSweepReleasesAlreadyExpiredHoldWithNoRequest(t *testing.T) {
 		t.Fatal("hold not recorded")
 	}
 
+	// startSweep's first pass runs synchronously, before it returns, so the hold is already
+	// gone with no wait and no request having arrived.
 	h.startSweep()
 	defer h.stopSweep()
 
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		h.mu.Lock()
-		n := len(h.m)
-		h.mu.Unlock()
-		if n == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("startSweep did not release an already-expired hold within 2s, with no request")
-		}
-		time.Sleep(10 * time.Millisecond)
+	h.mu.Lock()
+	n := len(h.m)
+	h.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("startSweep did not release the already-expired hold, with no request: %d still held", n)
 	}
 	if _, held := d.held[ref]; held {
 		t.Fatal("hold still recorded on the dispatcher after the sweep released it")

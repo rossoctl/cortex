@@ -76,11 +76,11 @@ func newCredHolds(d *cortexDispatcher) *credHolds {
 func (h *credHolds) startSweep() {
 	h.sweepStop = make(chan struct{})
 	h.sweepDone = make(chan struct{})
+	h.releaseExpired(time.Now())
 	go func() {
 		defer close(h.sweepDone)
 		t := time.NewTicker(holdSweepInterval)
 		defer t.Stop()
-		h.releaseExpired(time.Now())
 		for {
 			select {
 			case <-t.C:
