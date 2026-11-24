@@ -1142,10 +1142,21 @@ func TestFoldInto_CarriesEveryCountsField(t *testing.T) {
 		// APPLIED, not projected: TotalAvoidedMicros skips a projected saving, so an
 		// observe-mode entry here would leave AvoidedMicros zero and this test would fail
 		// for a reason that has nothing to do with the fold carrying the field.
+		// One saving per basis, so every figure field is set (event.Event.Figures), and a
+		// spend per basis for the plugin-spend fields.
 		Avoided: []event.Saving{{
-			Component: "tool-prune", TokensAvoided: 400, USD: 0.0012,
+			Basis: event.BasisUSD, Component: "tool-prune", TokensAvoided: 400, USD: 0.0012, PenaltyUSD: 0.0002,
 			Tier: "input", Provenance: "configured", Estimated: true,
+		}, {
+			Basis: event.BasisSubscriptionEquivalent, Component: "context-guru.mask", USD: 0.5, Units: 12, PenaltyUnits: 1,
+		}, {
+			Basis: event.BasisUnknown, Component: "context-guru.mask", USD: 0.25,
 		}},
+		Spends: []event.SpendRecord{
+			{Basis: event.BasisUSD, USD: 0.01},
+			{Basis: event.BasisSubscriptionEquivalent, USD: 0.02, Units: 3},
+			{Basis: event.BasisUnknown, USD: 0.03},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)

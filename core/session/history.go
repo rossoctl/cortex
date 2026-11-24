@@ -186,10 +186,10 @@ func (s *Store) withPriorLocked(sum *SessionSummary, id string, sess *entry) {
 	// bound, whichever side it was.
 	cost, avoided := sess.cost, sess.avoided
 	cost.Add(f.cost.Micros)
-	avoided.Add(f.avoided.Micros)
+	avoided.Merge(f.avoided)
 	cost.Saturated = cost.Saturated || f.cost.Saturated
-	avoided.Saturated = avoided.Saturated || f.avoided.Saturated
-	sum.CostMicros, sum.AvoidedMicros = cost.Micros, avoided.Micros
+	sum.CostMicros = cost.Micros
+	avoided.setOn(sum)
 	sum.Saturated = cost.Saturated || avoided.Saturated
 	// THE UNIT COUNTS, NOT THE RENDERED LISTS: currenciesOf renders dollars-only as nil, so a union
 	// of two rendered lists would drop "USD" from a session priced in dollars on one side only.

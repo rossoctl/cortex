@@ -63,7 +63,7 @@ func seedAgentTurns(store *session.Store, sid string, n int) {
 				event.Key: json.RawMessage(fmt.Sprintf(
 					`{"cost_usd":%.4f,"source":"gateway-header","daily_total_usd":%.4f,"daily_max_usd":5,`+
 						`"prompt_usd":%.5f,"output_usd":%.5f,`+
-						`"avoided":[{"component":"tool-prune","tokensAvoided":9899,`+
+						`"avoided":[{"component":"tool-prune","basis":"usd","tokensAvoided":9899,`+
 						`"usd":0.0038,"tier":"cache_read","estimated":true}]}`,
 					cost, cost*float64(i+1), 1_300*3.8e-6+float64(cacheRead)*3.8e-7, float64(output)*1.9e-5)),
 			},

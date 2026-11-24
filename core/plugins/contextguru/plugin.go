@@ -208,6 +208,11 @@ type ContextGuru struct {
 	static   *cgModel
 	modelTO  time.Duration
 	modelMax int
+
+	// localInstall is set by plugins.BuildWithDeps before Configure: on a local install the
+	// model calls bypass HTTPS_PROXY (see localModelTransport).
+	localInstall bool
+
 	// lateModelCalls counts model calls whose spend op was dropped because the call returned
 	// after its request was accounted (cgModel). Reported by Metrics.
 	lateModelCalls atomic.Int64
@@ -240,6 +245,10 @@ func (p *ContextGuru) Capabilities() pipeline.PluginCapabilities {
 		Description:       "Compacts the outbound LLM request context before forwarding (context-guru).",
 	}
 }
+
+// SetLocalInstall is how plugins.BuildWithDeps says whether this is a local install, which decides
+// whether the plugin's model calls may use HTTPS_PROXY.
+func (p *ContextGuru) SetLocalInstall(local bool) { p.localInstall = local }
 
 func (p *ContextGuru) Configure(raw json.RawMessage) error {
 	if len(raw) > 0 {
@@ -299,6 +308,7 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 					Timeout:            p.modelTO,
 					SentinelHeaderName: sentinelHeader,
 					SentinelValue:      p.sentinel,
+					HTTPClient:         modelHTTPClient(p.modelTO, p.localInstall),
 				}),
 				maxTokens: p.modelMax,
 				model:     m.Model,
@@ -333,10 +343,7 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 		return cont
 	}
 	provider := providerFor(pctx.Path)
-	models := cgcomponents.ModelSpec{
-		Static:   p.staticModelFor(pctx),
-		Incoming: p.incomingModel(pctx, provider),
-	}
+	models := p.modelsFor(pctx, provider)
 	before := len(pctx.Body)
 	res := apply.BodyOpts(ctx, p.pipe, p.store, apply.Opts{
 		Provider: provider,
@@ -344,14 +351,23 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 		Session:  sid,
 		Models:   models,
 	})
-	out, changed := reportResult(pctx, res)
+	out, changed, ops := reportResult(pctx, res)
 	if changed && len(out) > 0 {
+		// SetBody decides whether this write actually applies (true unless a non-observe
+		// writer ahead of this plugin already enforced its own bytes — pipeline/plugin-reference.md's
+		// shadow-write case). Ops are stamped and reported AFTER this call, never before: reporting
+		// first would price a shadow write as a real saving, which can fail the library's
+		// client-vs-forwarded sum check and zero the whole request's figure, tool-prune's savings on
+		// it included (review finding on plugin.go:485). ReportOps's own DryRun stamp (on_error:
+		// observe) is a different, narrower case — see pipeline.Context.ReportOps's doc comment —
+		// and stampDryRun's OR leaves it untouched when it already applies.
+		applied := pctx.SetBody(out)
+		stampDryRun(ops, !applied)
+		pctx.ReportOps(ops...)
 		// Per-request byte-level view (the engine's token-level view is logged by
 		// logEmitter.Run). The framework also emits a body-mutation session event.
-		// The message follows this plugin's own SetBody result, not BodyMutated: under
-		// on_error: observe the write is a shadow and the client's body goes upstream.
 		msg := "context-guru rewrote request body"
-		if !pctx.SetBody(out) {
+		if !applied {
 			msg = "context-guru would rewrite request body (on_error: observe, not applied)"
 		}
 		slog.Info(msg,
@@ -361,29 +377,47 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 	return cont
 }
 
-// reportResult reports one apply.BodyOpts result to the accountant and returns the body
-// to forward and whether it changed. Split out of OnRequest so the accounting side
-// (what gets reported, and when) is testable directly against a hand-built apply.Result,
-// without re-running the engine — a second apply.BodyOpts call against the same
-// session/store would observe state the first call already mutated, not reproduce it.
+// stampDryRun sets DryRun on every op whose DryRun is not already true. Called with dryRun=true
+// when the caller's SetBody did not apply the rewrite these ops describe, so a shadow write is
+// never priced as if it reached the wire.
+func stampDryRun(ops []accountant.Operation, dryRun bool) {
+	if !dryRun {
+		return
+	}
+	for i := range ops {
+		ops[i].DryRun = true
+	}
+}
+
+// reportResult turns one apply.BodyOpts result into the body to forward, whether it changed, and
+// the ops that describe it — WITHOUT reporting them. Split out of OnRequest so the accounting
+// side (what would be reported) is testable directly against a hand-built apply.Result, without
+// re-running the engine — a second apply.BodyOpts call against the same session/store would
+// observe state the first call already mutated, not reproduce it.
 //
 // Thread: names the request's accounting thread from the engine's own thread split
 // (design §5.4/§5.5). res.Trace.Thread.ID is empty with no Opts.ThreadOf wired (unchanged
 // in this task), and SetAccountingThread's empty-id no-op then leaves
 // core/accounting.ThreadOf's default rule ("main" for the primary agent) in place.
 //
-// Ops: reported only when the engine produced a rewrite (changed && non-empty out), and
-// regardless of whether the caller's subsequent SetBody actually applies it — ReportOps
-// itself stamps DryRun when the plugin runs under on_error: observe, so the accountant
-// still sees what the engine WOULD have sent (W5.1/W4.6).
-func reportResult(pctx *pipeline.Context, res apply.Result) (out []byte, changed bool) {
+// Ops: the engine's Trace.Ops plus the envelope ops (envelopeOps), built only when the engine
+// produced a rewrite (changed && non-empty out). The caller must call pctx.SetBody(out) BEFORE
+// reporting these — mirroring tool-prune's applied := pctx.SetBody(out); ReportOps(...!applied)
+// ordering — and stamp DryRun from whether that write actually applied, not from whether the
+// engine merely computed it: reporting here, before SetBody, would price a shadow write (an
+// earlier enforced writer's bytes already in effect) as a real saving.
+func reportResult(pctx *pipeline.Context, res apply.Result) (out []byte, changed bool, ops []accountant.Operation) {
 	threadParent, _ := res.Trace.Thread.InheritsFrom()
 	pctx.SetAccountingThread(res.Trace.Thread.ID, threadParent)
 	out, changed = res.Body, res.Changed
 	if changed && len(out) > 0 {
-		pctx.ReportOps(res.Trace.Ops...)
+		ops = append(ops, res.Trace.Ops...)
+		// The tools and system changes apply makes report no op of their own; they are found
+		// by diffing this plugin's input against its output (envelope.go). pctx.Body is still
+		// the input here: the caller sets the output after this returns.
+		ops = append(ops, envelopeOps(pctx.Body, out)...)
 	}
-	return out, changed
+	return out, changed, ops
 }
 
 // OnResponse is a pass-through in v1. The model-driven expand loop (resolve
@@ -426,6 +460,35 @@ func providerFor(path string) bschemas.ModelProvider {
 	return bschemas.OpenAI
 }
 
+// modelsFor is the engine's model spec for one request: the static model, and the request's own
+// model as the incoming one (incomingModel; OpenAI only). An absent client stays a nil
+// interface, never a typed nil: the engine checks the interface.
+//
+// modelsFor builds the static and incoming models for this request, UNLESS the plugin runs
+// under on_error: observe, when it builds neither.
+//
+// Observing's own doc says a shadow pass changes nothing: "nothing it does this pass takes
+// effect". The keep-alive keeper already holds this line (OnRequest: "UNDER on_error: observe
+// NOTHING IS HELD... that ping is real, billed spend — the opposite of a shadow run"). Before
+// this, the engine's own model-calling components (cache_aware_summarizer, extract_llm,
+// extract_llm_sweep) did not: cgModel.Complete always sends the real HTTP
+// call, and dryRun only changes how the resulting op is REPORTED (Projected, left out of every
+// total) — the call itself, and its cost on the caller's own credential, already happened
+// (review finding). Returning an empty ModelSpec here makes every model.source: incoming or
+// model: component degrade to deterministic/no-op under observe, the same way the keeper
+// degrades to no ping: observe measures what the DETERMINISTIC reducers would do, at the cost
+// of not previewing what the model-backed ones would add.
+func (p *ContextGuru) modelsFor(pctx *pipeline.Context, provider bschemas.ModelProvider) cgcomponents.ModelSpec {
+	if pctx.Observing() {
+		return cgcomponents.ModelSpec{}
+	}
+	spec := cgcomponents.ModelSpec{Static: p.staticModelFor(pctx)}
+	if m := p.incomingModel(pctx, provider); m != nil {
+		spec.Incoming = m
+	}
+	return spec
+}
+
 // incomingModel reconstructs the agent's own model client from the live request
 // (base URL + token-exchanged Authorization + the request's model), so an engine
 // component with model.source: incoming reuses it. OpenAI-dialect only (llmclient
@@ -456,6 +519,7 @@ func (p *ContextGuru) incomingModel(pctx *pipeline.Context, provider bschemas.Mo
 			Timeout:            p.modelTO,
 			SentinelHeaderName: sentinelHeader,
 			SentinelValue:      p.sentinel,
+			HTTPClient:         modelHTTPClient(p.modelTO, p.localInstall),
 		}),
 		maxTokens:   p.modelMax,
 		model:       model,

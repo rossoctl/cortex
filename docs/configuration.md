@@ -27,7 +27,7 @@ effect. The full contract is in [`proxy-contract.md`](proxy-contract.md#hot-relo
 | `tls_bridge:` | The laptop TLS bridge and its CA | data plane | restart | [`laptop-service.md`](laptop-service.md#the-tls_bridge-configuration) |
 | `memory:` | The Go runtime's soft memory limit for the whole process | both | restart | [`laptop-service.md`](laptop-service.md#the-memory-configuration) |
 | `praxis:` | Praxis mode: the `cortex-gateway` process and its `policy` | data plane | restart | [`praxis-policy.md`](praxis-policy.md) |
-| `accounting:` | Whether the process hosts the accountant that prices the context operators' savings | control plane | `enabled`: turning it on needs a restart if the proxy started with it off; turning it off reloads | [`proxy-contract.md`](proxy-contract.md#hot-reload) |
+| `accounting:` | The accountant that prices the context operators' savings, and `subscription_weights` | control plane | `subscription_weights`: restart. `enabled`: turning it on needs a restart if the proxy started with it off; turning it off reloads | [`laptop-service.md`](laptop-service.md#the-accounting-configuration) |
 | `update:` | Automatic updates: `auto`, `wait`, `check_every` | control plane | `check_every`: restart. agentop reads `auto` and `wait` each time it runs | [`laptop-service.md`](laptop-service.md#automatic-updates) |
 
 Two things no config file can answer, because the effective values come from the

@@ -10,6 +10,7 @@ import (
 	"github.com/rossoctl/accountant"
 	"github.com/rossoctl/cortex/core/accounting/facts"
 	"github.com/rossoctl/cortex/core/accounting/wire"
+	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
@@ -41,7 +42,7 @@ const billingKey = "accounting.billing"
 
 // Options configure a Host.
 type Options struct {
-	// Resolver is the process rate table. Held for pricing (a later task); Task 2 prices nothing.
+	// Resolver is the process rate table. Savings prices every Result with it (USD, TierUSD).
 	Resolver pricing.Resolver
 	// SnapshotPath is where the Tracker state is saved every 60s and on Close, and restored
 	// from at New. Empty means no snapshot: in a cluster a pod restart starts fresh (design §5.4).
@@ -52,6 +53,9 @@ type Options struct {
 	CostRecorders []session.Recorder
 	// Now is the clock. Nil means time.Now.
 	Now func() time.Time
+	// SubscriptionWeights value a saving on a subscription login in usage-limit units
+	// (accounting.subscription_weights). Nil means config.DefaultSubscriptionWeights.
+	SubscriptionWeights *config.SubscriptionWeights
 }
 
 // Host is Cortex's accountant host: one per process, shared by every pipeline a reload builds,
@@ -66,6 +70,7 @@ type Host struct {
 	trackers *accountant.Trackers
 	resolver pricing.Resolver
 	now      func() time.Time
+	weights  config.SubscriptionWeights
 
 	snapshotPath string
 	stop         chan struct{}
@@ -79,12 +84,8 @@ type Host struct {
 
 	// Test hooks. beforeEnd runs first on the record's goroutine, computeHook just before the
 	// library's Compute, onEnd with the ops the record was given, metaHook with the
-	// RequestMeta RequestEnd built (synchronously, before the record's goroutine starts),
-	// usageHook with the
-	// accountant.Usage Compute built from pctx.Extensions.Inference, just before it is
-	// handed to the library (added for task 7's CacheWrite1h plumbing, 2026-11-17
-	// accountant-integration — Compute's own return carries no usage, only Ops/Checks/
-	// Unpriced, so a test asserting what was BUILT needs its own hook). Nil outside tests.
+	// RequestMeta RequestEnd built (synchronously, before the record's goroutine starts). Nil
+	// outside tests.
 	beforeEnd   func()
 	computeHook func()
 	// computeWait overrides the package computeWait when positive. Tests only: a test that runs
@@ -92,7 +93,11 @@ type Host struct {
 	computeWait time.Duration
 	onEnd       func(ops []accountant.Operation)
 	metaHook    func(meta accountant.RequestMeta)
-	usageHook   func(u accountant.Usage)
+	// usageHook sees the accountant.Usage Compute built from pctx.Extensions.Inference, just
+	// before it is handed to the library (added for task 7's CacheWrite1h plumbing — Compute's
+	// own return carries no usage, only Ops/Checks/Unpriced, so a test asserting what was BUILT
+	// needs its own hook). Nil outside tests.
+	usageHook func(u accountant.Usage)
 }
 
 // threadBillingKey keys Host.threadBilling: a thread id is only unique within its session.
@@ -123,6 +128,10 @@ func New(o Options) *Host {
 		snapshotPath: o.SnapshotPath,
 		recorders:    append([]session.Recorder(nil), o.CostRecorders...),
 		stop:         make(chan struct{}),
+		weights:      config.DefaultSubscriptionWeights(),
+	}
+	if o.SubscriptionWeights != nil {
+		h.weights = *o.SubscriptionWeights
 	}
 	if h.now == nil {
 		h.now = time.Now
@@ -209,7 +218,9 @@ func (h *Host) RequestStart(pctx *pipeline.Context) {
 // never run on the request goroutine (global constraint).
 //
 // Traffic that is not an inference request, or that has no session to key a thread on, starts
-// nothing and logs nothing (Review Focus 2).
+// nothing and logs nothing (Review Focus 2). The one exception is a request on a path FormatOf does
+// not know that an operator still reported ops on: it gets one DEBUG line, because its saving is
+// lost.
 //
 // A request a plugin asked to translate (pctx.TranslateTarget) also starts nothing: the listener
 // converts the body to the target protocol in startTranslation, which runs after Run returns, so
@@ -228,6 +239,11 @@ func (h *Host) RequestEnd(pctx *pipeline.Context) {
 	}
 	format, ok := wire.FormatOf(pctx.Path)
 	if !ok {
+		// An operator acted on a path the accountant cannot read: its saving goes unrecorded.
+		// Said once per request at DEBUG, so a paths: config wider than FormatOf is visible.
+		if n := len(pctx.ReportedOps()); n > 0 {
+			slog.Debug("accounting: unknown wire format; saving not recorded", "path", pctx.Path, "ops", n)
+		}
 		return
 	}
 	client := pctx.ClientBody()
@@ -414,6 +430,12 @@ func (h *Host) Compute(pctx *pipeline.Context) (accountant.Result, bool) {
 	inf := pctx.Extensions.Inference
 	if p.req == nil || inf == nil {
 		h.release(p, "no_record")
+		return accountant.Result{}, false
+	}
+	// COUNTS NO REQUEST COULD HAVE REPORTED are refused, as settle refuses them: a negative or
+	// past-the-ceiling counter (pricing.PlausibleUsage) would be priced into an impossible saving.
+	if !pricing.PlausibleUsage(pricing.UsageFromInference(inf)) {
+		h.release(p, "usage_implausible")
 		return accountant.Result{}, false
 	}
 	// CacheWrite1h is the part of CacheWrite billed at the 1-hour rate, never an

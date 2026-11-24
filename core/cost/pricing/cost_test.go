@@ -335,3 +335,29 @@ func TestCacheWrite1hPremium_AnUnrepresentableDeltaOverflows(t *testing.T) {
 		t.Errorf("outcome=%v micros=%d estimated=%v, want premiumOverflow/0/false", outcome, micros, estimated)
 	}
 }
+
+// TestSignedMicrosOrZero checks that the net-figure helper keeps the sign MicrosFromUSD
+// refuses to carry: a saving whose penalty exceeds it must convert to a negative figure,
+// not to the zero MicrosOrZero gives a plain charge. See the comment on SignedMicrosOrZero.
+func TestSignedMicrosOrZero(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		usd  float64
+		want int64
+	}{
+		{"positive net", 0.01, 10_000},
+		{"negative net", -0.01, -10_000},
+		{"zero", 0, 0},
+		{"negative zero is zero, not refused", math.Copysign(0, -1), 0},
+		{"tiny negative rounds to zero, not refused", -1e-07, 0},
+		{"NaN", math.NaN(), 0},
+		{"negative infinity", math.Inf(-1), 0},
+		{"beyond the bound, negative", -float64(MaxCostMicros) - 1, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SignedMicrosOrZero(tc.usd); got != tc.want {
+				t.Errorf("SignedMicrosOrZero(%v) = %d, want %d", tc.usd, got, tc.want)
+			}
+		})
+	}
+}

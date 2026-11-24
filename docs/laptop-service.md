@@ -758,6 +758,35 @@ process keeps allocating and growing exactly as it would without one — nothing
 fails, nothing crashes. Setting it too low costs speed, not availability. Set
 it explicitly to change the default; `agentop service restart` applies it.
 
+### The `accounting:` configuration
+
+The accountant prices what the context operators (`context-guru`, `tool-prune`) saved. Its
+figures land in the cost records' `avoided[]` and `spends[]`
+(see [pricing.md](pricing.md#cost-records)). The block is the same on a laptop and in a cluster.
+
+```yaml
+accounting:
+  enabled: auto          # auto | true | false
+  subscription_weights:  # optional; the defaults are shown
+    input: 1
+    cache_write_5m: 1.25
+    cache_write_1h: 2
+    cache_read: 0.1
+    output: 5
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `enabled` | `auto` | `auto` runs the accountant when the outbound pipeline has a context operator. `true` runs it without one, for the cache figures alone. `false` turns it off. |
+| `subscription_weights` | the API rate ratios | How much of a subscription's usage limit one token of each tier uses. A saving on a subscription login is valued in these units (`units`, `penaltyUnits`), never in dollars. A key you leave out keeps its default; an explicit `0` stays `0`; a negative weight is refused. |
+
+On a local install the accountant keeps its state in `~/.cortex/accountant-state.json`, so
+a restart does not forget which prefix the provider has cached. Both fields are read once at
+startup. A reload that changes a weight is refused, and so is a reload that turns accounting
+on (as resolved) when the proxy started with it off; `agentop service restart` applies either.
+A reload that turns it off is accepted: the accountant stays idle until a later reload turns
+it back on.
+
 ### The `tls_bridge:` configuration
 
 The TLS bridge terminates agent egress so the outbound plugin pipeline sees

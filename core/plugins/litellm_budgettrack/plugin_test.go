@@ -310,7 +310,7 @@ func (b *billing) settle(pctx *pipeline.Context) {
 	s := settle.Settle(pctx, b.rates)
 	settle.Store(pctx, s)
 	if s.Priced {
-		settle.Publish(pctx, settle.NewRecord(s, settle.Avoided(pctx, b.rates)))
+		settle.Publish(pctx, settle.NewRecord(s, nil))
 	}
 }
 

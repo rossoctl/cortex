@@ -739,3 +739,58 @@ func TestHost_ThreadBillingIsBounded(t *testing.T) {
 			got.Mode, accountant.BillingUnknown)
 	}
 }
+
+// A completed operator spend must not be lost along with the never-priced savings when Compute
+// refuses the request for a reason about PRICING it, not about the spend itself: here, a
+// rejected status (review finding — the same loss happens on a multi-round primary request,
+// Compute's "upstream_rounds" reason, which this pins by the SkipReason it shares rather than by
+// reproducing a resend).
+func TestHost_SavingsKeepsASpendWhenComputeRefusesTheRequest(t *testing.T) {
+	h := newHost(t)
+	spendOp := accountant.Operation{
+		Kind:     accountant.KindSpend,
+		Operator: "context-guru.extract_llm",
+		Call: &accountant.ModelCall{
+			Model: "claude-haiku-4-5",
+			Usage: accountant.CallUsage{CostUSD: 0.02},
+		},
+	}
+	pctx := request(t, h, "s1", "/v1/messages", clientBody("hi"),
+		&operator{fwd: forwardedBody("hi"), ops: []accountant.Operation{spendOp}}, 500, coldUsage())
+	if res, ok := h.Compute(pctx); ok {
+		t.Fatalf("fixture broken: Compute priced a rejected-status request: %+v", res)
+	}
+	savings, extras, ok := h.Savings(pctx)
+	if !ok {
+		t.Fatal("Savings = ok false, want true for the kept spend")
+	}
+	if len(savings) != 0 {
+		t.Errorf("savings = %+v, want none: Compute refused the request, so nothing is priced", savings)
+	}
+	if len(extras.Spends) != 1 || extras.Spends[0].Operator != "context-guru.extract_llm" || extras.Spends[0].USD != 0.02 {
+		t.Errorf("spends = %+v, want the one completed spend at $0.02", extras.Spends)
+	}
+	if extras.Spends[0].Thread == "" {
+		t.Error("the kept spend has no thread")
+	}
+}
+
+// Counts no request could have reported are refused before Compute, as settle refuses them
+// (pricing.PlausibleUsage): an impossible report would be priced into an impossible saving.
+func TestHost_ComputeRefusesImplausibleUsage(t *testing.T) {
+	h := newHost(t)
+	for name, mutate := range map[string]func(u *pipeline.InferenceExtension){
+		"negative":         func(u *pipeline.InferenceExtension) { u.InputTokens = -5 },
+		"past the ceiling": func(u *pipeline.InferenceExtension) { u.CacheReadTokens = 2_000_000_000 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			usage := coldUsage()
+			mutate(&usage)
+			pctx := request(t, h, "s-"+name, "/v1/messages", clientBody("hi"),
+				&operator{fwd: forwardedBody("hi"), ops: []accountant.Operation{pruneOp()}}, 200, usage)
+			if res, ok := h.Compute(pctx); ok {
+				t.Errorf("Compute priced implausible counts: %+v", res)
+			}
+		})
+	}
+}

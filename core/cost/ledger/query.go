@@ -560,7 +560,7 @@ func labelFor(r Row, group usage.Group) (string, bool) {
 func CurrenciesIn(rows []Row) []string {
 	var figured []Row
 	for _, r := range rows {
-		if r.PricedRequests > 0 || r.AvoidedMicros > 0 {
+		if r.PricedRequests > 0 || hasAccountantFigure(r) {
 			figured = append(figured, r)
 		}
 	}
@@ -654,4 +654,15 @@ func FilterProject(rows []Row, project string) []Row {
 		}
 	}
 	return out
+}
+
+// hasAccountantFigure reports whether r carries any of the accountant's nine figures. It is the
+// ledger's form of the ring's !avoided.IsZero() (usage.Aggregator, labelOne's hasMoney), so a window
+// reports the same currencies from either source. != 0, not > 0: the two net figures
+// (AvoidedAPIEquivalentMicros, AvoidedUnknownMicros) are signed, and a row whose only figure is a
+// negative net still shows a figure.
+func hasAccountantFigure(r Row) bool {
+	return r.AvoidedMicros != 0 || r.PenaltyMicros != 0 || r.AvoidedUnits != 0 || r.PenaltyUnits != 0 ||
+		r.AvoidedAPIEquivalentMicros != 0 || r.AvoidedUnknownMicros != 0 ||
+		r.PluginSpendMicros != 0 || r.PluginSpendUnits != 0 || r.PluginSpendUnknownMicros != 0
 }
