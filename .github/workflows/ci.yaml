@@ -14,6 +14,15 @@ on:
     branches:
       - main
 
+# Cancel a PR run that a newer push to the same PR replaced: its head is stale, and it would
+# otherwise hold one of the org's shared runner slots until it finished. Push, tag and dispatch runs
+# group on ref plus commit, so each has a group of its own and nothing on main or a tag is dropped or
+# cancelled (with a shared group GitHub drops a queued run when a newer one queues). Same convention as
+# rossoctl/context-guru#1363.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || format('{0}-{1}', github.ref, github.sha) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
