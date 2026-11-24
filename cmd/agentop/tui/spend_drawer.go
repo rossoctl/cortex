@@ -715,7 +715,7 @@ func spendDrawerRows(snap *usage.Snapshot, keep int) []drawerRow {
 		if out[j].label == tailLabel {
 			return true
 		}
-		return out[i].counts.CostMicros > out[j].counts.CostMicros
+		return money.SpendMicros(out[i].counts) > money.SpendMicros(out[j].counts)
 	})
 	return out
 }
@@ -1019,7 +1019,7 @@ func drawerFigures(r drawerRow) []stripFigure {
 	var amount, note, req, tokens, saved stripFigure
 	figs := []stripFigure{plainFigure(r.label).inColumn(drawerLabelWidth, true)}
 	switch {
-	case negativeCost(r.counts.CostMicros):
+	case negativeCost(money.SpendMicros(r.counts)):
 		// AN IMPOSSIBLE FIGURE IS NOT A FIGURE, and this row is where that guard was missing.
 		// The gate below admits anything with PricedRequests > 0, so a series summing negative
 		// reached formatUSDCell and printed "$-5.0000" — a credit nobody issued, in a column of
@@ -1030,10 +1030,10 @@ func drawerFigures(r drawerRow) []stripFigure {
 		// here — every request priced, and the sum still impossible — so coverage is not what is
 		// wrong and naming it would point a reader at the rate table.
 		amount = plainFigure("cost unavailable")
-	case !unitOK && (r.counts.PricedRequests > 0 || r.counts.CostMicros > 0):
+	case !unitOK && (r.counts.PricedRequests > 0 || money.SpendMicros(r.counts) > 0):
 		// A row in several units has no amount; see money.Mixed.
 		amount = plainFigure(money.Mixed)
-	case r.counts.PricedRequests > 0 || r.counts.CostMicros > 0:
+	case r.counts.PricedRequests > 0 || money.SpendMicros(r.counts) > 0:
 		// Cents, through moneyFigureTotal: this column is scanned and compared down its length,
 		// which is the side of the precision rule cents is for. It read four decimals until the
 		// sessions table moved, and a drawer at "$1.0601" under a band at "$1.06" was the same
@@ -1045,7 +1045,7 @@ func drawerFigures(r drawerRow) []stripFigure {
 		// is what put this table out of line one row at a time. The words move to the last slot,
 		// where width pressure drops them first — which is where they were always going to go.
 		// The MARKER stays on the figure, so the fact never leaves the column.
-		full := moneyFigureTotal(float64(r.counts.CostMicros)/1e6, "",
+		full := moneyFigureTotal(float64(money.SpendMicros(r.counts))/1e6, "",
 			gapOf(r.counts), r.counts.PriceableRequests, r.counts.IncompleteRequests, nil,
 			r.counts.Saturated)
 		amount = plainFigure(money.Relabel(full.compact, unit, 0))
@@ -1248,7 +1248,7 @@ func rankSeriesByCost(buckets []usage.Bucket) []seriesKey {
 			if totals[label] == nil {
 				totals[label] = &event.CostSum{}
 			}
-			totals[label].Add(c.CostMicros)
+			totals[label].Add(money.SpendMicros(c))
 		}
 	}
 	out := make([]seriesKey, 0, len(totals))

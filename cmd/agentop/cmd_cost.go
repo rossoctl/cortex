@@ -580,7 +580,7 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string, ownU
 	// make the same refusal (see tui.negativeCost, which is its one spelling there); this
 	// surface printed "$-5.00", which reads as a refund nobody issued. Unavailable rather
 	// than clamped to zero, because $0.00 would assert the traffic was free.
-	negative := snap.Priced && t.CostMicros < 0
+	negative := snap.Priced && money.SpendMicros(t) < 0
 	// A CROSS-UNIT TOTAL IS NOT A TOTAL, and unlike every other caveat on this surface the figure
 	// cannot be salvaged by qualifying it. Summing credits into dollars yields a number that is
 	// neither, and it looks exactly like a correct one — larger, never obviously wrong. Measured on
@@ -602,7 +602,10 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string, ownU
 	mixed := !labelled
 	headline := "cost unavailable"
 	if snap.Priced && !negative && labelled {
-		headline = costIn(float64(t.CostMicros)/1e6, unit)
+		// THE REQUESTS AND THE KEEP-ALIVE PINGS ON AN API KEY (money.SpendMicros): a ping is billed
+		// on the caller's credential, so a headline without it understates the bill. The pings are
+		// in no request or token figure beside it; their own line below says how many there were.
+		headline = costIn(float64(money.SpendMicros(t))/1e6, unit)
 	}
 	if mixed {
 		headline = fmt.Sprintf("%d units", len(snap.Currencies))
@@ -699,7 +702,8 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string, ownU
 	// the net is not floored, so a negative one means the operators cost more than they saved. A
 	// subscription saving is in usage-limit units with its "API equivalent" labelled, an unknown
 	// one is never added, and the plugins' own model calls are spend that is NOT in the total
-	// above, on their own line.
+	// above, on their own line. The keep-alive pings are on their own line too, but their API-key
+	// spend IS in the total above and comes off the net saving.
 	if labelled {
 		for _, l := range money.AccountantLines(t, unit) {
 			switch l.Label {
@@ -707,15 +711,23 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string, ownU
 				// Formatted with money.Signed, as AccountantLines formats the same figures, so this
 				// line cannot drift from the TUI's. With no gross saving there is nothing to put
 				// "~$0.00 saved" in front of: the operators only added cost.
+				// The net is also net of the keep-alive pings' spend (money.NetMicros), so that spend
+				// is named beside the penalty whenever there is any.
+				ka := ""
+				if t.KeepAliveMicros != 0 {
+					ka = "   keep-alive " + money.Signed(t.KeepAliveMicros, unit)
+				}
 				if t.AvoidedMicros == 0 {
-					fmt.Fprintf(stdout, "  ~%-13s penalty %s   net %s   estimate; no saving, only a penalty; not deducted above\n",
-						"no saving", money.Signed(t.PenaltyMicros, unit), money.Signed(money.NetMicros(t), unit))
+					fmt.Fprintf(stdout, "  ~%-13s penalty %s%s   net %s   estimate; no saving, only a penalty; not deducted above\n",
+						"no saving", money.Signed(t.PenaltyMicros, unit), ka, money.Signed(money.NetMicros(t), unit))
 					continue
 				}
-				fmt.Fprintf(stdout, "  ~%-13s saved   penalty %s   net %s   estimate; gross, penalty beside it; not deducted above\n",
-					money.Signed(t.AvoidedMicros, unit), money.Signed(t.PenaltyMicros, unit), money.Signed(money.NetMicros(t), unit))
+				fmt.Fprintf(stdout, "  ~%-13s saved   penalty %s%s   net %s   estimate; gross, penalty beside it; not deducted above\n",
+					money.Signed(t.AvoidedMicros, unit), money.Signed(t.PenaltyMicros, unit), ka, money.Signed(money.NetMicros(t), unit))
 			case "plugin model calls":
 				fmt.Fprintf(stdout, "  %-18s %s   spend, not in the total above\n", l.Label, l.Figure)
+			case "keep-alive":
+				fmt.Fprintf(stdout, "  %-18s %s   spend; the API-key part is in the total above and off the net saving\n", l.Label, l.Figure)
 			default:
 				fmt.Fprintf(stdout, "  %-18s %s\n", l.Label, l.Figure)
 			}
@@ -1270,9 +1282,9 @@ func writeCostBreakdown(snap *usage.Snapshot, stdout io.Writer, requested usage.
 			// Left as emptyCostCell: nothing could price this row, which outranks any question
 			// about the unit a figure it does not have would be in.
 		case byUnit && isReportedUnit(snap.Currencies, label):
-			cost = costIn(float64(c.CostMicros)/1e6, label)
+			cost = costIn(float64(money.SpendMicros(c))/1e6, label)
 		case labelled:
-			cost = costIn(float64(c.CostMicros)/1e6, unit)
+			cost = costIn(float64(money.SpendMicros(c))/1e6, unit)
 		default:
 			cost = mixedCostCell
 			withheld = append(withheld, label)

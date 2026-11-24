@@ -35,6 +35,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rossoctl/cortex/core/accounting"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins"
 	"github.com/rossoctl/cortex/core/session"
@@ -109,6 +110,11 @@ type SessionBudget struct {
 	httpClient   *http.Client
 	gracePeriod  time.Duration
 	pauseTimeout time.Duration
+
+	// acct is the accountant host, nil when accounting is off; unsubPing removes the ping
+	// listener Init registered on it.
+	acct      *accounting.Host
+	unsubPing func()
 
 	mu           sync.RWMutex
 	cache        map[string]*counters
@@ -259,13 +265,21 @@ func (p *SessionBudget) Init(_ context.Context) error {
 
 	interval, _ := time.ParseDuration(p.cfg.RefreshInterval)
 	go p.refreshLoop(interval)
+	// Last, so a failed Init leaves nothing subscribed. Shutdown removes it, so the instance a
+	// reload replaces stops counting pings before the new one starts.
+	p.unsubPing = p.acct.AddPingListener(p.onPing)
 	return nil
 }
 
 // In-flight accumulate goroutines get ErrClosed after store.Close — bounded by their 2s ctx.
 // Safe to call multiple times: both the stopCh close and store.Close are guarded by sync.Once.
 func (p *SessionBudget) Shutdown(ctx context.Context) error {
-	p.shutdownOnce.Do(func() { close(p.stopCh) })
+	p.shutdownOnce.Do(func() {
+		if p.unsubPing != nil {
+			p.unsubPing()
+		}
+		close(p.stopCh)
+	})
 	select {
 	case <-p.stopped:
 	case <-ctx.Done():
@@ -451,6 +465,14 @@ func (p *SessionBudget) OnResponseFrame(_ context.Context, pctx *pipeline.Contex
 		reasoning:  int64(inf.ReasoningTokens),
 	}
 
+	p.count(sessionID, delta)
+
+	return pipeline.Action{Type: pipeline.Continue}
+}
+
+// count adds one inference call's tokens to sessionID's counters, locally now and in Redis on its
+// own goroutine.
+func (p *SessionBudget) count(sessionID string, delta tokenDelta) {
 	p.mu.Lock()
 	c, ok := p.cache[sessionID]
 	if !ok {
@@ -468,8 +490,31 @@ func (p *SessionBudget) OnResponseFrame(_ context.Context, pctx *pipeline.Contex
 	p.mu.Unlock()
 
 	go p.accumulate(sessionID, delta)
+}
 
-	return pipeline.Action{Type: pipeline.Continue}
+// SetAccounting receives the process's accountant host (plugins.Deps, before Configure). Init
+// subscribes to its keep-alive pings.
+func (p *SessionBudget) SetAccounting(h *accounting.Host) { p.acct = h }
+
+// onPing counts a context-guru keep-alive ping against its session's budget: its tokens by kind,
+// and one call, as OnResponseFrame counts a response. A ping is billed on the caller's credential
+// like any inference call, but it is sent by the keeper, not through the pipeline, so this plugin
+// would never see it otherwise. Counting is all it does: a ping is never refused here, and the
+// session's next request is what a reached limit stops. The session id is the one the request
+// that armed the ping carried, so a ping lands in the same bucket as its request — the
+// DefaultSessionFallback bucket is never used, because a sessionless request is never kept warm.
+func (p *SessionBudget) onPing(s accounting.PingSpend) {
+	if s.Session == "" {
+		return
+	}
+	u := s.Usage
+	p.count(s.Session, tokenDelta{
+		total:      int64(u.Input + u.CacheRead + u.CacheWrite + u.Output),
+		input:      int64(u.Input),
+		cacheRead:  int64(u.CacheRead),
+		cacheWrite: int64(u.CacheWrite),
+		output:     int64(u.Output),
+	})
 }
 
 func (p *SessionBudget) buildDetails(snap *counters) map[string]any {

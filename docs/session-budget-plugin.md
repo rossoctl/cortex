@@ -9,9 +9,13 @@ Supports three `on_exceed` modes:
 - `observe` — shadow mode: log without blocking, useful for calibrating limits
 - `pause` — HITL: POST to a webhook for approval before continuing
 
-Only requests that pass through the pipeline count. The context-guru plugin's
-own model calls and its keep-alive pings are not counted toward any budget,
-although the cost ledger records their spend (see
+The requests that pass through the pipeline count, and so do the context-guru
+plugin's keep-alive pings: each ping adds its tokens by kind and one call to its
+session's counters, as a response does. A ping is never refused, so a ping can
+take a session past its limit, and the session's next request is what is
+refused. Pings are counted only where accounting is on (the plugin learns of
+them from the accountant host). The context-guru plugin's own model calls are
+not counted, although the cost ledger records their spend (see
 [pricing.md](pricing.md#cost-records)).
 
 A "session" is the Cortex session ID (typically one A2A conversation

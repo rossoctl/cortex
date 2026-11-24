@@ -2142,7 +2142,10 @@ func TestDrawerFigures_ShowTheAccountantsFigures(t *testing.T) {
 		parts = append(parts, f.full)
 	}
 	got := strings.Join(parts, " | ")
-	for _, want := range []string{"net -$0.02", "penalty $0.03", "API equivalent net $1.00", "plugin model calls $0.04", "keep-alive $0.02   2 pings"} {
+	// The cost is the requests plus the API-key pings ($1.00 + $0.02), and the net is net of the
+	// pings too (0.01 - 0.03 - 0.02).
+	for _, want := range []string{"| $1.02 |", "net -$0.04", "penalty $0.03   keep-alive $0.02", "API equivalent net $1.00",
+		"plugin model calls $0.04", "keep-alive $0.02   2 pings"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("row = %q, missing %q", got, want)
 		}

@@ -141,7 +141,7 @@ func (m usageMetric) valueOf(c usage.Counts) int64 {
 	case metricErrors:
 		return c.Errors
 	case metricCost:
-		return c.CostMicros
+		return money.SpendMicros(c)
 	default:
 		return c.Tokens
 	}
@@ -554,7 +554,7 @@ func renderCostSummary(snap *usage.Snapshot) string {
 	// The cent arithmetic and the sub-cent floor live in formatUSDTotalMicros, with the rule that
 	// says which surfaces get cents. They were stated here and nowhere else, which is how this
 	// panel came to round to cents while the band above it showed the same money to four decimals.
-	micros := snap.Totals.CostMicros
+	micros := money.SpendMicros(snap.Totals)
 	var cell string
 	if negativeCost(micros) {
 		// Go's / and % truncate toward zero, so a negative would render "$0.-1" through the

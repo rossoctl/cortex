@@ -61,7 +61,9 @@ type Deps struct {
 }
 
 // AccountingConsumer is implemented by plugins that read the accountant's figures: the
-// inference parser, which asks for a request's Result when it settles the cost.
+// inference parser, which asks for a request's Result when it settles the cost; context-guru,
+// which hands it its keep-alive pings; and session-budget, which counts those pings
+// (Host.AddPingListener).
 type AccountingConsumer interface {
 	SetAccounting(*accounting.Host)
 }
