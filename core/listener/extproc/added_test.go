@@ -19,6 +19,8 @@ type slowProbePlugin struct {
 }
 
 func (p slowProbePlugin) OnRequest(context.Context, *pipeline.Context) pipeline.Action {
+	// timing: this stands in for real request-side work; the test measures the resulting
+	// elapsed Added duration, so the wait must be real.
 	time.Sleep(p.d)
 	return pipeline.Action{Type: pipeline.Continue}
 }
@@ -33,6 +35,8 @@ type slowOriginStream struct {
 
 func (s *slowOriginStream) Recv() (*extprocv3.ProcessingRequest, error) {
 	if s.recvIdx < len(s.requests) && s.requests[s.recvIdx].GetResponseHeaders() != nil {
+		// timing: stands in for the origin's real wait before its headers; the test measures
+		// the resulting elapsed Added/Ttfb split, so the wait must be real.
 		time.Sleep(s.origin)
 	}
 	return s.mockStream.Recv()

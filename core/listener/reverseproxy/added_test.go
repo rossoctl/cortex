@@ -21,6 +21,8 @@ func (slowRequestPlugin) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{}
 }
 func (p slowRequestPlugin) OnRequest(context.Context, *pipeline.Context) pipeline.Action {
+	// timing: this stands in for real request-side work; the test measures the resulting
+	// elapsed Added duration, so the wait must be real.
 	time.Sleep(p.d)
 	return pipeline.Action{Type: pipeline.Continue}
 }
@@ -38,6 +40,8 @@ func TestReverseProxy_ResponseEventCarriesAdded(t *testing.T) {
 
 	const work, origin = 30 * time.Millisecond, 120 * time.Millisecond
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// timing: stands in for the backend's real wait before its headers; the test measures
+		// the resulting elapsed Added, so the wait must be real.
 		time.Sleep(origin)
 		w.WriteHeader(http.StatusOK)
 	}))
