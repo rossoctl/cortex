@@ -35,6 +35,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rossoctl/cortex/core/accounting"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins"
 	"github.com/rossoctl/cortex/core/session"
@@ -50,7 +51,7 @@ type config struct {
 	MaxCacheWriteTokens    int64  `json:"max_cache_write_tokens" description:"Per-kind ceiling for prompt tokens written to cache. 0 = no limit."`
 	MaxOutputTokens        int64  `json:"max_output_tokens" description:"Per-kind ceiling for generated completion tokens. 0 = no limit."`
 	MaxReasoningTokens     int64  `json:"max_reasoning_tokens" description:"Per-kind ceiling for reasoning-only output tokens (subset of output). 0 = no limit."`
-	MaxCalls               int64  `json:"max_calls" description:"Max LLM/inference calls per session. Only inference-parser output increments this counter; MCP tool calls and other outbound traffic do not. Once the limit is reached, all subsequent outbound requests (including MCP tool calls) are blocked until the session resets. 0 = no limit."`
+	MaxCalls               int64  `json:"max_calls" description:"Max LLM/inference calls per session. Only inference-parser output and context-guru keep-alive pings (where accounting is on) increment this counter; MCP tool calls and other outbound traffic do not. Once the limit is reached, all subsequent outbound requests (including MCP tool calls) are blocked until the session resets. 0 = no limit."`
 	MaxDurationSeconds     int64  `json:"max_duration_seconds" description:"Wall-clock session lifetime in seconds. 0 = no limit."`
 	OnExceed               string `json:"on_exceed" description:"Action on breach: deny, observe (shadow), or pause (HITL webhook approval)." default:"deny" enum:"deny,observe,pause"`
 	PauseWebhook           string `json:"pause_webhook" description:"URL to POST for approval when on_exceed=pause. Required when on_exceed=pause."`
@@ -109,6 +110,11 @@ type SessionBudget struct {
 	httpClient   *http.Client
 	gracePeriod  time.Duration
 	pauseTimeout time.Duration
+
+	// acct is the accountant host, nil when accounting is off; unsubPing removes the ping
+	// listener Init registered on it.
+	acct      *accounting.Host
+	unsubPing func()
 
 	mu           sync.RWMutex
 	cache        map[string]*counters
@@ -259,13 +265,24 @@ func (p *SessionBudget) Init(_ context.Context) error {
 
 	interval, _ := time.ParseDuration(p.cfg.RefreshInterval)
 	go p.refreshLoop(interval)
+	// Last, so a failed Init leaves nothing subscribed. KEYED BY THE REDIS URL, because the
+	// reloader starts this instance before it stops the one it replaces, which can drain for
+	// minutes: both would add each ping to the same Redis counters. Only the newest instance of a
+	// key is called, so this one takes over here; Shutdown removes it, which hands the pings back
+	// to the previous instance if this reload failed and that one still runs.
+	p.unsubPing = p.acct.AddKeyedPingListener(p.pingKey(), p.onPing)
 	return nil
 }
 
 // In-flight accumulate goroutines get ErrClosed after store.Close — bounded by their 2s ctx.
 // Safe to call multiple times: both the stopCh close and store.Close are guarded by sync.Once.
 func (p *SessionBudget) Shutdown(ctx context.Context) error {
-	p.shutdownOnce.Do(func() { close(p.stopCh) })
+	p.shutdownOnce.Do(func() {
+		if p.unsubPing != nil {
+			p.unsubPing()
+		}
+		close(p.stopCh)
+	})
 	select {
 	case <-p.stopped:
 	case <-ctx.Done():
@@ -451,6 +468,14 @@ func (p *SessionBudget) OnResponseFrame(_ context.Context, pctx *pipeline.Contex
 		reasoning:  int64(inf.ReasoningTokens),
 	}
 
+	p.count(sessionID, delta)
+
+	return pipeline.Action{Type: pipeline.Continue}
+}
+
+// count adds one inference call's tokens to sessionID's counters, locally now and in Redis on its
+// own goroutine.
+func (p *SessionBudget) count(sessionID string, delta tokenDelta) {
 	p.mu.Lock()
 	c, ok := p.cache[sessionID]
 	if !ok {
@@ -468,8 +493,35 @@ func (p *SessionBudget) OnResponseFrame(_ context.Context, pctx *pipeline.Contex
 	p.mu.Unlock()
 
 	go p.accumulate(sessionID, delta)
+}
 
-	return pipeline.Action{Type: pipeline.Continue}
+// SetAccounting receives the process's accountant host (plugins.Deps, before Configure). Init
+// subscribes to its keep-alive pings.
+func (p *SessionBudget) SetAccounting(h *accounting.Host) { p.acct = h }
+
+// pingKey is this instance's AddKeyedPingListener key: the counters it writes, which are the
+// Redis server's. Two instances on one Redis share the counters, so they count a ping once.
+func (p *SessionBudget) pingKey() string { return "session-budget " + p.cfg.RedisURL }
+
+// onPing counts a context-guru keep-alive ping against its session's budget: its tokens by kind,
+// and one call, as OnResponseFrame counts a response. A ping is billed on the caller's credential
+// like any inference call, but it is sent by the keeper, not through the pipeline, so this plugin
+// would never see it otherwise. Counting is all it does: a ping is never refused here, and the
+// session's next request is what a reached limit stops. The session id is the one the request
+// that armed the ping carried, so a ping lands in the same bucket as its request — the
+// DefaultSessionFallback bucket is never used, because a sessionless request is never kept warm.
+func (p *SessionBudget) onPing(s accounting.PingSpend) {
+	if s.Session == "" {
+		return
+	}
+	u := s.Usage
+	p.count(s.Session, tokenDelta{
+		total:      int64(u.Input + u.CacheRead + u.CacheWrite + u.Output),
+		input:      int64(u.Input),
+		cacheRead:  int64(u.CacheRead),
+		cacheWrite: int64(u.CacheWrite),
+		output:     int64(u.Output),
+	})
 }
 
 func (p *SessionBudget) buildDetails(snap *counters) map[string]any {

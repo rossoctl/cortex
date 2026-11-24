@@ -112,8 +112,102 @@ func (h *Host) Ping(sessionID string, client *model.EventClient, host string, p 
 	if !info.Manual {
 		h.putPing(sessionID, thread, facts)
 	}
-	h.recordPing(sessionID, client, host, p, info, billing.Mode)
+	figs := h.recordPing(sessionID, client, host, p, info, billing.Mode)
+	h.notifyPing(PingSpend{Session: sessionID, Thread: thread, Model: p.Model, Host: host, At: p.At,
+		Usage: p.Usage, Figures: figs})
 	return res, true
+}
+
+// PingSpend is one accounted keep-alive ping, as a ping listener receives it: the tokens it
+// billed and its spend split by basis (only the KeepAlive* fields of Figures are set; all zero
+// when the ping was not priced).
+type PingSpend struct {
+	Session, Thread, Model, Host string
+	At                           time.Time
+	Usage                        accountant.CallUsage
+	Figures                      event.Figures
+}
+
+// PingListener receives every ping Host.Ping accounts. It is called on the keeper's goroutine,
+// after the ping is recorded, with no Host lock held; it must not block. A panic in it is
+// recovered and logged, and the other listeners still run.
+type PingListener func(PingSpend)
+
+// pingListenerEntry is one registered ping listener. key is "" for AddPingListener's.
+type pingListenerEntry struct {
+	key string
+	fn  PingListener
+}
+
+// AddPingListener registers fn for every ping Host.Ping accounts from now on, and returns the
+// function that removes it. A ping is not agent activity, so it never passes through the session
+// store or the pipeline; this is how the consumers that must still count its cost see it. For a
+// process-wide consumer (cmd/cortex's session store). A plugin uses AddKeyedPingListener.
+func (h *Host) AddPingListener(fn PingListener) (remove func()) { return h.addPingListener("", fn) }
+
+// AddKeyedPingListener is AddPingListener for a consumer that a config reload builds again:
+// of the live registrations under one key, ONLY THE NEWEST IS CALLED. The reloader starts the new
+// pipeline (its plugins' Init) before it stops the old one, and the old one can drain for minutes;
+// with two plain listeners, a consumer that writes shared state (session-budget's Redis counters)
+// would count every ping twice for that time. Removing the newest registration gives the turn back
+// to the one before it, so a reload that fails after the new instance's Init leaves the old
+// instance counting. Removing an older one only drops it. key names what the consumer counts
+// into, so two consumers that share it are one counter; an empty key is a plain listener.
+func (h *Host) AddKeyedPingListener(key string, fn PingListener) (remove func()) {
+	return h.addPingListener(key, fn)
+}
+
+func (h *Host) addPingListener(key string, fn PingListener) (remove func()) {
+	if h == nil || fn == nil {
+		return func() {}
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.pingListeners == nil {
+		h.pingListeners = map[uint64]pingListenerEntry{}
+	}
+	h.pingListenerSeq++
+	id := h.pingListenerSeq
+	h.pingListeners[id] = pingListenerEntry{key: key, fn: fn}
+	return func() {
+		h.mu.Lock()
+		delete(h.pingListeners, id)
+		h.mu.Unlock()
+	}
+}
+
+// notifyPing calls every plain ping listener and the newest listener of each key with s, in
+// registration order.
+func (h *Host) notifyPing(s PingSpend) {
+	h.mu.Lock()
+	newest := map[string]uint64{}
+	ids := make([]uint64, 0, len(h.pingListeners))
+	for id, e := range h.pingListeners {
+		if e.key == "" {
+			ids = append(ids, id)
+		} else if id > newest[e.key] {
+			newest[e.key] = id
+		}
+	}
+	for _, id := range newest {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	fns := make([]PingListener, 0, len(ids))
+	for _, id := range ids {
+		fns = append(fns, h.pingListeners[id].fn)
+	}
+	h.mu.Unlock()
+	for _, fn := range fns {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("accounting: ping listener panicked; the other listeners still run", "panic", r)
+				}
+			}()
+			fn(s)
+		}()
+	}
 }
 
 // pingThread is the accountant's id for a ping's thread: "" is the primary thread, "main", as
@@ -132,14 +226,14 @@ func pingThread(id string) string {
 // and /v1/usage book its dollars as money only on an API key — where the metrics sink moves its
 // USD counters too. A subscription ping also carries its tokens in usage-limit units (the
 // configured weights, output included); every non-usd ping is Estimated.
+//
+// It returns the record's Figures (its keep-alive spend by basis) for the ping listeners, whether
+// or not there is a recorder to write to.
 func (h *Host) recordPing(sessionID string, client *model.EventClient, host string, p accountant.Ping, info PingInfo,
-	mode accountant.BillingMode) {
+	mode accountant.BillingMode) event.Figures {
 	h.mu.Lock()
 	recs := append([]session.Recorder(nil), h.recorders...)
 	h.mu.Unlock()
-	if len(recs) == 0 {
-		return
-	}
 	inf := &model.InferenceExtension{
 		Model:            p.Model,
 		InputTokens:      p.Usage.Input,
@@ -162,10 +256,14 @@ func (h *Host) recordPing(sessionID string, client *model.EventClient, host stri
 			CacheWrite1h: u.CacheWrite1h, CacheRead: u.CacheRead}
 		rec.Units = Units(h.weights, tt, p.Usage.Output)
 	}
+	figs := rec.Figures()
+	if len(recs) == 0 {
+		return figs
+	}
 	raw, err := json.Marshal(rec)
 	if err != nil {
 		slog.Debug("accounting: ping cost record not encoded", "error", err)
-		return
+		return figs
 	}
 	at := p.At
 	if at.IsZero() {
@@ -188,6 +286,7 @@ func (h *Host) recordPing(sessionID string, client *model.EventClient, host stri
 		}
 		r.Record(sessionID, ev)
 	}
+	return figs
 }
 
 // putPing keeps f as the latest ping facts of (session, thread); a second ping overwrites the

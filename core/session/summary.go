@@ -109,6 +109,19 @@ type SessionSummary struct {
 	PluginSpendMicros          int64 `json:"pluginSpendMicros,omitempty"`
 	PluginSpendUnits           int64 `json:"pluginSpendUnits,omitempty"`
 	PluginSpendUnknownMicros   int64 `json:"pluginSpendUnknownMicros,omitempty"`
+	// KeepAliveMicros, KeepAliveUnits, KeepAliveAPIEquivalentMicros and KeepAliveUnknownMicros
+	// are the usage.Counts fields of the same names: what the context-guru keep-alive pings on
+	// this session's threads cost, by basis. Only KeepAliveMicros is money. KeepAlivePings is how
+	// many pings there were. A ping is not an event of the session (it is not agent activity, so
+	// it is in no EventCount, TotalTokens or CostMicros, and does not refresh UpdatedAt): the
+	// store adds these from core/accounting.Host's ping listener (Store.AddKeepAlive). They are
+	// the resident entry's own: the session archive keeps events, and a ping is none, so a
+	// session's pings from before a restart are not here.
+	KeepAliveMicros              int64 `json:"keepAliveMicros,omitempty"`
+	KeepAliveUnits               int64 `json:"keepAliveUnits,omitempty"`
+	KeepAliveAPIEquivalentMicros int64 `json:"keepAliveApiEquivalentMicros,omitempty"`
+	KeepAliveUnknownMicros       int64 `json:"keepAliveUnknownMicros,omitempty"`
+	KeepAlivePings               int64 `json:"keepAlivePings,omitempty"`
 	// Currencies names the units CostMicros and AvoidedMicros are in, sorted, dollars spelled
 	// "USD" — and is ABSENT when every priced event was in dollars, which is every deployment
 	// with no pricing unit configured, so those serve the bytes they always have.
@@ -320,7 +333,7 @@ func (s *Store) ListSessions() []SessionSummary {
 			// Either total having clamped makes BOTH figures on this row bounds rather than
 			// sums, which is why one flag covers them — the same reasoning
 			// usage.Counts.Saturated gives for covering every money field in a Counts.
-			Saturated: sess.cost.Saturated || sess.avoided.Saturated,
+			Saturated: sess.cost.Saturated || sess.avoided.Saturated || sess.keepAlive.Saturated,
 			Active:    id == s.activeID,
 			// Read, not computed — and unlike TotalTokens above this is NOT a walk. Folding the rule
 			// here instead would repeat the mistake entry.cost documents: O(events) per session
@@ -335,7 +348,10 @@ func (s *Store) ListSessions() []SessionSummary {
 			procSpans:       maps.Clone(sess.procs),
 			LastRequestAt:   sess.lastRequestAt,
 		}
-		sess.avoided.setOn(&sum)
+		figs := sess.avoided
+		figs.Merge(sess.keepAlive)
+		figs.setOn(&sum)
+		sum.KeepAlivePings = sess.keepAlivePings
 		s.withPriorLocked(&sum, id, sess)
 		out = append(out, sum)
 	}

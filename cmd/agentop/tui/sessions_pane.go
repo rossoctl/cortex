@@ -391,15 +391,21 @@ func (m *model) rebuildSessionsTable() {
 			s.AvoidedUnits += f.units
 			s.PenaltyUnits += f.penaltyUnits
 			s.AvoidedAPIEquivalentMicros += f.apiEquivalent
+			s.KeepAliveMicros += f.keepAlive
 		}
-		// SAVED is the net: what the context operators saved minus what they caused (design §5.9),
-		// usd basis only, and not floored — a negative net renders with a minus sign.
-		net := money.NetMicros(usage.Counts{AvoidedMicros: s.AvoidedMicros, PenaltyMicros: s.PenaltyMicros})
+		// SAVED is the net: what the context operators saved minus what they caused and minus what
+		// keeping the session's caches warm cost (design §5.9, money.NetMicros), usd basis only,
+		// and not floored — a negative net renders with a minus sign.
+		counts := usage.Counts{CostMicros: s.CostMicros, AvoidedMicros: s.AvoidedMicros, PenaltyMicros: s.PenaltyMicros,
+			KeepAliveMicros: s.KeepAliveMicros}
+		net := money.NetMicros(counts)
+		// COST is the session's requests plus its keep-alive pings on an API key (money.SpendMicros).
+		spend := money.SpendMicros(counts)
 		b.cell(padLeft(sessionTokens(s.TotalTokens, m.events[s.ID]), tokensW))
-		cost := func() string { return sessionMoneyCellIn(s.CostMicros, s.Saturated, noLimit, s.Currencies) }
+		cost := func() string { return sessionMoneyCellIn(spend, s.Saturated, noLimit, s.Currencies) }
 		saved := func() string { return sessionSavedCellIn(net, s.Saturated, noLimit, s.Currencies) }
 		if showMoney {
-			b.cut(padLeft(sessionMoneyCellIn(s.CostMicros, s.Saturated, costW, s.Currencies), costW), cost)
+			b.cut(padLeft(sessionMoneyCellIn(spend, s.Saturated, costW, s.Currencies), costW), cost)
 			b.cut(padLeft(sessionSavedCellIn(net, s.Saturated, savedW, s.Currencies), savedW), saved)
 		} else {
 			b.dropped(cost)
