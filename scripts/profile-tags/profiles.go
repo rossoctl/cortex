@@ -39,7 +39,7 @@ var allProfiles = []ProfileName{
 //
 // Artifact contents:
 //
-//	local     desktop cortex — the three parsers, tool-prune and script
+//	local     desktop cortex — the three parsers, tool-prune, context-guru and script
 //	full      authbridge image, Kubernetes proxy-sidecar, release tarballs,
 //	          make dev-install — all seventeen
 //	lite      authbridge-lite image — sidecar minimum
@@ -87,10 +87,14 @@ var membership = map[PluginName][]ProfileName{
 	// Needs cgo and the `cpex` build tag, so only the cpex builds carry it.
 	"cpex": {ProfileCpex, ProfileFullCpex},
 
-	// No profile: both are heavy and linked only when a caller asks. context-guru
-	// pulls bifrost/core, tiktoken-go, tree-sitter grammars and starlark (~16 MiB);
-	// session-budget pulls go-redis (~6 MiB).
-	"contextguru":   {},
+	// context-guru is heavy: it pulls bifrost/core, tiktoken-go, tree-sitter
+	// grammars and starlark (~16 MiB). It ships in local and full anyway, because
+	// the --local config (cmd/cortex/local.go) enables it by default, and a binary
+	// that cannot load a plugin its config names refuses to start.
+	"contextguru": {ProfileLocal, ProfileFull, ProfileFullCpex},
+
+	// No profile: heavy and linked only when a caller asks. session-budget pulls
+	// go-redis (~6 MiB).
 	"sessionbudget": {},
 }
 

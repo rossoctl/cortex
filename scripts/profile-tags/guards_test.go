@@ -341,7 +341,6 @@ func TestEveryPluginIsAccountedFor(t *testing.T) {
 // side effect of editing one profile.
 func TestOptionalSetIsExplicit(t *testing.T) {
 	want := map[PluginName]bool{
-		"contextguru":   true, // ~16 MiB: bifrost/core, tiktoken-go, tree-sitter, starlark
 		"sessionbudget": true, // ~6 MiB: go-redis
 	}
 	for plugin := range membership {

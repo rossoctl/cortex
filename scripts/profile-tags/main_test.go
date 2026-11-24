@@ -16,7 +16,7 @@ func TestRun_PrintsCSV(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	want := "include_plugin_a2aparser,include_plugin_inferenceparser," +
+	want := "include_plugin_a2aparser,include_plugin_contextguru,include_plugin_inferenceparser," +
 		"include_plugin_mcpparser,include_plugin_script,include_plugin_toolprune"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
