@@ -148,9 +148,8 @@ func TestSettleCost_PublishesTheAccountantsExtras(t *testing.T) {
 // the upstream prompt-tier counters, but a spend prices from its own operator call, independent
 // of them (review finding — an error status with no prompt usage, or a context-guru call billed
 // before an inference-router resend, used to lose the spend along with the never-priced
-// savings). A reported op, here a plain KindSetting stand-in (its kind does not matter to the
-// gate, only its presence), is what tells accountant() this is a real pass and not the one
-// before any data arrived (TestSettleCost_CallsAccountingOnce).
+// savings). pctx.StatusCode set (the response was read) is what tells accountant() this is a
+// real pass and not the one before any data arrived (TestSettleCost_CallsAccountingOnce).
 func TestSettleCost_KeepsSpendAtZeroPromptTotal(t *testing.T) {
 	spend := event.SpendRecord{Operator: "context-guru.extract_llm", Model: "m", USD: 0.02, Basis: event.BasisUSD}
 	p := NewInferenceParser()
@@ -158,14 +157,46 @@ func TestSettleCost_KeepsSpendAtZeroPromptTotal(t *testing.T) {
 	p.acct = acc
 	pctx := &pipeline.Context{Path: "/v1/messages", ResponseHeaders: http.Header{}, StatusCode: 500}
 	pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "m"}
-	pctx.ReportOps(accountant.Operation{Kind: accountant.KindSetting, Operator: "context-guru"})
 	p.settleCost(pctx)
 	if acc.calls != 1 {
-		t.Fatalf("Savings called %d times, want 1 at a zero prompt total with a reported op", acc.calls)
+		t.Fatalf("Savings called %d times, want 1 at a zero prompt total with a decided response", acc.calls)
 	}
 	ev, ok := publishedCost(t, pctx)
 	if !ok || len(ev.Spends) != 1 || ev.Spends[0] != spend {
 		t.Errorf("record = %+v ok=%v, want the accountant's spend kept at a zero prompt total", ev, ok)
+	}
+}
+
+// A STRUCTURAL OP REPORTED BEFORE THE RESPONSE must not trigger an early ask: an op such as a
+// tool-prune removal reports during OnRequest, so it is already on pctx.ReportedOps() at the
+// very first settle pass, before pctx.StatusCode is ever set. An earlier version of the gate
+// above asked on ANY reported op, which called Host.Compute with an inference extension that
+// was still all zeros — and Compute latches that answer forever (its own doc: "do not call
+// Compute again to retry"), so the real counts that arrive on pass 2 below were never priced at
+// all (review finding, reproduced). Pinned here directly against accountant(), which is where
+// the gate lives; TestSettleCost_CallsAccountingOnce pins the same ordering through settleCost.
+func TestAccountant_AnOpReportedBeforeTheResponseDoesNotForceAnEarlyAsk(t *testing.T) {
+	acc := &countingAccountant{saving: []event.Saving{{Component: "tool-prune", Basis: event.BasisUSD, USD: 20}}}
+	p := NewInferenceParser()
+	p.acct = acc
+	pctx := &pipeline.Context{Path: "/v1/messages", ResponseHeaders: http.Header{}}
+	pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "m"}
+	pctx.ReportOps(accountant.Operation{Kind: accountant.KindRewrite, Operator: "tool-prune"})
+
+	// Pass 1: the op is already reported, but the response has not been read yet.
+	if a := p.accountant(pctx, settle.Settled{}); a.ok {
+		t.Fatalf("accountant = %+v, want not asked before the response is decided", a)
+	}
+	if acc.calls != 0 {
+		t.Fatalf("Savings called %d times, want 0 before the response is decided", acc.calls)
+	}
+
+	// Pass 2: the response arrives, with real prompt tokens.
+	pctx.StatusCode = 200
+	pctx.Extensions.Inference.InputTokens = 100
+	a := p.accountant(pctx, settle.Settled{})
+	if !a.ok || acc.calls != 1 {
+		t.Fatalf("accountant = %+v (calls=%d), want asked exactly once the real counts arrived", a, acc.calls)
 	}
 }
 

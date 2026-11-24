@@ -37,23 +37,34 @@ func (p *InferenceParser) SetAccounting(h *accounting.Host) {
 }
 
 // accountant asks the accountant for this request's savings, once, at the first settle pass that
-// has usage OR a reported op, and keeps the answer on the request for any later pass. The zero
-// value — no figure — with accounting off or before either arrives: with accounting off, no
+// has usage OR a decided response, and keeps the answer on the request for any later pass. The
+// zero value — no figure — with accounting off or before either arrives: with accounting off, no
 // saving is recorded (design §5.3).
 //
-// A REPORTED OP IS ASKED FOR EVEN AT A ZERO PROMPT TOTAL. Savings prices from the upstream
-// prompt-tier counters, so a request with none of them has nothing for Savings to price — but
-// Spends does not depend on those counters at all (each spend record prices from its own
-// operator call, spendRecord, savings.go), and the one caller of this method, withAccountant,
-// copies Spends from the same Extras. Gating on the prompt total alone used to drop every spend
-// on an error status with no prompt usage, or on a request a context-guru component billed
-// before an inference-router resend took it past one round (review finding): the completed,
-// accepted call never reached the ledger, /v1/usage or the sessions API for either. Checking
-// ReportedOps too, rather than dropping the prompt-total check outright, keeps this method from
-// asking on the pass before ANY data has arrived (TestSettleCost_CallsAccountingOnce's first
-// call, inference extension allocated but nothing on it yet) — that pass has no ops either.
-// Host.Compute's own checks (PlausibleUsage, SkipReason) still refuse what they always refused;
-// this just stops refusing spends for a count Savings alone needed.
+// A DECIDED RESPONSE (pctx.StatusCode set) IS ASKED EVEN AT A ZERO PROMPT TOTAL. Savings prices
+// from the upstream prompt-tier counters, so a request with none of them has nothing for Savings
+// to price — but Spends does not depend on those counters at all (each spend record prices from
+// its own operator call, spendRecord, savings.go), and the one caller of this method,
+// withAccountant, copies Spends from the same Extras. Gating on the prompt total alone used to
+// drop every spend on an error status with no prompt usage, or on a request a context-guru
+// component billed before an inference-router resend took it past one round (review finding):
+// the completed, accepted call never reached the ledger, /v1/usage or the sessions API for
+// either. Host.Compute's own checks (PlausibleUsage, SkipReason) still refuse what they always
+// refused; this just stops refusing spends for a count Savings alone needed.
+//
+// StatusCode, NOT A REPORTED OP, IS THE SIGNAL — an earlier version of this check asked whenever
+// pctx.ReportedOps() was non-empty, reasoning that the pass before any data arrives
+// (TestSettleCost_CallsAccountingOnce's first call) has no ops either. That was wrong: a
+// structural op (tool-prune's removal, say) reports during OnRequest, before the response even
+// exists, so that pass's ops list is not empty either, and asking there calls Host.Compute with
+// an inference extension that is still all zeros — Compute LATCHES that answer (its own doc:
+// "do not call Compute again to retry"), so the real counts that arrive on a later pass are
+// never priced at all (review finding, reproduced). pctx.StatusCode is set once, when the
+// response is read (forwardproxy.server.go and the other two listeners), so it distinguishes a
+// pass before the response from one after it the way a token count cannot once that count is
+// legitimately zero. The one gap: StatusCode 0 also means "no provider answered" (a request this
+// process served itself, SkipInput's own doc), so a decided no-provider response is read the same
+// as not-yet-decided — accepted because such a response has no upstream spend to lose either.
 //
 // NOT ASKED WHEN SETTLE REFUSED THE COUNTS (settled.UsageRefused, or RejectedImplausibleUsage): the
 // accountant prices its savings from those same counters, so an impossible report would produce an
@@ -65,7 +76,7 @@ func (p *InferenceParser) accountant(pctx *pipeline.Context, settled settle.Sett
 	if p.acct == nil || inf == nil {
 		return accounted{}
 	}
-	if inf.InputTokens+inf.CacheReadTokens+inf.CacheWriteTokens == 0 && len(pctx.ReportedOps()) == 0 {
+	if inf.InputTokens+inf.CacheReadTokens+inf.CacheWriteTokens == 0 && pctx.StatusCode == 0 {
 		return accounted{}
 	}
 	if settled.UsageRefused || settled.RejectedReason == event.RejectedImplausibleUsage {

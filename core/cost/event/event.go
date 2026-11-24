@@ -548,7 +548,12 @@ func (e Event) Figures() Figures {
 		case BasisSubscriptionEquivalent:
 			spendUnits += sp.Units
 		case BasisUnknown:
-			spendUnknown += sp.USD
+			// Same reason as the usd branch above: PluginSpendUnknownMicros is "not money," but
+			// it is still one number, and a spend in a different Currency from the record's own
+			// must not be folded into it (review finding).
+			if sp.Currency == e.Currency {
+				spendUnknown += sp.USD
+			}
 		}
 	}
 	return Figures{

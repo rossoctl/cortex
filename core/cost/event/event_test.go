@@ -641,6 +641,23 @@ func TestFigures_SkipsASpendInACurrencyNotTheRecordsOwn(t *testing.T) {
 	}
 }
 
+// The same currency gate applies to basis unknown, not just usd — PluginSpendUnknownMicros is
+// "not money" (design §5.7a), but it is still one number, and a USD figure and a Bobcoin figure
+// summed into it would be just as mixed (review finding; probe matched here: a $0.02 USD spend
+// and a 5-Bobcoin spend, both basis unknown, on a record whose own Currency is Bobcoins).
+func TestFigures_SkipsAnUnknownBasisSpendInACurrencyNotTheRecordsOwn(t *testing.T) {
+	ev := Event{
+		Currency: "Bobcoins",
+		Spends: []SpendRecord{
+			{Basis: BasisUnknown, USD: 5, Currency: "Bobcoins"}, // same currency: counted
+			{Basis: BasisUnknown, USD: 0.02},                    // USD (the default): skipped
+		},
+	}
+	if got := ev.Figures().PluginSpendUnknownMicros; got != 5_000_000 {
+		t.Errorf("PluginSpendUnknownMicros = %d, want 5000000 (only the Bobcoins-currency spend)", got)
+	}
+}
+
 // A penalty bigger than the saving is a real net cost: AvoidedAPIEquivalentMicros and
 // AvoidedUnknownMicros must go negative, the same way PenaltyUnits already can exceed
 // AvoidedUnits on the same line (review finding: both used to floor at 0 via MicrosOrZero,
