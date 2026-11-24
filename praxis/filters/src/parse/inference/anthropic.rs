@@ -323,6 +323,9 @@ struct AnthropicUsage {
     output_tokens: i64,
     cache_creation_input_tokens: Option<i64>,
     cache_read_input_tokens: Option<i64>,
+    /// `cache_creation.ephemeral_1h_input_tokens`, read leniently (see `cache_write_1h`).
+    /// `None` when absent or unreadable.
+    cache_write_1h: Option<i64>,
     /// `output_tokens_details.thinking_tokens`, a subset of `output_tokens`.
     output_tokens_details: Option<Option<i64>>,
 }
@@ -336,6 +339,8 @@ fn decode_anthropic_usage(raw: &RawValue, u: &mut AnthropicUsage) -> R {
                 u.cache_creation_input_tokens = gojson::int(v)?
             }
             k if is(k, "cache_read_input_tokens") => u.cache_read_input_tokens = gojson::int(v)?,
+            // Never an error: a later duplicate key replaces the value, as Go's RawMessage does.
+            k if is(k, "cache_creation") => u.cache_write_1h = cache_write_1h(v),
             k if is(k, "output_tokens_details") => {
                 gojson::ptr_into(&mut u.output_tokens_details, v, |raw, t| {
                     for (k, v) in gojson::object(raw)?.unwrap_or_default() {
@@ -368,6 +373,14 @@ impl AnthropicUsage {
         if let Some(c) = self.cache_creation_input_tokens {
             n.cache_write = c;
             n.present |= KIND_CACHE_WRITE;
+        }
+        // A subset of cache_write above, never added to it. Checked against this
+        // frame's total, as in Go: the stream merge takes each counter's maximum on its
+        // own, so a later, larger total would otherwise make a bogus count look valid.
+        if let Some(v) = self.cache_write_1h
+            && self.cache_creation_input_tokens.is_none_or(|c| v <= c)
+        {
+            n.cache_write_1h = v;
         }
         // Both pointers: a details object without the count reports nothing.
         if let Some(Some(t)) = self.output_tokens_details {
@@ -703,6 +716,29 @@ fn merge_anthropic_usage_max_seen(state: &mut InferenceStreamState, incoming: To
     u.input = u.input.max(incoming.input);
     u.cache_read = u.cache_read.max(incoming.cache_read);
     u.cache_write = u.cache_write.max(incoming.cache_write);
+    u.cache_write_1h = u.cache_write_1h.max(incoming.cache_write_1h);
+}
+
+/// Port of Go's `cacheWrite1h`: reads `ephemeral_1h_input_tokens` from a
+/// `usage.cache_creation` object. The breakdown is optional, so an off-shape value never
+/// fails the usage decode: `None` when `cache_creation` is not an object, or the field is
+/// absent or not a non-negative whole number. As with gjson, the key match is exact and
+/// the first occurrence wins, and any JSON number with no fraction counts (`60.0`, `6e1`).
+fn cache_write_1h(raw: &RawValue) -> Option<i64> {
+    let entries = gojson::object(raw).ok().flatten()?;
+    let (_, v) = entries
+        .into_iter()
+        .find(|(k, _)| k == "ephemeral_1h_input_tokens")?;
+    let s = v.get();
+    if !matches!(s.as_bytes().first(), Some(b'-' | b'0'..=b'9')) {
+        return None;
+    }
+    let n: f64 = s.parse().ok()?;
+    // `i64::MAX as f64` is 2^63, so every whole number below it casts exactly.
+    if !(0.0..(i64::MAX as f64)).contains(&n) || n.fract() != 0.0 {
+        return None;
+    }
+    Some(n as i64)
 }
 
 /// Folds a whole buffered Messages SSE body.
@@ -859,5 +895,102 @@ mod tests {
             ),
             json!({"stream":true,"servedModel":"m","streamedResponse":true,"promptTokens":i64::MIN,"totalTokens":i64::MIN,"inputTokens":i64::MAX,"cacheReadTokens":1,"presentKinds":11})
         );
+    }
+
+    /// Ports TestAnthropic_StreamDropsA1hCountAboveItsOwnFrameTotal.
+    #[test]
+    fn stream_drops_a_1h_count_above_its_own_frame_total() {
+        use crate::parse::model::InferenceExtension;
+        for (total1, n1h, total2, want_1h) in [(100, 200, 300, 0), (100, 60, 300, 60)] {
+            let mut ext = InferenceExtension::default();
+            super::parse_anthropic_sse(
+                format!(
+                    "data: {{\"type\":\"message_start\",\"message\":{{\"usage\":{{\"input_tokens\":10,\"cache_creation_input_tokens\":{total1},\"cache_creation\":{{\"ephemeral_1h_input_tokens\":{n1h}}}}}}}}}\n\
+                     data: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"end_turn\"}},\"usage\":{{\"output_tokens\":5,\"cache_creation_input_tokens\":{total2}}}}}\n"
+                )
+                .as_bytes(),
+                &mut ext,
+            );
+            assert_eq!(
+                (ext.cache_write_tokens, ext.cache_write_1h_tokens),
+                (total2, want_1h),
+                "frame 1: {total1}/{n1h}, frame 2: {total2}"
+            );
+        }
+    }
+
+    /// Ports TestAnthropic_ParsesCacheWrite1h and TestAnthropic_OffShapeCacheCreationKeepsUsage
+    /// (core/parse/inference/splittokens_test.go): the 1h count is a subset of the
+    /// cache-write total, and an off-shape breakdown keeps every other count.
+    #[test]
+    fn cache_write_1h_matches_go() {
+        use crate::parse::model::InferenceExtension;
+        for (raw, want_1h) in [
+            (
+                r#"{"ephemeral_5m_input_tokens":40,"ephemeral_1h_input_tokens":60}"#,
+                60,
+            ),
+            ("null", 0),
+            (r#"{"ephemeral_1h_input_tokens":60}"#, 60),
+            (r#"{"ephemeral_1h_input_tokens":60.0}"#, 60),
+            // Any JSON number with no fraction counts, not only a decimal literal.
+            (r#"{"ephemeral_1h_input_tokens":6e1}"#, 60),
+            (r#"{"ephemeral_1h_input_tokens":60.5}"#, 0),
+            (r#"{"ephemeral_1h_input_tokens":-1}"#, 0),
+            (r#"{"ephemeral_1h_input_tokens":"60"}"#, 0),
+            // The key match is exact, unlike the outer struct's case-insensitive decode.
+            (r#"{"Ephemeral_1h_input_tokens":60}"#, 0),
+            // A duplicate key: Go's RawMessage preserves wire order and gojson::object
+            // walks it in order, so the first occurrence wins, as it does for every
+            // other field this parser decodes.
+            (
+                r#"{"ephemeral_1h_input_tokens":60,"ephemeral_1h_input_tokens":7}"#,
+                60,
+            ),
+            ("0", 0),
+            ("[]", 0),
+            (r#""x""#, 0),
+        ] {
+            let usage = format!(
+                r#"{{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":100,"cache_read_input_tokens":20,"cache_creation":{raw}}}"#
+            );
+            let mut ext = InferenceExtension::default();
+            super::parse_anthropic_json(
+                format!(r#"{{"content":[{{"type":"text","text":"ok"}}],"stop_reason":"end_turn","usage":{usage}}}"#)
+                    .as_bytes(),
+                &mut ext,
+            );
+            assert_eq!(
+                (
+                    ext.input_tokens,
+                    ext.cache_read_tokens,
+                    ext.cache_write_tokens,
+                    ext.cache_write_1h_tokens,
+                    ext.output_tokens
+                ),
+                (10, 20, 100, want_1h, 5),
+                "JSON, cache_creation = {raw}"
+            );
+
+            let mut sse = InferenceExtension::default();
+            super::parse_anthropic_sse(
+                format!(
+                    "data: {{\"type\":\"message_start\",\"message\":{{\"usage\":{usage}}}}}\n\
+                     data: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"end_turn\"}},\"usage\":{{\"output_tokens\":5}}}}\n"
+                )
+                .as_bytes(),
+                &mut sse,
+            );
+            assert_eq!(
+                (
+                    sse.input_tokens,
+                    sse.cache_read_tokens,
+                    sse.cache_write_tokens,
+                    sse.cache_write_1h_tokens
+                ),
+                (10, 20, 100, want_1h),
+                "SSE, cache_creation = {raw}"
+            );
+        }
     }
 }

@@ -42,7 +42,7 @@ through DNS rebinding. The stats server applies the same check.
 {"sessions": [{
   "id": "…", "createdAt": "…", "updatedAt": "…", "eventCount": 42, "active": true,
   "title": "…", "agent": "claude-code", "totalTokens": 1186300, "costMicros": 254600,
-  "avoidedMicros": 3700, "promptContext": {"tokens": 16384, "stated": true,
+  "avoidedMicros": 3700, "penaltyMicros": 900, "promptContext": {"tokens": 16384, "stated": true,
   "at": "2026-10-15T20:01:02Z", "msgs": 12}, "inferenceHost": "api.anthropic.com",
   "procs": ["41963.1791718279766260000"], "lastRequestAt": "…"
 }, {
@@ -69,12 +69,25 @@ knowing by name:
   Tunnel rows, MCP calls, responses and denials leave it as it was: an event
   with no inference parse must not clear it. agentop's sessions-table `SERVER`
   column reads it, and so do the count of running sessions on `S`'s result line
-  and the warning from `agentop server remove`. `inferenceHostFromHistory` is
+  and the warnings from `agentop server remove` and `agentop server rename`.
+  `inferenceHostFromHistory` is
   `true` when that host came only from the archive's fold, because no request
   the proxy's current entry for the session holds has set it. On a local install
   the inference-router keeps its pins in the plugin store
   (`~/.cortex/plugin-state.json`), which a restart keeps, so both of agentop's
   counts include such a resumed session.
+- **`avoidedMicros`** and **`penaltyMicros`** — what the session's context
+  operators saved and what they caused, priced by the accountant, basis `usd`
+  only. Net saved is the difference and may be negative. Beside them, absent at
+  zero like every figure here: `avoidedUnits`, `penaltyUnits` and
+  `avoidedApiEquivalentMicros` for savings on a subscription login (usage-limit
+  milli-units, and their API-equivalent dollars, which are not money),
+  `avoidedUnknownMicros` for savings whose billing mode is unknown, and
+  `pluginSpendMicros`, `pluginSpendUnits`, `pluginSpendUnknownMicros` for the
+  operators' own model calls, which are not in `costMicros`. The billing mode
+  comes from the shape of the client's credential: a JWT-shaped bearer counts as
+  a subscription login, and an opaque bearer, a Gemini key or no credential as
+  unknown. See [`pricing.md`](pricing.md#cost-records).
 - **`inferenceServer`** — the name of the inference-router server that the
   request which set `inferenceHost` was routed to, from that request's
   `modify/routed` invocation. Empty when that request was not routed. It moves
@@ -392,6 +405,25 @@ the server must have been built with clearing allowed
 (`listener.bind_loopback_only` on a local install). A refusal is a 403
 `{"error": ...}`. Each guard is pinned by its own test in
 `core/sessionapi/clear_test.go`. agentop's `X` drives it.
+
+**The accountant's per-session state is not cleared** by either `DELETE` route.
+That is the Tracker state (in memory, and in `~/.cortex/accountant-state.json` on
+a local install) and the billing mode of each thread's last request (in
+`core/accounting.Host`). They hold session and thread ids, content hashes and a
+billing mode, never content. The state has no time bound while the process runs:
+the in-memory maps keep at most 10,000 threads and drop the oldest, and the
+snapshot file, rewritten every 60s, holds what memory holds. A snapshot older than
+1h is not restored at startup, so a proxy stopped for more than an hour starts
+without it. This applies to both `DELETE` routes.
+
+**The context-guru plugin's session state is not cleared either, and it holds content.**
+Where the plugin runs, its state is kept in `~/.cortex/context-guru-state.db` on a local
+install (see [context-guru-plugin.md](context-guru-plugin.md)): the summary checkpoint and
+other text the plugin made from the conversation, plus counts and ids. Neither `DELETE` route
+touches it, so an erased session's summary stays in the file until its rows expire, 30 days
+after their last write. To remove it now, stop the proxy and delete the file
+(`agentop service stop`, then `rm ~/.cortex/context-guru-state.db*`); the plugin creates a new
+one at the next start. This applies to both `DELETE` routes.
 
 An erased session comes back on the next `agentop import` while its transcript
 is still on disk. It comes back as an imported session. The erase keeps a
@@ -1203,6 +1235,10 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   `inference.reasoningTokens` — on a response row: the token counts that the
   provider reported, by kind. `inputTokens` are the uncached prompt tokens.
   `reasoningTokens` are a part of `outputTokens`.
+- `inference.cacheWrite1hTokens` — on a response row: the part of
+  `cacheWriteTokens` written with a 1-hour TTL (Anthropic's
+  `cache_creation.ephemeral_1h_input_tokens`). A part of `cacheWriteTokens`,
+  never an addition to it.
 - `inference.presentKinds` — a bitmask of the token kinds that the provider
   reported: input 1, cache read 2, cache write 4, output 8, reasoning 16. A
   zero count with its bit set means that the provider reported zero. A zero
@@ -1321,8 +1357,11 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   `POST /v1/ingest` have no `project`: only the forward proxy's own rows have it.
   `/v1/usage?group=project` totals cost by this label (by `parentProject`
   when it is set); an event with no
-  `project` is counted under `unknown`. See
-  [pricing.md](pricing.md#reading-usage-over-http).
+  `project` is counted under `unknown`. `/v1/usage?project=<label>` narrows the
+  reply to the project with that `group=project` label, and echoes it in the
+  reply's `project` field (absent means "not applied"). On a ring window the
+  reply has group `none` when the project's ring does not hold the whole window.
+  See [pricing.md](pricing.md#reading-usage-over-http).
 - `parentSession` — the session that the topmost process above this row's
   agent named, when it is not this row's session. Set only by the forward
   proxy, with `session.process_attribution` on. Absent on the VM control path,

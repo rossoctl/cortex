@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 )
 
 // fakeLaunchctl puts a launchctl on PATH that behaves like a restricted sandbox: it
@@ -97,7 +99,7 @@ func TestServiceInstall_RestrictedEnvironment(t *testing.T) {
 	}
 	fakeLaunchctl(t, "#!/bin/sh\necho 'Could not print domain: 125' >&2\nexit 125\n")
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testhome.Set(t, home)
 	cfgDir := filepath.Join(home, ".cortex")
 	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -137,7 +139,7 @@ func TestLoginHome(t *testing.T) {
 		t.Skip("no dscl")
 	}
 	// A bogus $HOME must not change the answer: that independence is the whole point.
-	t.Setenv("HOME", "/tmp/definitely-not-my-home")
+	testhome.Set(t, "/tmp/definitely-not-my-home")
 	got := loginHome()
 	if got == "" {
 		t.Skip("could not read the user record here")

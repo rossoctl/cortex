@@ -73,6 +73,54 @@ func TestRegistry_Cost(t *testing.T) {
 	}
 }
 
+// Registry.Cost includes the 1h cache-write premium. On a Claude model the 1h
+// rate is 2x input: 1000 writes at 4.75 + 600 x (7.60 - 4.75) = 4750 + 1710 micros.
+func TestRegistry_CostIncludesThe1hPremium(t *testing.T) {
+	reg := NewRegistry(mustTable(t,
+		Entry{Host: "*", Model: "*claude-opus-*", Rates: claudeOpus(), Prov: ProvBundled},
+	))
+	micros, _, ok := reg.Cost("gw.internal", "claude-opus-5", Usage{CacheWrite: 1000, CacheWrite1h: 600})
+	if !ok {
+		t.Fatal("Cost reported unpriced")
+	}
+	if want := int64(4750 + 1710); micros != want {
+		t.Errorf("Cost = %d micros, want %d", micros, want)
+	}
+}
+
+// TestRegistry_CostDoesNotDoubleAFlatGatewaysCacheWrite is huang195's review probe
+// on PR #2065: a Claude model name is not proof the attached table bills at
+// Anthropic's 1.25x-of-input cache-write ratio. A configured gateway that happens
+// to serve claude-sonnet-4-5 at a FLAT rate (cache write == input) must not have
+// its 1h writes doubled — that would price a premium the gateway never described,
+// with nothing marking the figure as a guess. All-1h must cost the same as
+// all-5m: this table gives CacheWrite1hRate no reason to prefer 2x input over the
+// 5m rate it already has.
+func TestRegistry_CostDoesNotDoubleAFlatGatewaysCacheWrite(t *testing.T) {
+	flat := Rates{
+		Base: [numTiers]float64{TierInput: 2.0 / perMillion, TierCacheWrite: 2.0 / perMillion},
+		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true},
+	}
+	reg := NewRegistry(mustTable(t,
+		Entry{Host: "*", Model: "claude-sonnet-4-5", Rates: flat, Prov: ProvConfigured},
+	))
+	fiveMOnly, _, ok := reg.Cost("gw.internal", "claude-sonnet-4-5", Usage{CacheWrite: 1_000_000})
+	if !ok {
+		t.Fatal("5m-only: Cost reported unpriced")
+	}
+	allOneHour, _, ok := reg.Cost("gw.internal", "claude-sonnet-4-5", Usage{CacheWrite: 1_000_000, CacheWrite1h: 1_000_000})
+	if !ok {
+		t.Fatal("all-1h: Cost reported unpriced")
+	}
+	if fiveMOnly != allOneHour {
+		t.Errorf("5m-only = %d micros, all-1h = %d micros, want equal — a flat-rate table "+
+			"gives no evidence for Anthropic's 2x-input 1h premium", fiveMOnly, allOneHour)
+	}
+	if want := int64(2_000_000); fiveMOnly != want {
+		t.Errorf("5m-only = %d micros, want %d ($2/Mtok x 1M tokens)", fiveMOnly, want)
+	}
+}
+
 func TestRegistry_CostOnUnknownModelIsUnpriced(t *testing.T) {
 	reg := NewRegistry(mustTable(t,
 		Entry{Host: "*", Model: "*claude-*", Rates: rate(3.80), Prov: ProvBundled},

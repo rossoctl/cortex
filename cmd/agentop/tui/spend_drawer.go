@@ -458,7 +458,7 @@ func (m *model) syncSpendScope() tea.Cmd {
 // does not blink through an empty frame — it is a breakdown of the same traffic either way.
 func (m *model) cycleSpendAxis() tea.Cmd {
 	axes := m.spendAxes()
-	// A project scope has no axes, and `a` does nothing.
+	// The project Other has no axes, and `a` does nothing.
 	if len(axes) == 0 {
 		return nil
 	}
@@ -1105,12 +1105,35 @@ func drawerFigures(r drawerRow) []stripFigure {
 	// "$1.06" would read as a second spend figure with no way to tell which is which. The word is
 	// this figure's identity rather than an explanation of it, so it is not the part that yields;
 	// the strip's own saved figure made the same argument before it was replaced.
-	if r.counts.AvoidedMicros > 0 {
+	//
+	// NET OF THE PENALTY when the operators caused one (design §5.9): "net -$0.02" can be
+	// negative, and is not floored. The gross saving and the penalty go to the row's note, with
+	// the accountant's other figures (money.AccountantLines), so the column stays one figure.
+	if r.counts.AvoidedMicros != 0 || r.counts.PenaltyMicros != 0 {
+		label, micros := "saved ", r.counts.AvoidedMicros
+		if r.counts.PenaltyMicros != 0 {
+			label, micros = "net ", money.NetMicros(r.counts)
+		}
 		figure := money.Mixed
 		if unitOK {
-			figure = money.Relabel(formatUSDTotalMicros(r.counts.AvoidedMicros), unit, 0)
+			figure = money.Relabel(money.Signed(micros, ""), unit, 0)
 		}
-		saved = plainFigure("saved " + figure)
+		saved = plainFigure(label + figure)
+	}
+	if unitOK {
+		var extras []string
+		for _, l := range money.AccountantLines(r.counts, unit) {
+			if l.Label == "saved" && r.counts.PenaltyMicros == 0 {
+				continue // the saved column already says it all
+			}
+			extras = append(extras, l.Label+" "+l.Figure)
+		}
+		if len(extras) > 0 {
+			if note.full != "" {
+				extras = append([]string{note.full}, extras...)
+			}
+			note = plainFigure(strings.Join(extras, "; "))
+		}
 	}
 
 	// THE COLUMNAR SLOTS, IN ORDER, each at its own width. A slot with nothing in it still occupies
@@ -1167,9 +1190,13 @@ func drawerHints(axis usage.Group, axes []usage.Group, windowLabel string) []str
 }
 
 // drawerScopeNote is the series column's line when a scoped reply came back without the breakdown
-// it was asked for, or "". A reply narrowed to a project never has a breakdown.
+// it was asked for, or "". A project reply has none when an older proxy or the window could not
+// break it down, and agentop narrowed it to one series.
 func drawerScopeNote(snap *usage.Snapshot, asked usage.Group, windowLabel, project string) string {
-	if project != "" && snap != nil {
+	if project != "" {
+		if snap == nil || snap.Group != usage.GroupNone || asked == "" || asked == usage.GroupNone {
+			return ""
+		}
 		return "no breakdown for this scope in " + windowLabel
 	}
 	if snap == nil || snap.Agent == "" || snap.Group != usage.GroupNone || asked == "" || asked == usage.GroupNone {

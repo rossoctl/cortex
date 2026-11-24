@@ -224,7 +224,7 @@ func TestDoctorChecksABackgroundInstallWhoseProxyIsGone(t *testing.T) {
 				t.Fatal("setup --no-service left no proxy.pid")
 			}
 			killAndReap(pid)
-			if alive(pid) {
+			if processAlive(pid) {
 				t.Fatalf("fixture: pid %d is still alive", pid)
 			}
 			writeHomeFile(t, pidFile, c.pidfile(pid))

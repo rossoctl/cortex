@@ -1,8 +1,10 @@
 # Site dispatch: tell the website to rebuild when the installer changes here.
 #
 # The one-liner `curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh`
-# runs a copy of scripts/install.sh that the website in rossoctl/.github keeps.
-# Its build (npm run sync-docs) copies the file from this repository's main.
+# runs a copy of scripts/install.sh that the website in rossoctl/.github keeps,
+# and the Windows one, `irm https://www.rossoctl.dev/cortex/install.ps1 | iex`,
+# a copy of scripts/install.ps1. Its build (npm run sync-docs) copies the files
+# from this repository's main.
 #
 # Without this workflow, the site copies the installer only on its daily 06:17
 # UTC schedule, which GitHub can start hours late. Then a new installer option
@@ -28,8 +30,9 @@ on:
   push:
     branches: [main]
     paths:
-      # The only file the site copies from this repository.
+      # The only files the site copies from this repository.
       - "scripts/install.sh"
+      - "scripts/install.ps1"
   workflow_dispatch: {}
 
 permissions:

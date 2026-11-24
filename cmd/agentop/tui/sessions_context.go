@@ -158,3 +158,12 @@ const importedMarker = "(*) "
 
 // childMarker starts the TITLE cell of a session that another session started (#1991).
 const childMarker = "↳ "
+
+// noRecordMarker starts the TITLE cell of a session that asked not to be recorded (#1923): the
+// archive keeps none of its events from then on. A phrase rather than a glyph, like cachedMarker,
+// so it reads without a legend.
+const noRecordMarker = "(not recorded) "
+
+// noRecordIDMarker is noRecordMarker's short form, for the SESSION cell when there is no TITLE
+// column: the phrase would leave no room for the id.
+const noRecordIDMarker = "⊘ "

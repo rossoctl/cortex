@@ -232,7 +232,7 @@ func init() {
 		if os.Getenv(sleeperReadyEnv) == "1" {
 			_, _ = os.NewFile(3, "ready").Write([]byte{1})
 		}
-		time.Sleep(time.Minute)
+		time.Sleep(time.Minute) // timing: a stand-in process that lives until the test kills it
 		os.Exit(0)
 	}
 }
@@ -485,16 +485,20 @@ func TestServiceUsage_NamesTheAgentsThatDependOnTheProxy(t *testing.T) {
 // answer its health check fails every agent configured to use it, OpenCode as well as
 // Claude Code.
 //
-// On Linux, status first asks systemd why nothing answers, and this host's systemd
-// knows nothing of the fixture's unit. So the state is pinned to the one this message
-// is for: active, yet silent. Asking the real systemd made the verdict depend on the
+// Status first asks systemd or launchd why nothing answers, and this host's knows
+// nothing of the fixture's unit. So the state is pinned to the one this message is
+// for: running, yet silent. Asking the real systemd made the verdict depend on the
 // machine the test ran on (a CI runner reported "stopped, but still enabled").
 func TestServiceStatus_NotAnsweringNamesTheAgentsThatFail(t *testing.T) {
-	saved := unitStateOf
+	readyOnFirstAnswer(t)
+	saved, savedJob := unitStateOf, jobStateOf
 	unitStateOf = func() unitState {
 		return unitState{known: true, load: "loaded", active: "active", sub: "running", enabled: "enabled", result: "success"}
 	}
-	t.Cleanup(func() { unitStateOf = saved })
+	jobStateOf = func() launchdState {
+		return launchdState{known: true, session: true, loaded: true, state: "running"}
+	}
+	t.Cleanup(func() { unitStateOf, jobStateOf = saved, savedJob })
 	p := servicePathsFixture(t)
 	if err := os.WriteFile(p.unitFile, []byte("unit"), 0o600); err != nil {
 		t.Fatal(err)
@@ -513,10 +517,27 @@ func TestServiceStatus_NotAnsweringNamesTheAgentsThatFail(t *testing.T) {
 // TestWaitHealthy_TimesOut: install claims success only after the health endpoint
 // answers, because a supervisor reports "loaded" for a proxy that is crash-looping.
 // Within its window it asks again, past a dropped connection and a 503, until the
-// answer is 2xx.
+// answer is 2xx. A window already over takes the first answer.
 func TestWaitHealthy_TimesOut(t *testing.T) {
 	if waitHealthy("http://127.0.0.1:1/healthz", time.Nanosecond) {
-		t.Error("reported healthy with its window already over")
+		t.Error("reported healthy with nothing listening")
+	}
+	var status atomic.Int32
+	var asks atomic.Int32
+	once := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		asks.Add(1)
+		w.WriteHeader(int(status.Load()))
+	}))
+	t.Cleanup(once.Close)
+	for _, tc := range []struct {
+		status int32
+		want   bool
+	}{{http.StatusServiceUnavailable, false}, {http.StatusOK, true}} {
+		status.Store(tc.status)
+		asks.Store(0)
+		if got := waitHealthy(once.URL+"/healthz", time.Nanosecond); got != tc.want || asks.Load() != 1 {
+			t.Errorf("an over window against %d: waitHealthy = %v after %d asks, want %v after 1", tc.status, got, asks.Load(), tc.want)
+		}
 	}
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -533,6 +554,22 @@ func TestWaitHealthy_TimesOut(t *testing.T) {
 	t.Cleanup(srv.Close)
 	if ok := waitHealthy(srv.URL+"/healthz", time.Hour); !ok || calls.Load() != 3 {
 		t.Errorf("waitHealthy = %v after %d asks, want true after 3", ok, calls.Load())
+	}
+}
+
+// A window that ends during the wait between asks sends no more: the 503 is the
+// answer, and the 2xx a later ask would get is past the window.
+func TestWaitHealthy_NoAskPastTheWindow(t *testing.T) {
+	var asks atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if asks.Add(1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	within := 500 * time.Millisecond / healthPollDivisor / 2 // half the wait between asks
+	if ok := waitHealthy(srv.URL+"/healthz", within); ok || asks.Load() != 1 {
+		t.Errorf("waitHealthy = %v after %d asks, want false after 1", ok, asks.Load())
 	}
 }
 

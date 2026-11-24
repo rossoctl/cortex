@@ -283,7 +283,11 @@ var titleMarkRe = regexp.MustCompile(` · |https?://\S+|\([^()]*\)`)
 
 // renderTitle styles a pane title without changing its text: a leading "agentop" in
 // accent bold, " · " dim, URLs and (…) groups muted, the rest bold.
-func renderTitle(title string) string {
+func renderTitle(title string) string { return renderTitleInk(title, "", styleNone) }
+
+// renderTitleInk is renderTitle with the first copy of mark in bold ink. An empty
+// mark, or one that is not in the title, leaves the title as renderTitle styles it.
+func renderTitleInk(title, mark string, ink lipgloss.Style) string {
 	if !colorOn() {
 		return styleTitle.Render(title)
 	}
@@ -293,12 +297,23 @@ func renderTitle(title string) string {
 		b.WriteString(styleAccentBold.Render("agentop"))
 		rest = r
 	}
+	if i := strings.Index(rest, mark); mark != "" && i >= 0 {
+		writeTitleSegments(&b, rest[:i])
+		b.WriteString(ink.Bold(true).Render(mark))
+		rest = rest[i+len(mark):]
+	}
+	writeTitleSegments(&b, rest)
+	return b.String()
+}
+
+// writeTitleSegments writes s with " · " dim, URLs and (…) groups muted, the rest bold.
+func writeTitleSegments(b *strings.Builder, s string) {
 	last := 0
-	for _, loc := range titleMarkRe.FindAllStringIndex(rest, -1) {
+	for _, loc := range titleMarkRe.FindAllStringIndex(s, -1) {
 		if loc[0] > last {
-			b.WriteString(styleBold.Render(rest[last:loc[0]]))
+			b.WriteString(styleBold.Render(s[last:loc[0]]))
 		}
-		m := rest[loc[0]:loc[1]]
+		m := s[loc[0]:loc[1]]
 		if m == " · " {
 			b.WriteString(styleDim.Render(m))
 		} else {
@@ -306,10 +321,9 @@ func renderTitle(title string) string {
 		}
 		last = loc[1]
 	}
-	if last < len(rest) {
-		b.WriteString(styleBold.Render(rest[last:]))
+	if last < len(s) {
+		b.WriteString(styleBold.Render(s[last:]))
 	}
-	return b.String()
 }
 
 // colorGroup is the meaning a cell's value carries, which picks its ink.

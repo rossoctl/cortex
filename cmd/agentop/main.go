@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -99,7 +100,8 @@ Usage:
   agentop exec -- CMD [ARG...] run CMD with Cortex's proxy and CA in its
                                environment, for tools with no settings file
   agentop server [<action>]    the inference server each agent's new sessions
-                               use: add, remove, use, reset; alone, list them
+                               use: add, remove, rename, use, reset, move;
+                               alone, list them
   agentop script <action>      the script plugins Cortex ships: list, install,
                                remove
   agentop tools <action>       tool-definition costs: scan
@@ -129,6 +131,9 @@ func main() {
 	// argument selects a subcommand, and anything else falls through to the
 	// terminal UI, preserving the original flags-only invocation.
 	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
+		if refuseUnsupported(runtime.GOOS, os.Args[1], os.Stderr) {
+			os.Exit(1)
+		}
 		switch os.Args[1] {
 		case "tools":
 			os.Exit(runTools(os.Args[2:], os.Stdout, os.Stderr))

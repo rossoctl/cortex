@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"os"
@@ -484,6 +485,8 @@ type model struct {
 	serviceInstall bool
 	// updateNote is the update notice after the build on the title bar.
 	updateNote string
+	// updateInk is the color of updateNote.
+	updateInk lipgloss.Style
 	// lastHarvest is when the most recent harvest was STARTED. Read by TWO callers: the sessions
 	// pane's backoff gate, which asks whether untitledBackoff has elapsed since then, and the
 	// timeline pane's gate for unlabeled subagents (timelineLabelHarvestEvery). The picker
@@ -701,6 +704,11 @@ type model struct {
 	// cursor's row INDEX, and rather than indexing m.sessions because the rows are scoped and
 	// interleaved with cached-only entries, so position does not map back.
 	sessionRowIDs []string
+
+	// titleScroll scrolls the selected row's TITLE cell; see sessions_title_scroll.go.
+	titleScroll titleScroll
+	// noTitleScroll keeps every TITLE cell static. See WithoutTitleScroll.
+	noTitleScroll bool
 	eventsTbl     table.Model
 	pipelineTbl   table.Model
 	detailVp      viewport.Model
@@ -862,6 +870,9 @@ type model struct {
 	agentProjectsErr   error
 	agentsCursorWant   *agentRowDesc
 	agentsCursorWantAt int
+	// agentsSplits is the cost per unit of each row in more than one unit, for one window at a
+	// time (see agentsUnitSplitLoadedMsg). Kept off agentRow, which every poll replaces.
+	agentsSplits map[agentsSplitKey]map[string]int64
 	// agentsFetchedAt is when the last per-agent fetch was issued, so the open pane polls.
 	agentsFetchedAt time.Time
 	// agentsWindowStep is how far `w` has moved the agents pane's window past today; see
@@ -967,6 +978,12 @@ type Option func(*model)
 // shift here every session would read as days old and render as an absolute date.
 func WithClock(fn func() time.Time) Option {
 	return func(m *model) { m.now = fn }
+}
+
+// WithoutTitleScroll keeps the selected row's TITLE cell static. No production caller: the
+// README demo needs the same frame on each run, and its pump waits for the ticks to stop.
+func WithoutTitleScroll() Option {
+	return func(m *model) { m.noTitleScroll = true }
 }
 
 // clock is the instant event timestamps are measured against. See model.now.
@@ -1382,6 +1399,7 @@ func (m *model) snapshotCmd(id string) tea.Cmd {
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	before, reserved := m.pane, m.spendDrawerReservesRows()
 	next, cmd := m.update(msg)
+	cmd = tea.Batch(cmd, m.armTitleScroll())
 	if m.spendDrawerReservesRows() != reserved {
 		// The drawer's rows depend on the pane now, and no other layout() call sees every pane change.
 		m.layout()
@@ -1618,11 +1636,15 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The open rows refetch their projects with the rows: the poll, `w`, `A` and esc all come
 		// here.
 		projects := m.fetchOpenProjectsCmd()
+		var splits tea.Cmd
+		if msg.err == nil {
+			splits = m.fetchAgentRowSplitsCmd()
+		}
 		if m.client != nil && !m.pipelineFetching {
 			m.pipelineFetching = true
-			return m, tea.Batch(m.loadPipelineCmd(), sync, projects)
+			return m, tea.Batch(m.loadPipelineCmd(), sync, projects, splits)
 		}
-		return m, tea.Batch(sync, projects)
+		return m, tea.Batch(sync, projects, splits)
 
 	case agentProjectsLoadedMsg:
 		if msg.window != m.agentsSpanDef().window {
@@ -1636,10 +1658,29 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.agentProjects[msg.agent] = msg.data
 		}
+		var splits tea.Cmd
+		if msg.err == nil {
+			splits = m.fetchProjectSplitsCmd(msg.agent, msg.data)
+		}
 		if m.pane == paneAgents {
 			m.rebuildAgentsTable()
 			// The rebuild can move the cursor onto the scoped sub-row.
-			return m, m.syncSpendScope()
+			return m, tea.Batch(m.syncSpendScope(), splits)
+		}
+		return m, splits
+
+	case agentsUnitSplitLoadedMsg:
+		// A split for another window than the pane's is stale; a failed one changes nothing.
+		if msg.err != nil || msg.key.window != m.agentsSpanDef().window {
+			return m, nil
+		}
+		if m.agentsSplits == nil {
+			m.agentsSplits = map[agentsSplitKey]map[string]int64{}
+		}
+		maps.DeleteFunc(m.agentsSplits, func(k agentsSplitKey, _ map[string]int64) bool { return k.window != msg.key.window })
+		m.agentsSplits[msg.key] = msg.byUnit
+		if m.pane == paneAgents {
+			m.rebuildAgentsTable()
 		}
 		return m, nil
 
@@ -1673,6 +1714,9 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case timelineTickMsg:
 		return m, m.handleTimelineTick(msg)
+
+	case titleScrollMsg:
+		return m, m.handleTitleScroll(msg)
 
 	case usageTickMsg:
 		// Stop when the pane loses focus, and drop ticks from a previous visit:
@@ -2585,7 +2629,7 @@ func (m *model) paneView() string {
 // yet there is no box to draw, and the body shows as it is.
 func (m *model) pickerView(title, body, footer string) string {
 	if m.width == 0 {
-		return lipgloss.JoinVertical(lipgloss.Left, renderTitle(title), body, footer)
+		return lipgloss.JoinVertical(lipgloss.Left, m.titleView(title), body, footer)
 	}
 	frameH := m.bodyHeight
 	if m.searching && m.searchPane != targetHelp {
@@ -2594,7 +2638,7 @@ func (m *model) pickerView(title, body, footer string) string {
 	if m.bodyHeight == 0 {
 		frameH = lipgloss.Height(body) // layout() has not run, so there is no reservation to fill
 	}
-	rows := []string{renderTitle(title), boxTop("", m.width)}
+	rows := []string{m.titleView(title), boxTop("", m.width)}
 	rows = append(rows, boxFrame(body, m.width, frameH)...)
 	rows = append(rows, boxBottom(m.width), footer)
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)
@@ -2731,7 +2775,7 @@ func (m *model) paneContent() (title, body string) {
 // framePane is a data pane's screen: the title, the spend band and its drawer, the body in the
 // box at exactly the rows layout() reserved, and the footer on the last row.
 func (m *model) framePane(title, body string) string {
-	header := renderTitle(title)
+	header := m.titleView(title)
 	// The band sits directly under the title because that is the whole requirement: spend
 	// read BEFORE the data rather than navigated to.
 	//
@@ -2845,6 +2889,9 @@ func (m *model) sessionHeader(id, suffix string) string {
 	// for A → B → C, C shows A. The id comes from a client header, so it is sanitised first.
 	if p := m.parentSessionOf(id); p != "" {
 		tail += " · under " + sessionIDCell(sanitizeLabel(p), noLimit)
+	}
+	if m.sessionNoRecord(id) {
+		tail += " · not recorded"
 	}
 	tail += m.scopeSuffix(m.agentScope, m.projectScope)
 	// A floor of 12, so a very narrow terminal shows a stub of the label rather than dropping

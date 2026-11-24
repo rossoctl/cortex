@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 )
 
 const endpointCfg = `mode: proxy-sidecar
@@ -39,7 +41,7 @@ func withCortexConfig(t *testing.T, addr string) {
 			t.Fatal(err)
 		}
 	}
-	t.Setenv("HOME", dir)
+	testhome.Set(t, dir)
 }
 
 // TestLocalSessionEndpoint_ReadsTheConfiguredPort: the in-cluster default is 9094
@@ -205,15 +207,40 @@ func TestLocalSessionAPIUp_WaitsForAProxyStillStarting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer ln.Close()
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"sessions":[]}`))
 	})}
 	defer srv.Close()
-	time.AfterFunc(time.Second, func() { _ = srv.Serve(ln) })
+	// The server starts past the dial bound after the client has connected, and serves
+	// that connection first. Outlasting that bound is the behaviour under test.
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		time.Sleep(localProbeTimeout + 100*time.Millisecond) // timing: outlasts a real dial bound
+		_ = srv.Serve(&acceptedFirst{Listener: ln, first: c})
+	}()
 
 	if !localSessionAPIUp("http://" + ln.Addr().String()) {
-		t.Error("a proxy that started serving 1s after the connection was reported down")
+		t.Error("a proxy that started serving after the connection was reported down")
 	}
+}
+
+// acceptedFirst is a listener whose first Accept returns a connection already
+// accepted from it.
+type acceptedFirst struct {
+	net.Listener
+	first net.Conn
+}
+
+func (l *acceptedFirst) Accept() (net.Conn, error) {
+	if c := l.first; c != nil {
+		l.first = nil
+		return c, nil
+	}
+	return l.Listener.Accept()
 }
 
 // The wait is bounded: something that accepts and never answers is given up on.

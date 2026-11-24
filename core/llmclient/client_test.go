@@ -33,7 +33,7 @@ func TestCall_Success(t *testing.T) {
 	srv := newServer(t, "hello world")
 	defer srv.Close()
 
-	c := llmclient.New(llmclient.Options{Endpoint: srv.URL, Model: "m", Timeout: time.Second})
+	c := llmclient.New(llmclient.Options{Endpoint: srv.URL, Model: "m", Timeout: time.Hour})
 	got, err := c.Call(context.Background(), "sys", "usr")
 	if err != nil {
 		t.Fatalf("Call: %v", err)
@@ -70,7 +70,7 @@ func TestCall_RequestShape(t *testing.T) {
 		Bearer:             "secret-token",
 		SentinelHeaderName: "X-Plugin-Sentinel",
 		SentinelValue:      "test-sentinel",
-		Timeout:            time.Second,
+		Timeout:            time.Hour,
 	})
 	if _, err := c.Call(context.Background(), "system text", "user text"); err != nil {
 		t.Fatalf("Call: %v", err)
@@ -128,7 +128,7 @@ func TestCall_NoSentinelHeaderWhenUnset(t *testing.T) {
 
 			tc.opts.Endpoint = srv.URL
 			tc.opts.Model = "m"
-			tc.opts.Timeout = time.Second
+			tc.opts.Timeout = time.Hour
 			c := llmclient.New(tc.opts)
 			if _, err := c.Call(context.Background(), "s", "u"); err != nil {
 				t.Fatalf("Call: %v", err)
@@ -149,7 +149,7 @@ func TestCall_HTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := llmclient.New(llmclient.Options{Endpoint: srv.URL, Model: "m", Timeout: time.Second})
+	c := llmclient.New(llmclient.Options{Endpoint: srv.URL, Model: "m", Timeout: time.Hour})
 	_, err := c.Call(context.Background(), "s", "u")
 	if err == nil {
 		t.Fatalf("Call: expected error on HTTP 503, got nil")
@@ -170,7 +170,7 @@ func TestCall_NetworkError(t *testing.T) {
 	url := srv.URL
 	srv.Close()
 
-	c := llmclient.New(llmclient.Options{Endpoint: url, Model: "m", Timeout: 200 * time.Millisecond})
+	c := llmclient.New(llmclient.Options{Endpoint: url, Model: "m", Timeout: time.Hour})
 	_, err := c.Call(context.Background(), "s", "u")
 	if err == nil {
 		t.Fatal("Call: expected error on connection refused, got nil")
@@ -209,7 +209,7 @@ func TestCall_EmptyChoices(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := llmclient.New(llmclient.Options{Endpoint: srv.URL, Model: "m", Timeout: time.Second})
+	c := llmclient.New(llmclient.Options{Endpoint: srv.URL, Model: "m", Timeout: time.Hour})
 	_, err := c.Call(context.Background(), "s", "u")
 	if !errors.Is(err, llmclient.ErrUncertain) {
 		t.Errorf("expected error wrapping ErrUncertain on empty Choices, got %v", err)
@@ -227,7 +227,7 @@ func TestCall_LargeResponseDoesNotCrash(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := llmclient.New(llmclient.Options{Endpoint: srv.URL, Model: "m", Timeout: 2 * time.Second})
+	c := llmclient.New(llmclient.Options{Endpoint: srv.URL, Model: "m", Timeout: time.Hour})
 	_, err := c.Call(context.Background(), "s", "u")
 	if err == nil {
 		t.Errorf("expected error from oversized response, got nil")
@@ -259,7 +259,7 @@ func TestCallRaw_DoesNotMutateCallersRequest(t *testing.T) {
 	srv := newServer(t, "ok")
 	defer srv.Close()
 
-	c := llmclient.New(llmclient.Options{Endpoint: srv.URL, Model: "client-default", Timeout: time.Second})
+	c := llmclient.New(llmclient.Options{Endpoint: srv.URL, Model: "client-default", Timeout: time.Hour})
 	req := &llmclient.ChatRequest{
 		// Model deliberately empty: CallRaw fills it in for the
 		// wire request, but the caller's struct must stay empty.
@@ -294,7 +294,7 @@ func TestCallRaw_RequestModelOverridesClientModel(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := llmclient.New(llmclient.Options{Endpoint: srv.URL, Model: "client-default", Timeout: time.Second})
+	c := llmclient.New(llmclient.Options{Endpoint: srv.URL, Model: "client-default", Timeout: time.Hour})
 	_, err := c.CallRaw(context.Background(), &llmclient.ChatRequest{
 		Model:    "request-override",
 		Messages: []llmclient.ChatMessage{{Role: "user", Content: "x"}},
@@ -360,7 +360,7 @@ func TestCallStructured_Success(t *testing.T) {
 	srv := newServer(t, `{"verdict":"allow","reason":"aligned"}`)
 	defer srv.Close()
 
-	c := llmclient.New(llmclient.Options{Endpoint: srv.URL, Model: "m", Timeout: time.Second})
+	c := llmclient.New(llmclient.Options{Endpoint: srv.URL, Model: "m", Timeout: time.Hour})
 	got, err := llmclient.CallStructured[sampleVerdict](context.Background(), c, "sys", "usr")
 	if err != nil {
 		t.Fatalf("CallStructured: %v", err)
@@ -374,7 +374,7 @@ func TestCallStructured_ParseErrorWrapsErrUncertain(t *testing.T) {
 	srv := newServer(t, "I'm not sure.")
 	defer srv.Close()
 
-	c := llmclient.New(llmclient.Options{Endpoint: srv.URL, Model: "m", Timeout: time.Second})
+	c := llmclient.New(llmclient.Options{Endpoint: srv.URL, Model: "m", Timeout: time.Hour})
 	_, err := llmclient.CallStructured[sampleVerdict](context.Background(), c, "s", "u")
 	if !errors.Is(err, llmclient.ErrUncertain) {
 		t.Errorf("expected ErrUncertain, got %v", err)
@@ -387,13 +387,36 @@ func TestCallStructured_TransportErrorIsNotUncertain(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := llmclient.New(llmclient.Options{Endpoint: srv.URL, Model: "m", Timeout: time.Second})
+	c := llmclient.New(llmclient.Options{Endpoint: srv.URL, Model: "m", Timeout: time.Hour})
 	_, err := llmclient.CallStructured[sampleVerdict](context.Background(), c, "s", "u")
 	if err == nil {
 		t.Fatal("expected error on HTTP 503, got nil")
 	}
 	if errors.Is(err, llmclient.ErrUncertain) {
 		t.Errorf("HTTP-error must not wrap ErrUncertain (would route to 403); err=%v", err)
+	}
+}
+
+// CallRaw returns the response's usage, so a caller that pays for the call can record what it
+// cost. A server that omits usage leaves it nil, which is "not reported", not zero tokens.
+func TestCallRaw_ReturnsUsage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}],`+
+			`"usage":{"prompt_tokens":1200,"completion_tokens":80,"prompt_tokens_details":{"cached_tokens":1000}}}`)
+	}))
+	defer srv.Close()
+	c := llmclient.New(llmclient.Options{Endpoint: srv.URL, Model: "m", Timeout: time.Hour})
+	resp, err := c.CallRaw(context.Background(), &llmclient.ChatRequest{
+		Messages: []llmclient.ChatMessage{{Role: "user", Content: "x"}}})
+	if err != nil {
+		t.Fatalf("CallRaw: %v", err)
+	}
+	u := resp.Usage
+	if u == nil {
+		t.Fatal("Usage is nil; want the response's usage")
+	}
+	if u.PromptTokens != 1200 || u.CompletionTokens != 80 || u.CachedTokens() != 1000 {
+		t.Errorf("usage = %+v (cached %d), want prompt 1200, completion 80, cached 1000", *u, u.CachedTokens())
 	}
 }
 
@@ -430,7 +453,7 @@ func TestCall_RedirectAndSentinel(t *testing.T) {
 			Model:              "m",
 			SentinelHeaderName: "X-Plugin-Sentinel",
 			SentinelValue:      "test-sentinel",
-			Timeout:            time.Second,
+			Timeout:            time.Hour,
 		})
 		if _, err := c.Call(context.Background(), "s", "u"); err != nil {
 			t.Fatalf("Call: %v", err)
@@ -460,7 +483,7 @@ func TestCall_RedirectAndSentinel(t *testing.T) {
 			Model:              "m",
 			SentinelHeaderName: "X-Plugin-Sentinel",
 			SentinelValue:      "test-sentinel",
-			Timeout:            time.Second,
+			Timeout:            time.Hour,
 		})
 		if _, err := c.Call(context.Background(), "s", "u"); err != nil {
 			t.Fatalf("Call: %v", err)

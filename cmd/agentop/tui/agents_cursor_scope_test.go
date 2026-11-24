@@ -22,8 +22,10 @@ func cursorScopeModel(t *testing.T) (*model, func() []string) {
 		mu.Lock()
 		asked = append(asked, r.URL.RawQuery)
 		mu.Unlock()
-		if r.URL.Query().Has("project") {
-			t.Errorf("query %q carries project=", r.URL.RawQuery)
+		// project= is sent but not echoed, so this server acts as one older than project=.
+		// agentop's own fold labels must never go on the wire.
+		if p := r.URL.Query().Get("project"); p == otherProjects || p == projectOverflowLabel {
+			t.Errorf("query %q carries project=%s", r.URL.RawQuery, p)
 		}
 		// The agent is ECHOED, as the real server does, so fetchUsageScoped does not take its
 		// old-server fallback and re-ask unscoped.

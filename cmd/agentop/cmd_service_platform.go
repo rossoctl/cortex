@@ -19,7 +19,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -225,7 +224,7 @@ func loadService(goos string, p servicePaths, progress io.Writer) error {
 			if attempt >= 3 || !strings.Contains(string(out), "Input/output error") {
 				return fmt.Errorf("launchctl bootstrap failed: %v: %s", err, strings.TrimSpace(string(out)))
 			}
-			time.Sleep(time.Duration(attempt) * time.Second)
+			time.Sleep(time.Duration(attempt) * bootstrapRetryDelay)
 			if !waitBootedOutf(target, serviceBootoutTimeout, progress) {
 				return fmt.Errorf("launchctl bootstrap failed and the label is still "+
 					"registered: %v: %s", err, strings.TrimSpace(string(out)))
@@ -488,9 +487,16 @@ func unloadService(goos string, p servicePaths) error {
 		// "No such process" is a label already out of the domain — what `service stop`
 		// leaves, and the state this wants — so, as in loadService and controlService,
 		// it is not an error. Reported, it read as a failed uninstall (#1255).
-		out, err := exec.Command("launchctl", "bootout", "gui/"+uid+"/"+launchdLabel).CombinedOutput()
+		target := "gui/" + uid + "/" + launchdLabel
+		out, err := exec.Command("launchctl", "bootout", target).CombinedOutput()
 		if err != nil && !strings.Contains(string(out), "No such process") {
 			return fmt.Errorf("launchctl bootout: %v: %s", err, strings.TrimSpace(string(out)))
+		}
+		// As in controlService's stop: bootout returns before the job is gone, and
+		// uninstall says "Cortex is stopped" next.
+		if err == nil && !waitBootedOut(target, serviceBootoutTimeout) {
+			return fmt.Errorf("the %s was %w %s after launchctl bootout",
+				supervisorName(goos), errStillShuttingDown, serviceBootoutTimeout)
 		}
 		return nil
 	}
@@ -578,11 +584,11 @@ func resolvePath(p string) (string, error) {
 // before giving up rather than reporting success on a process that still holds the
 // ports. A current one is gone in well under a second.
 func stopPID(pid int) error {
-	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+	if err := terminate(pid); err != nil {
 		return err
 	}
 	for i := 0; i < 90; i++ {
-		if err := syscall.Kill(pid, 0); err != nil {
+		if !processAlive(pid) {
 			return nil
 		}
 		time.Sleep(200 * time.Millisecond)
@@ -594,10 +600,18 @@ func stopPID(pid int) error {
 // in agentop. Tests set it, so that a stub that answers soon is seen soon.
 var healthPollDivisor time.Duration = 1
 
+// healthFirstAnswer makes waitHealthy take the first answer, whatever its window. It
+// is false in agentop. A test whose stubs answer at once sets it, so that a stub that
+// never answers 2xx is not waited out.
+var healthFirstAnswer bool
+
+// waitHealthy reports whether url answers 2xx within the window. It always asks once,
+// so a window that is already over takes the first answer, which can take the 2s
+// request timeout. Every caller in agentop passes a positive window.
 func waitHealthy(url string, within time.Duration) bool {
 	c := &http.Client{Timeout: 2 * time.Second}
 	deadline := time.Now().Add(within)
-	for time.Now().Before(deadline) {
+	for {
 		resp, err := c.Get(url) //nolint:noctx // bounded by Timeout
 		if err == nil {
 			_ = resp.Body.Close()
@@ -605,9 +619,14 @@ func waitHealthy(url string, within time.Duration) bool {
 				return true
 			}
 		}
+		if healthFirstAnswer || !time.Now().Before(deadline) {
+			return false
+		}
 		time.Sleep(500 * time.Millisecond / healthPollDivisor)
+		if !time.Now().Before(deadline) {
+			return false
+		}
 	}
-	return false
 }
 
 func lastLines(path string, n int) []string {
@@ -666,6 +685,14 @@ func controlService(goos, action string, p servicePaths, progress io.Writer) err
 			if out, derr := exec.Command("launchctl", "disable", target).CombinedOutput(); derr != nil {
 				return fmt.Errorf("launchctl disable (stop would not survive a login): %v: %s",
 					derr, strings.TrimSpace(string(out)))
+			}
+			// bootout returns before teardown finishes (see waitBootedOut), so without
+			// this a stop said "stopped" while the supervisor was still taking the proxy
+			// down and holding its ports, where systemd's `disable --now` waits. Only
+			// after a bootout that found a job: "No such process" is nothing to wait for.
+			if err == nil && !waitBootedOut(target, serviceBootoutTimeout) {
+				return fmt.Errorf("the %s was still shutting down %s after launchctl bootout; "+
+					"run `agentop service status`", supervisorName(goos), serviceBootoutTimeout)
 			}
 			return nil
 		case "start":
@@ -780,6 +807,81 @@ func systemdUnitState() unitState {
 	}
 	s.known = s.active != ""
 	return s
+}
+
+// launchdState is what launchd says about Cortex's job, read once so status can tell
+// a deliberate stop from a job launchd is holding back or a proxy that is not
+// answering: reportUnitNotAnswering's question, asked of launchd. The zero value means
+// launchd could not be asked.
+type launchdState struct {
+	known bool
+	// session: the user's desktop session (gui/<uid>) exists. Only a login at the
+	// screen, typed or automatic, creates it; an SSH login does not. Without it no
+	// launch agent runs, Cortex's included.
+	session bool
+	// loaded: the label is in that session. Stop and uninstall boot it out, and the
+	// next desktop login loads it again unless it is disabled.
+	loaded bool
+	// state, as `launchctl print` words it for a loaded job: running, or not running
+	// while launchd holds a start back, as it does in "on-demand-only mode" for a
+	// while after login, and between restarts (ThrottleInterval).
+	state string
+	// disabled: in the per-user disabled database, which `service stop` puts it in so
+	// the next login does not load it.
+	disabled bool
+}
+
+// launchdJobState asks launchd for Cortex's job. Not known when launchctl is missing
+// or cannot see the domain, as in a restricted sandbox: status then says only what
+// its health probe saw, as it always did.
+// errStillShuttingDown is in unloadService's error when launchd still had the job
+// when the wait after its bootout ran out, so a caller can avoid saying it stopped.
+var errStillShuttingDown = errors.New("still shutting down")
+
+func launchdJobState() launchdState {
+	if _, err := exec.LookPath("launchctl"); err != nil {
+		return launchdState{}
+	}
+	uid := strconv.Itoa(os.Getuid())
+	if exec.Command("launchctl", "print", "gui/"+uid).Run() != nil {
+		// No desktop session, or a sandbox that cannot see one. Only the first is a
+		// fact worth reporting, and the console's owner tells them apart: the login
+		// window leaves /dev/console to root, and another user's login to them.
+		if owner, ok := fileOwner("/dev/console"); ok && owner != os.Getuid() {
+			return launchdState{known: true}
+		}
+		return launchdState{}
+	}
+	target := "gui/" + uid + "/" + launchdLabel
+	gone, known := labelGone(target)
+	if !known {
+		return launchdState{}
+	}
+	s := launchdState{known: true, session: true, loaded: !gone, disabled: launchdLabelDisabled(uid)}
+	if s.loaded {
+		out, _ := exec.Command("launchctl", "print", target).Output()
+		for _, line := range strings.Split(string(out), "\n") {
+			// The job's own state is the first; its endpoints' follow.
+			if st, ok := strings.CutPrefix(strings.TrimSpace(line), "state = "); ok {
+				s.state = st
+				break
+			}
+		}
+	}
+	return s
+}
+
+// launchdLabelDisabled reports whether Cortex's label is in uid's disabled database.
+// launchctl words it `"<label>" => disabled` since macOS 13, `=> true` before.
+func launchdLabelDisabled(uid string) bool {
+	out, _ := exec.Command("launchctl", "print-disabled", "gui/"+uid).Output()
+	for _, line := range strings.Split(string(out), "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), `"`+launchdLabel+`" =>`); ok {
+			v = strings.TrimSpace(v)
+			return v == "disabled" || v == "true"
+		}
+	}
+	return false
 }
 
 // supervisorRunning asks the supervisor whether OUR job is up, which health alone

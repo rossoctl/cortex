@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 	"github.com/rossoctl/cortex/core/peerproc"
 	"github.com/rossoctl/cortex/core/tlsbridge"
 )
@@ -89,7 +90,7 @@ func (f *openCodeCLI) writes() []string {
 func stubOpenCodeCLI(t *testing.T, f *openCodeCLI) string {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testhome.Set(t, home)
 	writeOpenCodeCortexCfg(t, home, cortexCfg)
 	stubOpenCodeSeams(t, f)
 	return home

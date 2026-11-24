@@ -256,6 +256,7 @@ install) is the aggregate behind `agentop cost`. Query parameters:
 | `resolution` | a duration | Bucket size on a ring-served window. A ledger-backed window is answered as one bucket spanning the whole window and does not read this at all; `bucketSeconds` reports the span actually served. |
 | `session` | a session id | Combining it with a symbolic window (`today`, `month`, `7d`) is rejected with 400. |
 | `agent` | an agent label, as `group=agent` reports it (`claude-code`, `unknown`) — versionless; a versioned label such as `claude-code/2.1.284` is read as its agent | Narrows the window to that agent's traffic, every version together. Longer than 96 bytes is rejected with 400. |
+| `project` | a project label, as `group=project` reports it (`/repo/a`, `unknown`) — the label, not a raw path | Narrows the window to that project's traffic. Use it alone or with `agent=`. Longer than 96 bytes is rejected with 400. |
 
 `group=project` breaks the window down by the `project` label of each request: the git repo
 root of the agent process's cwd ([session-api.md](session-api.md#event-schema)). A request with
@@ -267,8 +268,9 @@ always present. Every other field is `omitempty` and appears only when it applie
 response is shorter than the struct — among them `degraded`, `ungroupedCostMicros` and
 `daysOutsideRetention`, which is where dropped ledger rows, unattributable spend and a window
 reaching past retention are disclosed. `agent` is present only when an `agent=` filter was
-applied, which is how a client tells a server that ignored the parameter. Do not code against a
-closed field list.
+applied, which is how a client tells a server that ignored the parameter. `project` follows the
+same rule: it is present only when a `project=` filter was applied, and absent means "not
+applied". Do not code against a closed field list.
 
 `pricedBy`, `unpricedBy` and `incompleteBy` are absent on a ledger-backed window even when
 pricing gaps exist — a per-minute row cannot say which requests could not be priced, and
@@ -286,7 +288,13 @@ and `plugin` fall back to `group: "none"` with no error and HTTP 200. With `agen
 served from the ring — a duration, or any window without a ledger — falls back to `none` for every
 grouping, unless the agent is a recognised one and no `session=` is given: then the ring keeps
 the group. So `agent=claude-code&group=project` gives per-project series for that agent only, on
-any window. Always read the `group` field back:
+any window. With `project=`, a ring window keeps the group only when the server holds a complete
+ring for that project (and that agent, if `agent=` is given) over the whole window, and no
+`session=` is given. Otherwise it is served with group `none`, narrowed to the project. An agent
+that is not recognised, such as `unknown`, has no ring for each project. For it, a ring window
+applies `project=` only when the project's ring is complete and no `session=` is given, and the
+reply has group `none`. Otherwise the reply has no `project` field: the filter was not applied. Always
+read the `group` field back:
 
 ```sh
 curl -s 'localhost:47601/v1/usage?window=today&group=endpoint' | jq .group
@@ -321,12 +329,24 @@ Its columns map onto Cortex's tiers:
 | Cache hits and refreshes | `cache_read_cost_per_million` |
 | Output tokens | `output_cost_per_million` |
 
-Use the **5-minute** cache-write column. Cortex does not model the 1-hour write premium.
+Use the **5-minute** cache-write column (`cache_write_cost_per_million`). There is no
+column for the 1-hour rate: Cortex derives it instead, for a model name containing
+`claude`, as 2x the input rate — Anthropic's documented 1-hour premium
+(`Rates.CacheWrite1hRate` in `core/cost/pricing/rates.go`). It only trusts that
+derivation when the row's own 5-minute rate sits at Anthropic's 1.25x-of-input ratio
+(see the sanity check below); a row typed at some other ratio — a markup, a discount, a
+gateway with its own flat per-token rate — has its 1-hour writes priced at the 5-minute
+rate instead, and the figure is marked as a lower bound rather than silently doubled.
 
 Sanity-check a row you typed by hand — for most Claude models the published ratios are
-cache-write = 1.25x input and cache-read = 0.1x input. A row that does not sit near those
-ratios is usually a transcription slip. (Fable 5.1 and Mythos 5.1 read at 0.025x, and
-some newer Opus models at 0.05x, so those are legitimately different.)
+cache-write = 1.25x input and cache-read = 0.1x input (Claude 3 Haiku reads at 1.2x
+cache-write and 0.12x cache-read, both still close to the usual ratios). A row that
+does not sit near the cache-write ratio is usually a transcription slip, and Cortex
+also reads it as evidence the row does not bill like Anthropic's own rate card, for the
+1-hour derivation above. (Fable 5.1 and Mythos 5.1 read at 0.025x cache-read — but that
+is the cache-READ ratio, which the 1-hour derivation never looks at. Their cache-write
+ratio is still 1.25x, so they get the
+derivation like every other current model.)
 
 ### From OpenAI
 
@@ -696,12 +716,56 @@ comes out a release after the rename ships.
 | `settled` | a figure exists — **including a deliberate zero**, which is the gateway saying the call was free. Without it, "free" and "nobody priced this" were indistinguishable, and a cache hit got re-priced from the rate table |
 | `prompt_usd` | the modelled cost of the prompt alone, tier-weighted. A breakdown, **not** a component of a sum: it is the table's figure even when `cost_usd` is the gateway's |
 | `output_usd` | the modelled cost of the generated tokens alone, at the output rate, resolved at the **request's** prompt size so a long-context premium reaches the completion too. The other half of the same breakdown, so a per-row UI can show what a response row cost rather than what the exchange cost. Priced from the table, **never** `cost_usd` − `prompt_usd`: that difference mixes a possibly-authoritative total with a modelled half, so it reports a gateway-vs-table delta as the completion's cost and can go negative. (`modelled` − `prompt_usd` would be sound; mixing sources is the problem, not subtraction.) `prompt_usd` + `output_usd` equals the modelled total to the micro |
-| `avoided[]` | cost that was **not** incurred, attributed per component, with `tokensAvoided`, `usd`, the `tier` it came out of, and two honesty flags: `estimated` (derived from a byte ratio, not a tokenizer) and `projected` (measured but never applied — that money *was* spent) |
+| `avoided[]` | cost that was **not** incurred, one entry per context operator (`tool-prune`, `context-guru.*`, `keeper`), as the accountant priced it: `tokensAvoided`, `usd` (what it saved, gross), `penaltyUsd` (what it caused, priced: a rewrite inside the cached prefix, a cache break it owns), the `tier` with the largest saving, `basis`, `operator`, `opsVersion`, and two honesty flags: `estimated` (an estimated op or rate, and every basis but `usd`) and `projected` (measured but never applied — that money *was* spent). `basis` is `usd` for a request billed per token, `subscriptionEquivalent` for one on a subscription login (its `usd` is what the API would have charged, and `units`/`penaltyUnits` value it in usage-limit units), or `unknown` |
+| `spends[]` | the context operators' own model calls on this request (a context-guru summary call, for instance), one record each with its tokens, `usd` and `basis`. Not part of `cost_usd`: those calls do not pass through the proxy. `projected` marks the call of an operator under `on_error: observe` and `refused` one the accountant did not price: both stay visible here and are in no `pluginSpend*` total |
+| `thread`, `unattributed_break_usd` | the accountant thread the request belongs to, and the net cost of the cache effects no operator owns (shown, never charged to an operator) |
 | `daily_total_usd`, `daily_max_usd` | added by `litellm-budget-track` when it is in the pipeline; the budget's business, not the cost owner's |
+
+**How the basis is chosen.** `accountant.BillingFrom` reads the shape of the **client's**
+credential, never its value, before any plugin can rewrite it (`pipeline.Context.BillingSnapshot`):
+
+| client credential | basis |
+|---|---|
+| `x-api-key: …`, or `Authorization: Bearer sk-…` (but not `sk-ant-oat…`) | `usd` |
+| `Authorization: Bearer sk-ant-oat…` (a Claude subscription login), or any JWT-shaped bearer (a ChatGPT login, but also a gateway's or Keycloak's token) | `subscriptionEquivalent` |
+| any other bearer (an opaque key), `x-goog-api-key`, or no credential | `unknown` |
+
+So a request that is billed per token can still read as `subscriptionEquivalent` or `unknown`,
+and its saving is then in no dollar total. Two cases: a client that authenticates to a gateway
+with a JWT or an opaque key, and a request that inference-router sends to a server with that
+server's own key, because the basis follows the client's credential, not the server's.
 
 **Nothing in `avoided` is spend.** No consumer may add it to a cost, a budget or a usage
 total; a test in `core/cost/usage` asserts the aggregator's totals are unchanged by its
-presence. It is a container rather than a few flat fields because more counterfactuals are
+presence.
+
+**How the totals read it** (the ledger, `/v1/usage` and the sessions list alike; see
+`event.Event.Figures`). Only `basis: usd` is money:
+
+| column | what it sums |
+|---|---|
+| `avoidedMicros` | the `usd` of applied savings with basis `usd`. Gross, as before the accountant |
+| `penaltyMicros` | their `penaltyUsd`. Net saved is `avoidedMicros − penaltyMicros`, and may be negative; nothing floors it |
+| `avoidedUnits`, `penaltyUnits` | the `units`/`penaltyUnits` of `subscriptionEquivalent` savings, in milli-units |
+| `avoidedApiEquivalentMicros` | net of its penalty (`usd − penaltyUsd`), for the savings with basis `subscriptionEquivalent`: shown beside `avoidedUnits`/`penaltyUnits` as "API equivalent net", never in a money total. **May be negative** when the penalty exceeds the saving, the same way `avoidedUnits − penaltyUnits` can; nothing floors it |
+| `avoidedUnknownMicros` | net of its penalty (`usd − penaltyUsd`), for savings with basis `unknown`: shown, never added. **May be negative**, for the same reason |
+| `pluginSpendMicros`, `pluginSpendUnits`, `pluginSpendUnknownMicros` | `spends[]` by basis, without the `projected` and `refused` ones. **Not in `costMicros`**, so the existing spend figure keeps its meaning |
+
+**Spend in all**, in money, is `costMicros + pluginSpendMicros`. The subscription and
+unknown-billing parts of the plugin spend are beside it, never in it: `pluginSpendUnits` in
+usage-limit units and `pluginSpendUnknownMicros` in dollars that may or may not have been charged.
+
+**Budgets do not see plugin spend.** `session-budget` counts the tokens and calls of the requests
+that pass through the pipeline, and `litellm-budget-track` reads those requests' own cost. A
+context operator's model call is sent by the context-guru plugin itself, not through the pipeline
+(see [context-guru-plugin.md](context-guru-plugin.md#where-its-own-model-calls-go)), and its spend
+is written into `spends[]`, never into the session store's figures. So it does not count toward a
+session budget or a `daily_total_usd`: a budget limits the agent's own requests.
+
+A ledger row written before these columns existed reads them as 0. A saving recorded before the
+accountant has no `basis`; it was priced in dollars, so every reader takes an empty `basis` as
+`usd` (`event.Saving.EffectiveBasis`), and a replayed ring or re-folded archive counts it as the
+ledger does. It is a container rather than a few flat fields because more counterfactuals are
 coming — compaction, redaction, "what a cheaper model would have cost" — and as siblings of
 `cost_usd` the record would become half-real and half-hypothetical, which is how someone
 eventually sums two fields that must never be summed.

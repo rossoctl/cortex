@@ -1,0 +1,1 @@
+{"model":"gpt-5","tools":[{"type":"function","function":{"name":"t1","description":"d1"}}],"messages":[{"role":"user","content":"hello"},{"role":"assistant","content":"hi"}]}

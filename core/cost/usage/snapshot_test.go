@@ -905,7 +905,7 @@ func TestSnapshot_AnUnlabellableSavingIsDisclosedAsItsOwnResidual(t *testing.T) 
 	now := time.Now().Truncate(BucketWidth)
 	a := New(WithClock(func() time.Time { return now }))
 
-	saving := []event.Saving{{Component: "tool-prune", TokensAvoided: 400, USD: 0.04, Tier: "input"}}
+	saving := []event.Saving{{Basis: event.BasisUSD, Component: "tool-prune", TokensAvoided: 400, USD: 0.04, Tier: "input"}}
 	// A model the parser read, priced, with a saving on it.
 	a.Record("s1", withCostRecord(t, respEvent(now, 200, time.Second, "claude-opus-5", 1000),
 		event.Event{CostUSD: 0.10, Settled: true, Provenance: "configured", Avoided: saving}))
@@ -913,7 +913,7 @@ func TestSnapshot_AnUnlabellableSavingIsDisclosedAsItsOwnResidual(t *testing.T) 
 	// its own that is real either way.
 	a.Record("s1", withCostRecord(t, respEvent(now, 200, time.Second, "", 0),
 		event.Event{CostUSD: 0.25, Settled: true, Provenance: "authoritative",
-			Avoided: []event.Saving{{Component: "tool-prune", TokensAvoided: 600, USD: 0.06, Tier: "input"}}}))
+			Avoided: []event.Saving{{Basis: event.BasisUSD, Component: "tool-prune", TokensAvoided: 600, USD: 0.06, Tier: "input"}}}))
 
 	snap := a.Snapshot(10*BucketWidth, BucketWidth, "s1", GroupModel)
 

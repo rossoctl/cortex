@@ -8,6 +8,7 @@ holds the repo-level pieces; this file is the index.
 | If you want to… | Read |
 |---|---|
 | Install Cortex, see it work, and undo it | [Getting started](getting-started.md) |
+| Install and run Cortex on Windows (preview) | [Cortex on Windows](windows.md) |
 | Route your agent through Cortex | [Claude Code](agents/claude-code.md), [Codex](agents/codex.md), [OpenCode](agents/opencode.md), [IBM Bob](agents/bob.md), [Pi](agents/pi.md), [any other agent](agents/any-agent.md) |
 | Read the `agentop` screen | [Using agentop](using-agentop.md) |
 | Fix a problem | [Troubleshooting](troubleshooting.md) |

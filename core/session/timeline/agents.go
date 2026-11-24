@@ -2,7 +2,6 @@ package timeline
 
 import (
 	"encoding/json"
-	"fmt"
 	"regexp"
 	"slices"
 	"strings"
@@ -10,35 +9,19 @@ import (
 	"unicode/utf8"
 
 	"github.com/rossoctl/cortex/core/model"
+	"github.com/rossoctl/cortex/core/session/toolpair"
 )
 
-// progressPrompt is the instruction Claude Code appends when it asks a model for a subagent's
-// 3-5 word status line. Those calls carry the subagent's whole context and tool list, so only
-// their last user message tells them apart from the subagent's real turns; Claude Code can send
-// system messages after it (a <total_tokens> count). They are a third of all subagent calls on
-// real sessions, and drawing them would bury the turns that matter.
-const progressPrompt = "Describe your most recent action in 3-5 words"
-
-// recapPrompt asks for the summary Claude Code shows when the user comes back to an idle
-// session. The same shape as a progress label: whole context and tool list, told apart only by
-// its last user message. Drawn as a turn it was the agent working while the user was away, and
-// two recaps of an unchanged conversation read as a retry: 74 hours of it on one session.
-const recapPrompt = "The user stepped away and is coming back"
-
-// The two ways a background subagent's result reaches the agent that started it. Both name the
-// subagent by the id Claude Code sends as X-Claude-Code-Agent-Id, the id the proxy records as
-// SessionEvent.Subagent, so a return links to its row without any text matching.
-var (
-	agentMessageRe = regexp.MustCompile(`<agent-message from="([A-Za-z0-9_-]+)"`)
-	taskIDRe       = regexp.MustCompile(`<task-notification>\s*<task-id>([A-Za-z0-9_-]+)</task-id>`)
-	spawnedIDRe    = regexp.MustCompile(`agentId: ([A-Za-z0-9_-]+)`)
-	// backgroundRe is Claude Code's result for a shell command it started in the background;
-	// the command's <task-notification> later names the same id.
-	backgroundRe = regexp.MustCompile(`^Command running in background with ID: ([A-Za-z0-9_-]+)`)
-	// stoppedRe is TaskStop's result. A stopped job gets no <task-notification>, so without it
-	// the job stays open and covers every later wait of its agent.
-	stoppedRe = regexp.MustCompile(`^\{"message":"Successfully stopped (?:task: |background command )([A-Za-z0-9_-]+)`)
-)
+// spawnedIDRe reads the subagent id out of an Agent call's result ("agentId: …"), which is how
+// a spawned subagent is linked to the call that started it.
+//
+// THE ONLY MARKER PATTERN LEFT HERE. The agent-message, task-notification, background-job and
+// TaskStop patterns moved to core/session/toolpair with the scan that uses them. They are NOT
+// duplicated back: Go does not report an unused package-level var, so a copy here would compile,
+// pass vet, read as live beside this one — and silently do nothing when someone widened it,
+// because the pattern that runs is in the other package. Same for the progress and recap prompt
+// literals, which are matched against live traffic and change when Claude Code rewords them.
+var spawnedIDRe = regexp.MustCompile(`agentId: ([A-Za-z0-9_-]+)`)
 
 // failedFinish are the finish reasons of a reply that did not complete: none at all, a refusal
 // (Anthropic "refusal", OpenAI chat "content_filter"), and a Responses API status of "failed" or
@@ -80,10 +63,79 @@ type toolArgs struct {
 	To           string `json:"to"`
 }
 
+// lostFor maps a toolpair reason to this package's Lost bool.
+//
+// THE ONE PLACE THE TWO VOCABULARIES MEET. toolpair names WHY a call got no result (spec T31);
+// Tool.Lost only says that it did not, because that is what agentop decodes and its JSON is a
+// wire contract.
+//
+// DERIVED FROM HasEnd RATHER THAN A LIST OF REASONS, so that it FAILS CLOSED. Naming the
+// no-result reasons here means a reason added to toolpair later matches none of them and reads
+// as false — and a lost call with Lost false renders as still running, forever, on a pane whose
+// whole job is showing what finished. Asking "does this reason carry an end" instead inverts
+// that: a new reason is lost until someone says otherwise, which is the safe default and needs
+// no edit here.
+//
+// The empty reason is the one that must not be lost: it means still open, which is a different
+// fact — no End at all rather than an end equal to its start.
+func lostFor(r toolpair.EndReason) bool { return r != "" && !r.HasEnd() }
+
 func buildAgents(t *Timeline, events []model.SessionEvent) {
-	calls := pairCalls(events)
-	if len(calls) == 0 {
+	// The tool calls, the background jobs and the subagent returns all come from one walk over
+	// the same events, in core/session/toolpair — shared with the export, which needs the same
+	// pairing and the same five closing cases. Everything below is what only a timeline wants:
+	// turns, the agent tree, and the spans' previews.
+	paired := toolpair.Calls(events, toolpair.Options{Returns: true, Arguments: true, AgentResults: true})
+	if len(paired.Turns) == 0 {
 		return
+	}
+	// The same pairs toolpair already resolved: pairing decides each request's agent, drops the
+	// agent's own housekeeping calls and resolves a reused request id, and doing it twice over
+	// one session measured ~30% of a whole build.
+	calls := make([]call, len(paired.Turns))
+	for i, tn := range paired.Turns {
+		calls[i] = call{req: tn.Req, resp: tn.Resp, agent: tn.Agent}
+	}
+	t.scanned = paired.ScannedBytes
+	for _, j := range paired.Jobs {
+		t.Jobs = append(t.Jobs, Job{Agent: j.Agent, ID: j.ID, ToolUseID: j.ToolUseID, Start: j.Start, End: j.End, Seq: j.Seq})
+	}
+	for _, r := range paired.Returns {
+		t.Returns = append(t.Returns, Return{Agent: r.Agent, Into: r.Into, At: r.At, Seq: r.Seq})
+	}
+	var spawns []*spawn
+	// EXACT CAPACITY, AND A SPAWN HOLDS A POINTER INTO THIS SLICE. One Tool per paired call, so
+	// the append below never reallocates and the &t.Tools[…] a spawn keeps stays valid until
+	// linkAgents has consumed it. Growing this slice later, or appending to it anywhere else in
+	// this function, would leave those pointers addressing a stale array.
+	t.Tools = make([]Tool, 0, len(paired.Calls))
+	for i := range paired.Calls {
+		k := &paired.Calls[i]
+		var a toolArgs
+		_ = json.Unmarshal([]byte(k.Arguments), &a)
+		lost := lostFor(k.EndReason)
+		end := k.End
+		if lost && end == nil {
+			// A LOST SPAN ENDS AT ITS START HERE, where toolpair leaves it open. The two
+			// consumers want opposite things from the same fact: this pane draws a lost call as
+			// a tick on the axis, so it needs an end, while the export must NOT carry a
+			// zero-length duration — a 0 ms call passes a `durationMs > 0` filter and drags a
+			// p50 toward zero (spec T16). So the zero-length end is this projection's, not the
+			// pairing's. TestLostSpansSurviveClip and the four TestToolOf…IsLost tests pin it.
+			at := k.Start
+			end = &at
+		}
+		t.Tools = append(t.Tools, Tool{
+			Agent: k.Agent, ID: k.ToolUseID, Name: k.Name, Start: k.Start, End: end,
+			Preview: preview(k.Name, a), Error: k.IsError, Lost: lost, Seq: k.CallSeq,
+		})
+		if k.Name == "Agent" || k.Name == "Task" {
+			sp := &spawn{by: k.Agent, turnAt: k.AskedAt, desc: a.Description, typ: a.SubagentType, tool: &t.Tools[len(t.Tools)-1]}
+			if m := spawnedIDRe.FindStringSubmatch(paired.AgentResults[k.ToolUseID]); m != nil {
+				sp.childID = m[1]
+			}
+			spawns = append(spawns, sp)
+		}
 	}
 
 	type agentState struct {
@@ -91,27 +143,11 @@ func buildAgents(t *Timeline, events []model.SessionEvent) {
 		prev  []model.InferenceMessage
 	}
 	agents := map[string]*agentState{}
-	jobs := map[string]int{} // background job id → index in t.Jobs
 	var order []string
-	ends := map[string]map[string]*model.InferenceToolResult{} // agent → tool id → first result
-	endAt := map[string]map[string]time.Time{}
-	results := map[string]string{} // tool id → result text, for Agent calls only
-	agentTools := map[string]bool{}
-	seenReturn := map[string]bool{}
-	stopped := map[string]time.Time{} // agent → its latest <task-notification>: its run ended
-	// A run that ends with SubagentHandback returns twice: its <agent-message> at once, and a
-	// <task-notification> that Claude Code sends later, often with the parent's next request.
-	// handedBack: the agent's latest response called SubagentHandback. delivered: that report
-	// then reached a parent. A later request of the agent clears both: it runs again.
-	handedBack, delivered := map[string]bool{}, map[string]bool{}
-	var askedAt []time.Time // per t.Tools entry: when the request that asked for it started
-	var spawns []*spawn
 	var calBytes, calTokens int64 // sums over the turns that set t.bytesPerToken
 
 	for _, c := range calls {
 		inf := c.req.Inference
-		delete(handedBack, c.agent)
-		delete(delivered, c.agent)
 		st, known := agents[c.agent]
 		if !known {
 			st = &agentState{first: c.req.At}
@@ -119,83 +155,12 @@ func buildAgents(t *Timeline, events []model.SessionEvent) {
 			order = append(order, c.agent)
 		}
 
-		// Tool ends: the first request in this agent that carries a tool's result.
-		for i := range inf.ToolResults {
-			r := &inf.ToolResults[i]
-			if ends[c.agent] == nil {
-				ends[c.agent], endAt[c.agent] = map[string]*model.InferenceToolResult{}, map[string]time.Time{}
-			}
-			if _, seen := ends[c.agent][r.ToolUseID]; !seen {
-				ends[c.agent][r.ToolUseID], endAt[c.agent][r.ToolUseID] = r, c.req.At
-				if agentTools[r.ToolUseID] {
-					results[r.ToolUseID] = r.Content
-				}
-				if m := backgroundRe.FindStringSubmatch(r.Content); m != nil {
-					if _, dup := jobs[m[1]]; !dup {
-						jobs[m[1]] = len(t.Jobs)
-						t.Jobs = append(t.Jobs, Job{Agent: c.agent, ID: m[1], ToolUseID: r.ToolUseID, Start: c.req.At, Seq: c.req.Seq})
-					}
-				}
-				if m := stoppedRe.FindStringSubmatch(r.Content); m != nil {
-					if j, ok := jobs[m[1]]; ok && t.Jobs[j].End == nil {
-						at := c.req.At
-						t.Jobs[j].End = &at
-					}
-				}
-			}
-		}
-
-		// Returns: scan only the messages this agent has not sent before. A conversation
-		// re-sends its whole history every turn, so scanning all of it is quadratic in turns
-		// (0.26-0.47GB of text on real sessions against 35-42MB new).
-		//
-		// Not for pre-#1459 subagent traffic: every subagent shares that one bucket, so each
-		// request's history differs from the last one's and every scan would be a full one.
-		msgs := inf.Messages
-		k := commonPrefix(st.prev, msgs)
 		// A call that sends its predecessor's conversation unchanged added nothing: a retry.
+		// commonPrefix is cheap here: the store interns message content, so equal strings
+		// usually share a backing array.
+		msgs := inf.Messages
+		k := toolpair.CommonPrefix(st.prev, msgs)
 		resent := known && len(msgs) > 0 && k == len(msgs) && k == len(st.prev) && c.agent != UnseparatedAgent
-		if c.agent == UnseparatedAgent {
-			k = len(msgs)
-		}
-		for mi, m := range msgs[k:] {
-			if m.Role == "assistant" {
-				continue // an agent quoting the markers is not a delivery
-			}
-			t.scanned += len(m.Content)
-			for _, re := range []*regexp.Regexp{agentMessageRe, taskIDRe} {
-				for _, idx := range re.FindAllStringSubmatchIndex(m.Content, -1) {
-					from := m.Content[idx[2]:idx[3]]
-					tail := m.Content[idx[0]:min(len(m.Content), idx[1]+200)]
-					// Keyed by the message's position in the history as well as its text: a
-					// fork re-sends its parent's deliveries at the same positions, while a
-					// second, identically worded hand-back lands at a new one.
-					key := fmt.Sprintf("%s\x00%d\x00%s", from, k+mi, tail)
-					if seenReturn[key] {
-						continue // a fork inherits its parent's history, deliveries included
-					}
-					seenReturn[key] = true
-					// The notification after a delivered hand-back is not a return: it came a median
-					// 22s and up to hours later, and riding on the user's next prompt it labelled the
-					// user's time as waiting on the subagent.
-					if re == agentMessageRe && handedBack[from] {
-						delivered[from] = true
-					}
-					if re == agentMessageRe || !delivered[from] {
-						t.Returns = append(t.Returns, Return{Agent: from, Into: c.agent, At: c.req.At, Seq: c.req.Seq})
-					}
-					// Only a notification says the run ended: an <agent-message> can arrive mid-run.
-					if re == taskIDRe && c.req.At.After(stopped[from]) {
-						stopped[from] = c.req.At
-					}
-					// A background job ends at the first notification naming it.
-					if j, ok := jobs[from]; ok && t.Jobs[j].End == nil {
-						at := c.req.At
-						t.Jobs[j].End = &at
-					}
-				}
-			}
-		}
 		st.prev = msgs
 
 		turn := Turn{Agent: c.agent, Start: c.req.At, Resent: resent, Seq: c.req.Seq, Model: inf.Model, requestID: c.req.RequestID}
@@ -203,7 +168,7 @@ func buildAgents(t *Timeline, events []model.SessionEvent) {
 			t.Turns = append(t.Turns, turn)
 			continue
 		}
-		end := responseEnd(c.req, c.resp)
+		end := toolpair.ResponseEnd(c.req, c.resp)
 		turn.End = &end
 		if out := c.resp.Inference; out != nil {
 			turn.Finish = out.FinishReason
@@ -225,23 +190,6 @@ func buildAgents(t *Timeline, events []model.SessionEvent) {
 		}
 		turn.Error = c.resp.Phase == model.SessionDenied || c.resp.Error != nil || c.resp.StatusCode >= 400 || failed
 		t.Turns = append(t.Turns, turn)
-		if c.resp.Inference == nil {
-			continue
-		}
-		for _, tc := range c.resp.Inference.ToolCalls {
-			var a toolArgs
-			_ = json.Unmarshal([]byte(tc.Arguments), &a)
-			tool := Tool{Agent: c.agent, ID: tc.ID, Name: tc.Name, Start: end, Preview: preview(tc.Name, a), Seq: c.resp.Seq}
-			t.Tools = append(t.Tools, tool)
-			askedAt = append(askedAt, c.req.At)
-			if tc.Name == "SubagentHandback" {
-				handedBack[c.agent] = true
-			}
-			if tc.Name == "Agent" || tc.Name == "Task" {
-				agentTools[tc.ID] = true
-				spawns = append(spawns, &spawn{by: c.agent, turnAt: c.req.At, desc: a.Description, typ: a.SubagentType})
-			}
-		}
 	}
 
 	if calTokens > 0 {
@@ -258,48 +206,6 @@ func buildAgents(t *Timeline, events []model.SessionEvent) {
 		}
 		if lastTurn[tu.Agent].Before(tu.Start) {
 			lastTurn[tu.Agent] = tu.Start
-		}
-	}
-
-	// Close each tool on its agent's first request carrying its result. Claude Code runs a
-	// tool while the response that asked for it is still streaming, so that request can be
-	// recorded before the response finished: clamp rather than draw a negative span.
-	//
-	// A tool that ends the run by design, with no result, ended it at the response that asked
-	// for it: a workflow agent stops at its StructuredOutput call, and no request carries that
-	// call's result. That response's other tools get no result either, and a workflow agent
-	// gets no notification to close them. A Bob subtask stops at its end_subtask call the same
-	// way. A response's tools share its Seq.
-	endedRun := map[uint64]bool{}
-	for _, tool := range t.Tools {
-		if _, ok := endAt[tool.Agent][tool.ID]; !ok && (tool.Name == "SubagentHandback" || tool.Name == "StructuredOutput" || tool.Name == "end_subtask") {
-			endedRun[tool.Seq] = true
-		}
-	}
-	si := 0
-	for i := range t.Tools {
-		tool := &t.Tools[i]
-		if at, ok := endAt[tool.Agent][tool.ID]; ok {
-			if at.Before(tool.Start) {
-				at = tool.Start
-			}
-			tool.End = &at
-			tool.Error = ends[tool.Agent][tool.ID].IsError
-		} else if endedRun[tool.Seq] || lastTurn[tool.Agent].After(tool.Start) || stopped[tool.Agent].After(askedAt[i]) {
-			// The agent moved on without the result, or its run ended without it (the response
-			// ended the run, or the agent was stopped). The run can end while the asking response
-			// still streams, so compare the notification with that request's start. A resumed
-			// run's request starts after the earlier notification.
-			at := tool.Start
-			tool.End, tool.Lost = &at, true
-		}
-		if tool.Name == "Agent" || tool.Name == "Task" {
-			sp := spawns[si]
-			si++
-			sp.tool = tool
-			if m := spawnedIDRe.FindStringSubmatch(results[tool.ID]); m != nil {
-				sp.childID = m[1]
-			}
 		}
 	}
 
@@ -395,93 +301,6 @@ func linkAgents(order []string, first map[string]time.Time, calls []call, spawns
 		out = append(out, a)
 	}
 	return out
-}
-
-// pairCalls returns the session's Claude Code inference calls in request order, each with the
-// agent that made it. Progress-label calls and tool-less side calls (titler, classifier,
-// security monitor) are dropped: they are not an agent's work, and on a live session they were
-// more than half of the main role's requests.
-func pairCalls(events []model.SessionEvent) []call {
-	var calls []call
-	byReq := map[string]int{}
-	for i := range events {
-		e := &events[i]
-		if e.Direction != model.Outbound {
-			continue
-		}
-		switch e.Phase {
-		case model.SessionRequest:
-			if e.Inference == nil {
-				continue
-			}
-			id, ok := agentOf(e)
-			// A transcript holds only real turns, and no tool manifest, so an imported call is never a side call.
-			if !ok || (!e.Imported() && isSideCall(e.Inference)) {
-				continue
-			}
-			byReq[e.RequestID] = len(calls)
-			calls = append(calls, call{req: e, agent: id})
-		case model.SessionResponse, model.SessionDenied:
-			if j, ok := byReq[e.RequestID]; ok && calls[j].resp == nil {
-				calls[j].resp = e
-			}
-		}
-	}
-	return calls
-}
-
-// agentOf names the agent that sent a request. Claude Code's requests carry their own
-// markers: AgentRole from its cc_is_subagent header, Subagent from its agent id header.
-// A Bob child task carries Subagent from its own X-Task-Id (it sends X-Parent-Task-Id).
-// Every other request of a known client gets the single main row — nothing on the wire
-// says which of its calls belong together beyond that.
-func agentOf(e *model.SessionEvent) (string, bool) {
-	switch {
-	case e.Subagent != "":
-		return e.Subagent, true
-	case e.Inference.AgentRole == model.AgentRoleSubagent:
-		return UnseparatedAgent, true
-	case e.Inference.AgentRole == model.AgentRoleMain:
-		return MainAgent, true
-	case e.Client != nil && model.IsKnownAgent(e.Client.Name):
-		return MainAgent, true
-	}
-	return "", false
-}
-
-// isSideCall drops a call that is not an agent's work. The no-tools rule is Claude Code only
-// (AgentRole set): it holds because Claude always sends a manifest on real turns, while another
-// client's tool-less calls (Bob's security classifier) are real turns with real cost. The prompt
-// literals run for every client: they match Claude's own progress and recap prompt text, which
-// no other client sends, and a recap storm reads as turns on any session that carries one —
-// including pre-marker Claude Code traffic, attributed by client name alone.
-func isSideCall(inf *model.InferenceExtension) bool {
-	if inf.AgentRole != "" && len(inf.Tools) == 0 && inf.ToolCount == 0 {
-		return true
-	}
-	for i := len(inf.Messages) - 1; i >= 0; i-- {
-		if m := inf.Messages[i]; m.Role != "system" {
-			return strings.Contains(m.Content, progressPrompt) || strings.Contains(m.Content, recapPrompt)
-		}
-	}
-	return false
-}
-
-// commonPrefix is how many leading messages cur shares with prev. The store interns repeated
-// message content, so equal strings usually share a backing array and compare in O(1).
-func commonPrefix(prev, cur []model.InferenceMessage) int {
-	k := 0
-	for k < len(prev) && k < len(cur) && prev[k].Role == cur[k].Role && prev[k].Content == cur[k].Content {
-		k++
-	}
-	return k
-}
-
-func responseEnd(req, resp *model.SessionEvent) time.Time {
-	if resp.Duration > 0 {
-		return req.At.Add(resp.Duration)
-	}
-	return resp.At
 }
 
 func preview(name string, a toolArgs) string {

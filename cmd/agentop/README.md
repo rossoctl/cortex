@@ -40,11 +40,13 @@ install updates itself.
 
 The title bar shows one of these notices. When more than one applies, it shows the first:
 
-1. `· updated to vX.Y.Z, restart agentop`
-2. `· update to vX.Y.Z failed, see agentop doctor`
-3. `· vX.Y.Z available`: only when vX.Y.Z is newer than the installed release or
+1. `· vX.Y.Z installed, quit and reopen agentop`, in green. The proxy already runs
+   vX.Y.Z. Only the open agentop still runs the old binary, so you do not need
+   `agentop service restart`.
+2. `· update to vX.Y.Z failed, see agentop doctor`, in red.
+3. `· vX.Y.Z available`, in green: only when vX.Y.Z is newer than the installed release or
    release candidate. A `dev` or `main` build shows no notice.
-4. `· no update check since <date>`: service installs only, after 72 hours with no check.
+4. `· no update check since <date>`, in amber: service installs only, after 72 hours with no check.
 
 ## Run
 
@@ -405,12 +407,17 @@ agentop is for, and the others are surfaces you visit and leave.
   unit everywhere — `0.03 Bobcoins`, never `$0.03` — with the same precision rules
   as dollars. Figures in different units are never added: a band span holding
   both prints them side by side (`$6.20 + 0.03 Bobcoins`), and the drawer, the
-  agents pane and the sessions table label each row with its own unit. A row that
-  itself spans units reads `(mixed)`, the drawer's tier column is withheld for a
-  mixed window, and so is the Usage pane's cost chart — scope to one agent (`A`,
-  then `u`) to chart it. Where a column is too narrow for the name it is shortened
-  (`0.03 Bobc…`), down to `¤`. A deployment with no `unit:` configured sees
-  exactly the dollar figures it always did.
+  agents pane and the sessions table label each row with its own unit. In the
+  Agents pane, an agent row or a project row that spans units shows the amount in
+  each unit, dollars first: `$1,065.52 + 0.95 Bobcoins`. The COST column grows
+  into the free width of the pane. When the terminal is too narrow for that cell,
+  the cell reads `(mixed)`. The Other rows, and a sessions table row that spans
+  units, read `(mixed)`. The drawer's tier column is withheld for a mixed window,
+  and so is the Usage pane's cost chart — scope to one agent (`A`, then `u`) to
+  chart it. Where a column is too narrow for the name it is shortened
+  (`0.03 Bobc…`), down to `¤`. In the Agents pane, a single unit is not shortened
+  when the pane has free width (`15.90 Bobcoins`). A deployment with no `unit:`
+  configured sees exactly the dollar figures it always did.
 
   `$` expands the band into two columns — where the money went, by rate tier,
   and who spent it, by model, endpoint or agent:
@@ -988,11 +995,18 @@ drawer follow that project.
 **`↵` on a project sub-row scopes to that project.** The project scope narrows the
 sessions list to the sessions that recorded the project, and narrows the usage pane,
 the spend band and its drawer to the project's figures. Every title then says
-`project=<display name>`, beside `agent=` when an agent is scoped. agentop asks for
-the `group=project` series and narrows the reply itself: the server has no `project=`
-parameter. Under a project scope, `[b]` is inert on the usage pane, latency is not
-available per project, and the drawer shows no breakdown (`no breakdown for this
-scope`). Within one session, the usage pane reads that session's projects without the
+`project=<display name>`, beside `agent=` when an agent is scoped. agentop sends
+`project=<label>`, the label that `group=project` reports, to the server (with `agent=` when an agent is scoped), and
+uses the reply only when the reply echoes `project`. A proxy that does not echo
+`project` (older than #2033) gets the old read: agentop asks for the `group=project`
+series and narrows the reply itself. agentop never sends `project=Other` or
+`project=(other)`: those scopes also use the old read. Under a project scope, `[b]` is
+inert on the usage pane and latency is not available per project. The drawer axes are
+`model` and `endpoint`, and `a` cycles them; the project `Other` has no axes. The
+drawer says `no breakdown for this scope in <window>` only when the reply has no
+breakdown (an older proxy, or a window that the proxy cannot break down). The spend
+band shows each unit, for example `$12.00 + 0.95 Bobcoins`, under a project scope
+too. Within one session, the usage pane reads that session's projects without the
 agent. Against a server that names no session's project, the sessions list stays whole
 and its footer says `list not scoped`. `esc` keeps both scopes; `All projects` clears
 the project scope, and All agents clears both. The project scope is not saved across
@@ -1241,8 +1255,9 @@ agentop server use ete --key-of glm                       # new sessions that se
 agentop server reset --key-of glm                         # glm's key goes to glm again
 agentop server move <session-id> glm                      # move one running session → glm
 agentop server                                            # the servers, their models, their agents
+agentop server rename ete litellm-external                # a new name; its agents follow
 agentop server reset --agent opencode                     # stop routing opencode
-agentop server remove glm                                 # refused while an agent uses it
+agentop server remove glm                                 # refused while an agent uses it; the last takes the router out
 ```
 
 A request that sends the key of a configured server goes to that server.
@@ -1411,15 +1426,38 @@ refusal is believed for an hour, and a session keeps the model it was given.
   server.
   **`move <session-id> <name>`** moves one running session; `own` sends it back to
   its agent's own provider.
-- **`remove <name>`** refuses while an agent is routed to the server, and names
-  the command that takes the agent off it; it also refuses the last server. It
-  also refuses while a `key_routes:` entry names the server on either side, and
-  names the entry and `agentop server reset --key-of <server>`. A
+- **`remove <name>`** refuses while an agent is routed to the server, or a
+  `sessions:` entry moved a session to it, and names the commands that take them
+  off it. It also refuses while a `key_routes:` entry names the server on either
+  side, and names the entry and `agentop server reset --key-of <server>`. A
   session that started on a removed server gets a 503 asking for a new session
   until the server is added back or the session is moved. So when
   sessions the proxy is running last sent their inference to the server, `remove`
   warns how many before it goes ahead. It leaves
   out the default and `pending:` buckets, which the router never pins.
+- **Removing the last server** takes the router's entry out with it, since the
+  router needs a server: `add` then `remove` leaves the config as it was. With no
+  router, nothing holds a running session where it was, so the sessions the proxy
+  is running that last sent their inference there go where their agent sends
+  them from their next request, partway through their conversation, rather than
+  getting the 503. When there are any, or the proxy's sessions cannot be read,
+  `remove` says so and asks first (`--yes` skips the question). Their pins stay in
+  the plugin store for 30 days, so adding the server back takes them back to it.
+  The router's `sessions:` entries go with its entry, `move … own` ones included,
+  so a session moved off the server that has sent nothing since goes back to it
+  too. If the router's entry changes while `remove` waits, it writes nothing and
+  says to run it again.
+- **`rename <name> <new-name>`** gives a server a new name in one write: the
+  server's key in the file is renamed in place, so its URL, key (a `${NAME}`
+  reference included), models, comments and place in the file stay as they were,
+  and every `agents:`, `sessions:` and `key_routes:` entry naming it is rewritten
+  to the new name. The router pins a running session to its server by name, so a
+  session pinned to the old name gets the removed server's 503 until it is moved
+  or the server is renamed back. `rename` warns how many before it goes ahead, as
+  `remove` does, and asks nothing. A session moved with a `sessions:` entry
+  follows the rename, since the entry beats the pin. It refuses a name another
+  server has (remove that one first) and `own`, and with the old name again
+  changes nothing.
 - **`agentop server`** lists each server's host (its whole URL when it is plain
   `http`), what its main and helper words name on its list now, read with its own
   key, the agents routed to it and, for a server whose key is routed to another
@@ -1451,7 +1489,8 @@ that changes nothing writes nothing. `--config PATH` points every form at anothe
 config, with the stats address read from it: that is how to try this against a
 second Cortex without touching the one every session uses. Flags go after the
 action. Exit codes: 0 done, or nothing to do; 1 refused or failed; 2 a usage error,
-a malformed name, agent or URL included; 3 a replacement declined.
+a malformed name, agent or URL included; 3 a replacement, or the router's
+removal with the last server, declined.
 
 #### Local model servers
 

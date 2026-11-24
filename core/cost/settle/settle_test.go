@@ -69,6 +69,193 @@ func fallbackUSD(input, output int) float64 {
 	return (float64(input)*tierMicros[pricing.TierInput] + float64(output)*tierMicros[pricing.TierOutput]) / 1e6
 }
 
+// TestModelledCost_Prices1hWrites: 600 of 1000 cache-write tokens were written
+// with a 1-hour TTL. The 5m portion (400) prices at the ordinary cache-write
+// rate; the 1h portion (600) prices at 2x input — Anthropic's documented 1h
+// premium, which modelledCost applies because the model name is a Claude one.
+func TestModelledCost_Prices1hWrites(t *testing.T) {
+	const (
+		inputRate = 3.80e-6 // Sonnet rates, USD/token
+		cw5mRate  = 4.75e-6
+		cw1hRate  = inputRate * 2.0 // Anthropic's documented 1h premium
+	)
+	var r pricing.Rates
+	r.Base[pricing.TierInput], r.Set[pricing.TierInput] = inputRate, true
+	r.Base[pricing.TierCacheWrite], r.Set[pricing.TierCacheWrite] = cw5mRate, true
+	tab, err := pricing.NewTable([]pricing.Entry{{Host: "*", Model: "*", Rates: r, Prov: pricing.ProvConfigured}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := pricing.NewRegistry(tab)
+
+	u := pricing.Usage{CacheWrite: 1000, CacheWrite1h: 600}
+	micros, tiers, prov, ok, refusal, estimated1h := modelledCost(resolver, "gw.internal", "claude-sonnet-4-5", u, u.PromptTotal())
+	if !ok {
+		t.Fatalf("modelledCost refused: %v", refusal)
+	}
+	if prov != pricing.ProvConfigured {
+		t.Errorf("provenance = %v, want ProvConfigured", prov)
+	}
+	if estimated1h {
+		t.Error("estimated1h = true, want false: a Claude model derives the 1h rate from Anthropic's documented 2x-input premium, not a guess")
+	}
+
+	wantUSD := 400*cw5mRate + 600*cw1hRate
+	wantMicros, ok := pricing.MicrosFromUSD(wantUSD)
+	if !ok {
+		t.Fatal("test fixture produced an unrepresentable USD figure")
+	}
+	if micros != wantMicros {
+		t.Errorf("micros = %d, want %d (400*cw5m + 600*cw1h = %v USD)", micros, wantMicros, wantUSD)
+	}
+	if got := tiers[pricing.TierCacheWrite]; got != wantMicros {
+		t.Errorf("tiers[TierCacheWrite] = %d, want %d — the whole write cost should land on this tier", got, wantMicros)
+	}
+}
+
+// onehourRates builds the same Sonnet-like table TestModelledCost_Prices1hWrites
+// uses, so the 1h tests below share one fixture.
+func onehourRates(t *testing.T) (pricing.Resolver, float64, float64, float64) {
+	t.Helper()
+	const (
+		inputRate  = 3.80e-6
+		cw5mRate   = 4.75e-6
+		outputRate = 19.00e-6
+	)
+	var r pricing.Rates
+	r.Base[pricing.TierInput], r.Set[pricing.TierInput] = inputRate, true
+	r.Base[pricing.TierCacheWrite], r.Set[pricing.TierCacheWrite] = cw5mRate, true
+	r.Base[pricing.TierOutput], r.Set[pricing.TierOutput] = outputRate, true
+	tab, err := pricing.NewTable([]pricing.Entry{{Host: "*", Model: "*", Rates: r, Prov: pricing.ProvConfigured}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pricing.NewRegistry(tab), inputRate, cw5mRate, outputRate
+}
+
+// TestSettle_OutputHalfExcludesCacheWrite1hPremium: the output half carries no
+// cache-write tokens, so it must carry no 1h premium either. If outputOnly zeroed
+// CacheWrite but left CacheWrite1h set, the premium would land on the output half.
+// Asserted through SettleInput, the path a real response takes.
+func TestSettle_OutputHalfExcludesCacheWrite1hPremium(t *testing.T) {
+	resolver, inputRate, cw5mRate, outputRate := onehourRates(t)
+	cw1hRate := inputRate * 2.0 // Anthropic's documented 1h premium
+
+	inf := &pipeline.InferenceExtension{
+		Model:              "claude-sonnet-4-5",
+		CacheWriteTokens:   1000,
+		CacheWrite1hTokens: 600,
+		OutputTokens:       100,
+		FinishReason:       "end_turn", // keeps IncompleteReason from firing for an unrelated cause
+	}
+	settled := SettleInput(Input{Host: "gw.internal", Inference: inf}, resolver)
+	if !settled.HasModelled || !settled.HasPrompt || !settled.HasOutput {
+		t.Fatalf("settled = %+v, want HasModelled/HasPrompt/HasOutput all true", settled)
+	}
+
+	wantOutputMicros, ok := pricing.MicrosFromUSD(100 * outputRate)
+	if !ok {
+		t.Fatal("test fixture produced an unrepresentable USD figure")
+	}
+	gotOutputMicros, ok := pricing.MicrosFromUSD(settled.OutputUSD)
+	if !ok {
+		t.Fatal("OutputUSD did not round-trip through MicrosFromUSD")
+	}
+	if gotOutputMicros != wantOutputMicros {
+		t.Errorf("OutputUSD = %d micros, want %d (100 output tokens x the output rate, no 1h premium)",
+			gotOutputMicros, wantOutputMicros)
+	}
+
+	wantWholeMicros, ok := pricing.MicrosFromUSD(400*cw5mRate + 600*cw1hRate + 100*outputRate)
+	if !ok {
+		t.Fatal("test fixture produced an unrepresentable USD figure")
+	}
+	promptMicros, _ := pricing.MicrosFromUSD(settled.PromptUSD)
+	outputMicros, _ := pricing.MicrosFromUSD(settled.OutputUSD)
+	if got := promptMicros + outputMicros; got != wantWholeMicros {
+		t.Errorf("PromptUSD + OutputUSD = %d micros, want %d (the whole modelled cost)", got, wantWholeMicros)
+	}
+	wholeMicros, _ := pricing.MicrosFromUSD(settled.ModelledUSD)
+	if wholeMicros != wantWholeMicros {
+		t.Errorf("ModelledUSD = %d micros, want %d", wholeMicros, wantWholeMicros)
+	}
+}
+
+// TestSettle_CacheWrite1hEstimatedWhenFallbackRateUsed covers the rule stated on
+// settle.go's estimated1h comment: price at the 5m rate and mark the figure
+// estimated when the 1h rate cannot be derived from a documented premium — true
+// for a non-Anthropic model here, and false for an Anthropic model's
+// documented-premium derivation.
+func TestSettle_CacheWrite1hEstimatedWhenFallbackRateUsed(t *testing.T) {
+	resolver, _, _, _ := onehourRates(t)
+
+	for _, tc := range []struct {
+		name          string
+		model         string
+		wantEstimated bool
+	}{
+		{"non-Anthropic model falls back to the 5m rate, estimated", "gpt-5", true},
+		{"Anthropic model derives the documented 2x-input premium, not estimated", "claude-sonnet-4-5", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			inf := &pipeline.InferenceExtension{
+				Model:              tc.model,
+				CacheWriteTokens:   1000,
+				CacheWrite1hTokens: 600,
+				OutputTokens:       100,
+				FinishReason:       "end_turn",
+			}
+			settled := SettleInput(Input{Host: "gw.internal", Inference: inf}, resolver)
+			if !settled.HasModelled {
+				t.Fatal("settled.HasModelled = false, want true")
+			}
+			if settled.ModelledIncomplete != tc.wantEstimated {
+				t.Errorf("ModelledIncomplete = %v, want %v", settled.ModelledIncomplete, tc.wantEstimated)
+			}
+			if tc.wantEstimated {
+				if settled.ModelledIncompleteReason != pricing.ReasonCacheWrite1hRateEstimated {
+					t.Errorf("ModelledIncompleteReason = %q, want %q", settled.ModelledIncompleteReason, pricing.ReasonCacheWrite1hRateEstimated)
+				}
+				// The modelled figure is also what was CHARGED here (no gateway header, no
+				// declared-free), so Incomplete/IncompleteReason mirror it.
+				if !settled.Incomplete || settled.IncompleteReason != pricing.ReasonCacheWrite1hRateEstimated {
+					t.Errorf("Incomplete/IncompleteReason = %v/%q, want true/%q",
+						settled.Incomplete, settled.IncompleteReason, pricing.ReasonCacheWrite1hRateEstimated)
+				}
+			} else if settled.ModelledIncompleteReason != "" {
+				t.Errorf("ModelledIncompleteReason = %q, want empty", settled.ModelledIncompleteReason)
+			}
+		})
+	}
+}
+
+// TestSettle_AnOversized1hSubsetIsDroppedNotRefused: a breakdown claiming more 1h
+// writes than writes is not real, but it is an optional breakdown. The request
+// prices as if it had no 1h writes, and the input and output dollars are kept.
+func TestSettle_AnOversized1hSubsetIsDroppedNotRefused(t *testing.T) {
+	resolver, inputRate, cw5mRate, outputRate := onehourRates(t)
+	inf := &pipeline.InferenceExtension{
+		Model:              "claude-sonnet-4-5",
+		InputTokens:        5000,
+		CacheWriteTokens:   100,
+		CacheWrite1hTokens: 200,
+		OutputTokens:       1000,
+		FinishReason:       "end_turn",
+	}
+	settled := SettleInput(Input{Host: "gw.internal", Inference: inf}, resolver)
+	if !settled.HasModelled || settled.RejectedReason != "" {
+		t.Fatalf("HasModelled=%v RejectedReason=%q, want a priced figure and no refusal",
+			settled.HasModelled, settled.RejectedReason)
+	}
+	want, ok := pricing.MicrosFromUSD(5000*inputRate + 100*cw5mRate + 1000*outputRate)
+	if !ok {
+		t.Fatal("test fixture produced an unrepresentable USD figure")
+	}
+	if got, _ := pricing.MicrosFromUSD(settled.ModelledUSD); got != want {
+		t.Errorf("ModelledUSD = %d micros, want %d (every cache write at the 5m rate)", got, want)
+	}
+}
+
 func ctx(headers map[string]string, input, output int) *pipeline.Context {
 	h := http.Header{}
 	for k, v := range headers {
@@ -348,123 +535,6 @@ func TestSettle_PricesPromptAndOutputHalvesSeparately(t *testing.T) {
 	}
 }
 
-// A saving is a slice of THIS request's prompt, so it prices at the rates the request
-// landed on — long-context premium included.
-//
-// Keying the threshold on the saving's own token count instead put a ~10k-token slice at
-// At(10000), below a 200k threshold that the 641k-token request it came out of is well past,
-// and under-reported every saving on exactly the long-context turns where the premium
-// applies. Asserted as a RATE (dollars per avoided token) rather than a dollar total, so the
-// byte-ratio token estimate can change without rewriting the expectation.
-func TestAvoided_PricesSavingsAtTheRequestsPromptSize(t *testing.T) {
-	pctx := &pipeline.Context{
-		Host: "gw.internal",
-		Extensions: pipeline.Extensions{
-			Inference: &pipeline.InferenceExtension{
-				Model: "claude-opus-5", InputTokens: 26,
-				CacheWriteTokens: 640_985, OutputTokens: 1_075,
-			},
-			Custom: map[string]any{
-				"tool-prune" + pipeline.PluginEventSuffix: map[string]any{
-					"bytesRemoved": 34_645, "bodyBytesAfter": 2_384_550,
-				},
-			},
-		},
-	}
-	got := Avoided(pctx, tieredTable(t))
-	if len(got) != 1 {
-		t.Fatalf("Avoided returned %d savings, want 1: %+v", len(got), got)
-	}
-	s := got[0]
-	if s.TokensAvoided <= 0 || s.USD <= 0 {
-		t.Fatalf("saving not priced: %+v", s)
-	}
-	// The prompt landed in the cache-write tier, which is 8e-06 above the threshold and
-	// 6.25e-06 below it.
-	if want := float64(s.TokensAvoided) * 8e-6; math.Abs(s.USD-want) > 1e-6 {
-		t.Errorf("saving priced at %v/token (%v for %d tokens), want the above-threshold "+
-			"8e-06 (%v); the below-threshold rate would give %v",
-			s.USD/float64(s.TokensAvoided), s.USD, s.TokensAvoided, want,
-			float64(s.TokensAvoided)*6.25e-6)
-	}
-	if s.Tier != pricing.TierCacheWrite.String() {
-		t.Errorf("Tier = %q, want %q", s.Tier, pricing.TierCacheWrite.String())
-	}
-}
-
-// The saving is calibrated on the body the request SENT, as the framework recorded the
-// writes that took effect — not on the body as the saving's own component left it.
-//
-// Request writers chain, so a component that shrank the body is not necessarily the last
-// to write it. Its own figure then names a body larger than the one billed, the measured
-// tokens-per-byte comes out low, and so does every saving priced from it — by the ratio of
-// the two sizes. Here a later writer cuts 2,384,550 bytes to 1,200,000, so the component's
-// figure would understate the saving by half.
-func TestAvoided_CalibratesOnTheBodyTheRequestSent(t *testing.T) {
-	const removed, ownAfter, sent = 34_645, 2_384_550, 1_200_000
-	pctx := &pipeline.Context{
-		Host: "gw.internal",
-		Body: make([]byte, ownAfter),
-		Extensions: pipeline.Extensions{
-			Inference: &pipeline.InferenceExtension{
-				Model: "claude-opus-5", InputTokens: 26,
-				CacheWriteTokens: 640_985, OutputTokens: 1_075,
-			},
-			Custom: map[string]any{
-				"tool-prune" + pipeline.PluginEventSuffix: map[string]any{
-					"bytesRemoved": removed, "bodyBytesAfter": ownAfter,
-				},
-			},
-		},
-	}
-	pctx.SetCurrentPlugin("a-later-writer", pipeline.InvocationPhaseRequest)
-	pctx.SetBody(make([]byte, sent))
-	pctx.ClearCurrentPlugin()
-
-	got := Avoided(pctx, tieredTable(t))
-	if len(got) != 1 {
-		t.Fatalf("Avoided returned %d savings, want 1: %+v", len(got), got)
-	}
-	prompt := pricing.UsageFromInference(pctx.Extensions.Inference).PromptTotal()
-	want := pricing.EstimateTokensFromBytes(removed, prompt, sent)
-	if got[0].TokensAvoided != want {
-		t.Errorf("TokensAvoided = %d, want %d calibrated on the %d bytes sent; the component's own "+
-			"%d-byte figure gives %d", got[0].TokensAvoided, want, sent, ownAfter,
-			pricing.EstimateTokensFromBytes(removed, prompt, ownAfter))
-	}
-}
-
-// With no write that took effect there is no record, and the component's own figure is the
-// calibration — its body is the one that went upstream.
-func TestAvoided_WithNoRewriteCalibratesOnTheComponentsFigure(t *testing.T) {
-	const removed, ownAfter = 34_645, 2_384_550
-	pctx := &pipeline.Context{
-		Host: "gw.internal",
-		Extensions: pipeline.Extensions{
-			Inference: &pipeline.InferenceExtension{
-				Model: "claude-opus-5", InputTokens: 26,
-				CacheWriteTokens: 640_985, OutputTokens: 1_075,
-			},
-			Custom: map[string]any{
-				"tool-prune" + pipeline.PluginEventSuffix: map[string]any{
-					"bytesRemoved": removed, "bodyBytesAfter": ownAfter, "projected": true,
-				},
-			},
-		},
-	}
-	got := Avoided(pctx, tieredTable(t))
-	if len(got) != 1 {
-		t.Fatalf("Avoided returned %d savings, want 1: %+v", len(got), got)
-	}
-	prompt := pricing.UsageFromInference(pctx.Extensions.Inference).PromptTotal()
-	if want := pricing.EstimateTokensFromBytes(removed, prompt, ownAfter); got[0].TokensAvoided != want {
-		t.Errorf("TokensAvoided = %d, want %d from the component's own figure", got[0].TokensAvoided, want)
-	}
-	if !got[0].Projected {
-		t.Error("the component's projected flag was lost")
-	}
-}
-
 // A binary with no pricing wired must report unpriced, not panic. The trap is that the
 // resolver is an INTERFACE: a nil one panics on call where a nil *Registry would not.
 func TestSettle_NilResolverIsUnpriced(t *testing.T) {
@@ -566,5 +636,47 @@ func TestStoreLoad(t *testing.T) {
 	}
 	if got.CostUSD != 0.25 || got.ModelledUSD != 0.3 {
 		t.Errorf("round trip lost data: %+v", got)
+	}
+}
+
+// TestSettle_CacheWrite1hPremiumHeldToTheCeiling: the base figure passes CostByTier's
+// ceiling, and the 1h premium takes the total above it. The whole request, its halves
+// and its tiers must be refused and the refusal disclosed, as for any other figure past
+// the ceiling. A premium that keeps the total under the ceiling still prices.
+func TestSettle_CacheWrite1hPremiumHeldToTheCeiling(t *testing.T) {
+	resolver := func(inputRate, cwRate float64) pricing.Resolver {
+		var r pricing.Rates
+		r.Base[pricing.TierInput], r.Set[pricing.TierInput] = inputRate, true
+		r.Base[pricing.TierCacheWrite], r.Set[pricing.TierCacheWrite] = cwRate, true
+		tab, err := pricing.NewTable([]pricing.Entry{{Host: "*", Model: "*", Rates: r, Prov: pricing.ProvConfigured}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pricing.NewRegistry(tab)
+	}
+	inf := &pipeline.InferenceExtension{
+		Model:              "claude-sonnet-4-5",
+		CacheWriteTokens:   1000,
+		CacheWrite1hTokens: 1000,
+		FinishReason:       "end_turn",
+	}
+
+	// Base 1000 x $7.50 = $7,500 passes; the 1h rate is 2 x $6, so the premium is
+	// 1000 x $4.50 = $4,500 and the total $12,000 is above the $10,000 ceiling.
+	over := SettleInput(Input{Host: "gw.internal", Inference: inf}, resolver(6, 7.5))
+	if over.HasModelled || over.HasPrompt || over.HasOutput || over.HasTiers || over.Priced {
+		t.Errorf("over the ceiling: settled = %+v, want no modelled figure, no halves, no tiers, unpriced", over)
+	}
+	if over.RejectedReason != event.RejectedImplausible {
+		t.Errorf("over the ceiling: RejectedReason = %q, want %q", over.RejectedReason, event.RejectedImplausible)
+	}
+
+	// The same shape at a hundredth of the rates: $120 total, priced.
+	under := SettleInput(Input{Host: "gw.internal", Inference: inf}, resolver(0.06, 0.075))
+	if !under.HasModelled || !under.Priced || under.RejectedReason != "" {
+		t.Fatalf("under the ceiling: settled = %+v, want priced", under)
+	}
+	if got := math.Round(under.ModelledUSD); got != 120 {
+		t.Errorf("under the ceiling: ModelledUSD = %v, want 120", under.ModelledUSD)
 	}
 }

@@ -114,7 +114,8 @@
 // for that model are sent with the substitute from the start. A session keeps the
 // substitute it was given, so a conversation never changes model part-way when a
 // refusal lapses or a newer model is listed. A request already sent with a
-// substitute is never sent again: a refused substitute reaches the agent.
+// substitute is never sent again: a refused substitute reaches the agent, and the
+// session drops it, so its next request is decided again.
 //
 // A model the router sends to can have a smaller output limit or context window than
 // the one the agent was built for. A refusal that states the limit — Bedrock's,
@@ -243,6 +244,9 @@ type Router struct {
 	// reasoningMu serializes a moved session's reasoning record: two of its requests
 	// in flight read, change and save the same record.
 	reasoningMu sync.Mutex
+	// substitutesMu serializes a session's substitutes the same way: a renewal must
+	// not save over one a concurrent request just kept.
+	substitutesMu sync.Mutex
 }
 
 // New constructs an unconfigured plugin.
@@ -475,7 +479,7 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 	if pl.kind == planRefuse || pl.kind == planCountTokens {
 		// The session is on this server; only this request is answered here.
 		if settle {
-			pin.settle(name)
+			p.settle(pctx, &pin, name)
 		}
 		return refusePlan(pctx, srv, pl, details())
 	}
@@ -486,7 +490,7 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 	p.keepOwnReasoning(pctx, name, pin.moving(), pin.movedFrom(addressed))
 	p.applyLimits(pctx, name, true)
 	if settle {
-		pin.settle(name)
+		p.settle(pctx, &pin, name)
 	}
 	if addressed != name {
 		dropProviderCredentials(pctx.Headers)
@@ -569,10 +573,21 @@ func (pn pinning) movedFrom(addressed string) string {
 
 // settle pins a session on its first request to where that request went: server
 // when it was redirected there, "" when it stayed where the client sent it. A
-// session already pinned keeps its pin, which serverFor renewed.
-func (pn *pinning) settle(server string) {
+// session already pinned keeps its pin, which serverFor renewed. saved is whether
+// it saved a pin.
+func (pn *pinning) settle(server string) (saved bool) {
 	if pn.state == pinNew || pn.state == pinMoved {
 		pn.store.save(pn.key, pin{agent: pn.agent, server: server})
+		return true
+	}
+	return false
+}
+
+// settle settles pn on server, and renews the session's substitutes there with the
+// pin it saves.
+func (p *Router) settle(pctx *pipeline.Context, pn *pinning, server string) {
+	if pn.settle(server) {
+		p.renewSubstitutes(pctx, server)
 	}
 }
 
@@ -616,11 +631,13 @@ func (p *Router) serverFor(pctx *pipeline.Context, captured bool, keyOf string) 
 	return server, pn
 }
 
-// keepPin renews the session's pin and, with it, its reasoning record, which must
-// not expire under a pin its session keeps alive.
+// keepPin renews the session's pin and, with it, its reasoning record and its
+// substitutes on the pinned server, which must not expire under a pin its session
+// keeps alive. settle renews them with a pin it saves.
 func (p *Router) keepPin(pctx *pipeline.Context, store pins, key string, pn pin) {
 	if store.keep(key, pn) {
 		p.renewReasoning(pctx)
+		p.renewSubstitutes(pctx, pn.server)
 	}
 }
 

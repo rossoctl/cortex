@@ -485,12 +485,19 @@ func bandAmount(r spanReading) (string, bool) {
 	if unit, ok := money.WindowUnit(r.Units); ok {
 		return money.Relabel(formatUSDTotal(r.USD), unit, 0), true
 	}
-	if r.ByUnit == nil {
+	return unitsAmount(r.Units, r.ByUnit)
+}
+
+// unitsAmount is a cost in several units, printed side by side and never added, dollars first:
+// "$6.20 + 0.03 Bobcoins". ok is false when byUnit is nil or misses one of units. The band and
+// the Agents pane cost cell share it.
+func unitsAmount(units []string, byUnit map[string]int64) (string, bool) {
+	if byUnit == nil {
 		return "", false
 	}
-	order := make([]string, 0, len(r.Units))
-	for _, u := range r.Units {
-		if _, ok := r.ByUnit[u]; !ok {
+	order := make([]string, 0, len(units))
+	for _, u := range units {
+		if _, ok := byUnit[u]; !ok {
 			return "", false
 		}
 		if money.IsDefault(u) {
@@ -501,7 +508,7 @@ func bandAmount(r spanReading) (string, bool) {
 	}
 	parts := make([]string, 0, len(order))
 	for _, u := range order {
-		parts = append(parts, money.Relabel(formatUSDTotalMicros(r.ByUnit[u]), u, 0))
+		parts = append(parts, money.Relabel(formatUSDTotalMicros(byUnit[u]), u, 0))
 	}
 	if len(parts) == 0 {
 		return "", false

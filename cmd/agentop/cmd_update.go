@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -40,7 +41,7 @@ install that runs the cpex build of cortex to the default build, and says so.
   --ref=REF   install REF instead of the newest stable release, e.g.
               --ref=v0.9.0-rc.3 for a release candidate, --ref=main
   --yes, -y   do not ask; needed when there is no terminal
-  --auto      what the updater runs: install the newest release only when it is a plain release and update.wait (24h) old; never asks
+  --auto      what the updater runs: install the newest release only when it is a plain release and update.wait (6h) old; never asks
 
 Downloads nothing when agentop and cortex in ~/.local/bin are already at the
 release asked for, or when there is no --ref and agentop is not a release build
@@ -203,6 +204,7 @@ const cpexStatusNote = "cpex build removed; now the default cortex"
 // downloaded, checked and staged here, then handed to the staged agentop setup;
 // any other ref runs the website installer.
 func installRelease(env *setupEnv, ref string, flags []string, stdout, stderr io.Writer) error {
+	began := time.Now() // setup's ready in counts from here
 	if ref == "" {
 		// Fail closed: falling back to the installer would skip the check (D1).
 		if ref = latestRelease(); !releaseTag.MatchString(ref) {
@@ -241,6 +243,7 @@ func installRelease(env *setupEnv, ref string, flags []string, stdout, stderr io
 			c := exec.Command(filepath.Join(stage, "agentop"), args...)
 			c.Stdin, c.Stdout, c.Stderr = os.Stdin, stdout, stderr
 			c.Env = slices.DeleteFunc(os.Environ(), func(e string) bool { return strings.HasPrefix(e, installerDrewEnv+"=") })
+			c.Env = append(c.Env, callerStartedEnv+"="+strconv.FormatInt(began.Unix(), 10))
 			return c
 		}
 		run = func() (err error) {

@@ -1607,16 +1607,16 @@ func TestFlush_WaitsForALateRowAlreadyQueued(t *testing.T) {
 	w.writeMu.Lock()
 	w.Record("s1", costedEvent(t, "gw", "m", 0.10, 10, 5))
 
-	// The writer goroutine takes the late row and waits on writeMu with it.
-	for len(w.ops) > 0 {
-		runtime.Gosched()
-	}
-
+	queued := make(chan struct{})
+	w.syncQueued = func() { close(queued) }
 	flushed := make(chan error, 1)
 	go func() { flushed <- w.Flush() }()
 	// Flush either queues its barrier behind the stalled row or returns.
-	for len(w.ops) == 0 && len(flushed) == 0 {
-		runtime.Gosched()
+	select {
+	case <-flushed:
+		w.writeMu.Unlock()
+		t.Fatal("Flush returned before the queued row was written")
+	case <-queued:
 	}
 	select {
 	case <-flushed:

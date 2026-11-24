@@ -229,3 +229,17 @@ func syncDir(dir string) error {
 	cerr := d.Close()
 	return errors.Join(serr, cerr)
 }
+
+// SyncDir is syncDir for another package that publishes a file by name into a directory and
+// needs that NAME to survive a crash, not just the file's bytes.
+//
+// EXPORTED RATHER THAN COPIED, because the portable part is not the fsync — it is openDir:
+// Windows flushes a directory only through a handle opened for writing with
+// FILE_FLAG_BACKUP_SEMANTICS, so the obvious os.Open + Sync fails there with "Access is
+// denied" (see syncdir_windows.go). A second implementation elsewhere would get that wrong
+// and only on Windows, which is the hardest place for this repo to notice.
+//
+// core/sessionexport is the caller: it publishes its tool-name key with os.Link, and without
+// the directory sync a crash can lose the link while keeping the bytes — so the next start
+// finds no key, mints a new one, and silently re-labels every MCP tool from that point.
+func SyncDir(dir string) error { return syncDir(dir) }

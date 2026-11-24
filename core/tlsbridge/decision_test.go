@@ -244,7 +244,20 @@ func window(t *testing.T, s *SkipSet, host string) time.Duration {
 	if !ok {
 		t.Fatalf("no entry for %q", host)
 	}
+	// timing: SkipSet reads the real clock; the windows compared differ by doublings
 	return time.Until(e.expiry)
+}
+
+// expiryOf returns when host's skip window ends.
+func expiryOf(t *testing.T, s *SkipSet, host string) time.Time {
+	t.Helper()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e, ok := s.m[host]
+	if !ok {
+		t.Fatalf("no entry for %q", host)
+	}
+	return e.expiry
 }
 
 // TestSkipSet_SucceedClears is the signal the set never had.
@@ -345,18 +358,20 @@ func expireWindow(t *testing.T, s *SkipSet, host string) {
 // outcome the backoff's own comment rules out.
 func TestSkipSet_PinnedHostEscalatesAcrossWindows(t *testing.T) {
 	s := NewSkipSet()
+	var last time.Time
 	for i := 1; i <= 6; i++ {
 		if s.Contains("h") {
 			t.Fatalf("rejection %d: host is still skipped, so the proxy would not have forged", i)
 		}
+		last = time.Now()
 		s.Fail("h")
 		if i < 6 {
 			expireWindow(t, s, "h")
 		}
 	}
-	if got := window(t, s, "h"); got < s.ttl-time.Second {
-		t.Errorf("window after 6 rejections, each after the last window expired = %v, "+
-			"want the %v ceiling; an expired entry must not restart the backoff", got, s.ttl)
+	if got := expiryOf(t, s, "h"); got.Before(last.Add(s.ttl)) {
+		t.Errorf("window after 6 rejections, each after the last window expired, ends at %v, "+
+			"want the %v ceiling from the last one; an expired entry must not restart the backoff", got, s.ttl)
 	}
 }
 
@@ -378,9 +393,10 @@ func TestSkipSet_TransientAfterExpiryGetsTheBaseAndKeepsTheCount(t *testing.T) {
 	}
 
 	expireWindow(t, s, "h")
+	before := time.Now()
 	s.Fail("h")
-	if got := window(t, s, "h"); got < s.ttl-time.Second {
-		t.Errorf("window after the next rejection = %v, want the %v ceiling; the transient "+
+	if got := expiryOf(t, s, "h"); got.Before(before.Add(s.ttl)) {
+		t.Errorf("window after the next rejection ends at %v, want the %v ceiling; the transient "+
 			"failure reset the count", got, s.ttl)
 	}
 }
@@ -403,9 +419,10 @@ func TestSkipSet_TransientOnALiveWindow(t *testing.T) {
 	}
 
 	setWindow(t, s, "h", time.Minute) // an earned window, partly elapsed
+	set := expiryOf(t, s, "h")
 	s.FailTransient("h")
-	if got := window(t, s, "h"); got > time.Minute || got < time.Minute-time.Second {
-		t.Errorf("transient failure on a live window with 1m left = %v, want it left at about 1m", got)
+	if got := expiryOf(t, s, "h"); !got.Equal(set) {
+		t.Errorf("transient failure on a live window with 1m left moved its end from %v to %v, want it left", set, got)
 	}
 }
 
@@ -521,10 +538,10 @@ func TestProgramSkipSet_ABurstCountsOnce(t *testing.T) {
 	s.Fail("q")
 	expireWindow(t, s, "q")
 	s.Fail("q") // counted: a 2x window
-	earned := window(t, s, "q")
+	earned := expiryOf(t, s, "q")
 	s.Fail("q") // the rest of that connection's burst
-	if got := window(t, s, "q"); got < earned-time.Second {
-		t.Errorf("a burst cut the earned window from %v to %v", earned, got)
+	if got := expiryOf(t, s, "q"); got.Before(earned) {
+		t.Errorf("a burst cut the earned window's end from %v to %v", earned, got)
 	}
 }
 

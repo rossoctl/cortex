@@ -8,6 +8,7 @@ import (
 	"io"
 	"maps"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
 	"github.com/rossoctl/cortex/cmd/agentop/edit"
 	"github.com/rossoctl/cortex/cmd/agentop/servers"
+	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins/inferencerouter/routerconfig"
 	"github.com/rossoctl/cortex/core/session"
@@ -309,6 +311,7 @@ func sortedMap(m map[string]string) *yaml.Node {
 func serverRemove(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("server remove", flag.ContinueOnError)
 	cfgPath := flags.String("config", "", "Cortex config file (default ~/.cortex/config.yaml)")
+	yes := flags.Bool("yes", false, "take the router out with the only server without asking, though running sessions last used it")
 	pos, code, ok := serverFlags(flags, args, stdout, stderr)
 	if !ok {
 		return code
@@ -339,21 +342,21 @@ func serverRemove(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	agents := agentsOn(c, name)
-	// The only server first, since no command removes it. With agents routed to it
-	// the refusal names the step that makes it carry no traffic too, rather than
-	// naming that step alone and refusing again once it is taken.
-	if len(c.Servers) == 1 {
-		fmt.Fprintf(stderr, "agentop server remove: %s is the only server, and %s needs one. ", name, routerName)
-		if len(agents) > 0 {
-			fmt.Fprintf(stderr, "It is %s's server for new sessions; stop routing to it with\n", strings.Join(agents, " and "))
-			for _, a := range agents {
-				fmt.Fprintf(stderr, "  agentop server reset --agent %s\n", a)
-			}
-			fmt.Fprint(stderr, "and it changes no traffic. ")
-		} else {
-			fmt.Fprint(stderr, "With no agent routed to it it changes no traffic. ")
+	moved := sessionsOn(c, name)
+	// The only server takes the router entry out with it — the router needs a
+	// server — which undoes the add that created the entry. Not while anything is
+	// routed to it, as for any server; the refusal names every step that ends that
+	// at once, rather than naming one and refusing again once it is taken.
+	if len(c.Servers) == 1 && (len(agents) > 0 || len(moved) > 0) {
+		fmt.Fprintf(stderr, "agentop server remove: %s is the only server, so removing it takes the %s entry out of %s. "+
+			"First stop routing to it:\n", name, routerName, homeTilde(path))
+		for _, a := range agents {
+			fmt.Fprintf(stderr, "  agentop server reset --agent %s\n", a)
 		}
-		fmt.Fprintf(stderr, "To take the router out altogether, delete its entry from %s.\n", homeTilde(path))
+		for _, id := range moved {
+			fmt.Fprintf(stderr, "  agentop server move %s own\n", id)
+		}
+		fmt.Fprintf(stderr, "Then agentop server remove %s takes it out.\n", name)
 		return 1
 	}
 	// Before the session and agent checks: the config validation refuses the
@@ -375,7 +378,7 @@ func serverRemove(args []string, stdout, stderr io.Writer) int {
 		}
 		return 1
 	}
-	if moved := sessionsOn(c, name); len(moved) > 0 {
+	if len(moved) > 0 {
 		// Not rewritten to "": a remove the user asked for should not edit the
 		// moves they made, and a config that names no listed server cannot reload —
 		// or, with the proxy stopped, start.
@@ -405,7 +408,11 @@ func serverRemove(args []string, stdout, stderr io.Writer) int {
 	if statsURL != "" {
 		sessionsURL = dialURL(cfg.Listener.SessionAPIAddr)
 	}
-	if n := runningOn(sessionsURL, c, name); n > 0 {
+	n, unread := runningOn(sessionsURL, c, name)
+	if len(c.Servers) == 1 {
+		return removeLastServer(stdout, stderr, path, statsURL, c, name, n, unread, *yes)
+	}
+	if n > 0 {
 		fmt.Fprintf(stderr, "agentop server remove: warning: %s last sent inference to %s. A session the proxy routed "+
 			"there gets an error asking for a new session, until %s is added back.\n", runningSessions(n), name, name)
 	}
@@ -417,8 +424,168 @@ func serverRemove(args []string, stdout, stderr io.Writer) int {
 	})
 }
 
+// removeLastServer takes the inference-router entry out with name, its only server,
+// once nothing is routed to it: the inverse of the add that created the entry, so
+// add then remove leaves the config as it was.
+//
+// With the router gone, nothing reads the pins of running sessions, so the running
+// sessions that last sent inference there (running, from runningOn) go where their
+// agent sends them from their next request — partway through their conversation,
+// which is no 503 but is a move. So that case asks first, and so does a proxy whose
+// sessions could not be read (unread), which may have some. With none, removing the
+// router changes no traffic and asks nothing. The pins stay in the plugin store, so
+// adding name back takes those sessions back to it.
+//
+// The write takes the whole entry out, so it checks the entry is still c, the one
+// this decided on: a server added or anything routed since would go with it, and the
+// question can wait any length of time.
+func removeLastServer(stdout, stderr io.Writer, path, statsURL string, c routerconfig.Config, name string, running int, unread error, yes bool) int {
+	why := ""
+	switch {
+	case unread != nil:
+		why = "agentop could not read the proxy's running sessions, so some may have last sent inference to it"
+	case running > 0:
+		why = runningSessions(running) + " last sent inference to it"
+	}
+	if why != "" {
+		fmt.Fprintf(stdout, "%s is the only server, so removing it takes the %s entry out, and %s. "+
+			"With no router, each goes where its agent sends it from its next request, partway through its conversation; "+
+			"adding %s back takes it back there.\n", name, routerName, why, name)
+		if !yes && !serverConfirm(stdout) {
+			return exitDeclined
+		}
+	}
+	unchanged := func(now *config.Config) error {
+		if got, _, err := readRouter(now); err != nil || !reflect.DeepEqual(got, c) {
+			return fmt.Errorf("the %s entry changed since agentop read it, so nothing was removed; "+
+				"run agentop server remove %s again", routerName, name)
+		}
+		return nil
+	}
+	ch := edit.ConfigChange{Chain: "outbound", Plugin: routerName, RemoveEntry: true}
+	return runServerWriteIf(stdout, stderr, path, statsURL, []edit.ConfigChange{ch}, unchanged, writeReport{
+		done: fmt.Sprintf("Removed %s, the only server, and the %s entry with it.", name, routerName),
+		live: "Requests now go where each agent sends them.",
+	})
+}
+
+// serverRename gives server old a new name in one write: the key in place, so the
+// server's URL, key — a ${NAME} reference included — models, comments and place in the
+// file stay, and every agents:, sessions: and key_routes: entry naming it, without which
+// the config would not load.
+//
+// The router pins a running session to its server by name, so a session pinned to old
+// gets the removed server's error until it is moved or the server gets old back. That is
+// remove's case, and rename warns of it as remove does, without asking. A session with a
+// sessions: entry follows: the entry beats the pin, and the rename rewrites it.
+func serverRename(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("server rename", flag.ContinueOnError)
+	cfgPath := flags.String("config", "", "Cortex config file (default ~/.cortex/config.yaml)")
+	pos, code, ok := serverFlags(flags, args, stdout, stderr)
+	if !ok {
+		return code
+	}
+	if len(pos) != 2 {
+		fmt.Fprintln(stderr, "agentop server rename: want the server's name and its new one: agentop server rename <name> <new-name>")
+		return 2
+	}
+	old, name := pos[0], pos[1]
+	// Both first, as add and remove check theirs: every message below echoes them.
+	// The old name is not refused as "own": a server given that name by hand can only
+	// be renamed away from it.
+	for _, n := range []string{old, name} {
+		if err := routerconfig.CheckName(n); err != nil {
+			fmt.Fprintf(stderr, "agentop server rename: %v\n", err)
+			return 2
+		}
+	}
+	if name == ownProvider {
+		fmt.Fprintf(stderr, "agentop server rename: %q is reserved: agentop server move <session-id> %s sends a session to its own provider\n", name, ownProvider)
+		return 2
+	}
+	cfg, path, statsURL, err := serverWriteTarget(*cfgPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "agentop server rename: %v\n", err)
+		return 1
+	}
+	c, _, err := readRouter(cfg)
+	if err != nil {
+		fmt.Fprintf(stderr, "agentop server rename: %v\n", err)
+		return 1
+	}
+	if _, ok := c.Servers[old]; !ok {
+		fmt.Fprintf(stderr, "agentop server rename: no server named %s%s\n", old, configuredServers(c))
+		return 1
+	}
+	if old == name {
+		fmt.Fprintf(stdout, "%s is already called %s; nothing to change.\n", old, name)
+		return 0
+	}
+	if _, ok := c.Servers[name]; ok {
+		fmt.Fprintf(stderr, "agentop server rename: there is already a server named %s; remove it first, or pick another name\n", name)
+		return 1
+	}
+
+	changes := []edit.ConfigChange{{Chain: "outbound", Plugin: routerName, Path: []string{"servers", old}, RenameTo: name}}
+	agents := agentsOn(c, old)
+	for _, a := range agents {
+		changes = append(changes, servers.AgentChanges(a, name)...)
+	}
+	for _, id := range sessionsOn(c, old) {
+		changes = append(changes, servers.SessionChanges(id, name)...)
+	}
+	changes = append(changes, keyRouteRenames(c, old, name)...)
+	done := fmt.Sprintf("Renamed %s to %s.", old, name)
+	if len(agents) > 0 {
+		done = fmt.Sprintf("Renamed %s to %s. New %s sessions go to %s.", old, name, strings.Join(agents, " and "), name)
+	}
+	// Only against a proxy that answered: its session API is the one with the pins.
+	pinned := 0
+	if statsURL != "" {
+		// Unread sessions are taken as none, as remove's warning takes them.
+		ids, _ := runningOnIDs(dialURL(cfg.Listener.SessionAPIAddr), c, old)
+		for _, id := range ids {
+			if _, moved := c.Sessions[id]; !moved {
+				pinned++
+			}
+		}
+	}
+	live := ""
+	if pinned > 0 {
+		fmt.Fprintf(stderr, "agentop server rename: warning: %s last sent inference to %s. A session the proxy routed "+
+			"there gets an error asking for a new session, until it is moved or the server is renamed back to %s.\n",
+			runningSessions(pinned), old, old)
+		live = fmt.Sprintf("A session the proxy routed to %s now gets an error asking for a new session. "+
+			"Renaming the server back to %s routes them to it again.", old, old)
+	}
+	return runServerWrite(stdout, stderr, path, statsURL, changes, writeReport{
+		done: done,
+		live: live,
+		note: routerInactive(cfg, path),
+	})
+}
+
+// keyRouteRenames is the changes that make every key_routes: entry naming old, on either
+// side, name name instead: a key renamed in place, as the server's is, and a value set.
+func keyRouteRenames(c routerconfig.Config, old, name string) []edit.ConfigChange {
+	var changes []edit.ConfigChange
+	for _, k := range slices.Sorted(maps.Keys(c.KeyRoutes)) {
+		from := k
+		if k == old {
+			changes = append(changes, edit.ConfigChange{Chain: "outbound", Plugin: routerName, Path: []string{"key_routes", old}, RenameTo: name})
+			from = name
+		}
+		if c.KeyRoutes[k] == old {
+			changes = append(changes, edit.ConfigChange{Chain: "outbound", Plugin: routerName, Path: []string{"key_routes", from},
+				Value: edit.ScalarValue(name)})
+		}
+	}
+	return changes
+}
+
 // runningOn counts the sessions the proxy at sessionsURL holds in memory whose inference
-// traffic last went to server name: the ones a remove can leave asking for a new session.
+// traffic last went to server name: the ones a remove can leave asking for a new session,
+// or, when name is the only server, sends where their agent sends them.
 // servers.ForSession names each session's server: by the name the proxy recorded, else by host.
 //
 // NOT THE LISTENER'S SYNTHETIC SESSIONS — the default bucket and the pending:<agent> ones.
@@ -432,28 +599,36 @@ func serverRemove(args []string, stdout, stderr io.Writer) int {
 // not running. SessionSummary.Active would not do — it marks the one most recently updated
 // session.
 //
-// 0 when the proxy does not answer, which is the quiet side for a warning: the remove itself
-// is what matters, and it goes ahead either way.
-func runningOn(sessionsURL string, c routerconfig.Config, name string) int {
+// 0 and the error when the proxy's session API does not answer. A warning takes that as
+// none, the quiet side: the remove itself is what matters, and it goes ahead either way.
+// The last server's question takes it as unknown, and asks. With no proxy to ask
+// (sessionsURL ""), nothing runs, so that is 0 and no error.
+func runningOn(sessionsURL string, c routerconfig.Config, name string) (int, error) {
+	ids, err := runningOnIDs(sessionsURL, c, name)
+	return len(ids), err
+}
+
+// runningOnIDs is the ids of the sessions runningOn counts.
+func runningOnIDs(sessionsURL string, c routerconfig.Config, name string) ([]string, error) {
 	if sessionsURL == "" {
-		return 0
+		return nil, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	list, err := apiclient.New(sessionsURL).ListSessions(ctx)
 	if err != nil {
-		return 0
+		return nil, err
 	}
-	n := 0
+	var ids []string
 	for _, s := range list {
 		if !session.IsConversation(s.ID) {
 			continue
 		}
 		if on, ok := servers.ForSession(c, s); ok && on == name {
-			n++
+			ids = append(ids, s.ID)
 		}
 	}
-	return n
+	return ids, nil
 }
 
 // sessionsOn is the session ids whose sessions: entry names server, sorted.
@@ -666,8 +841,15 @@ type writeReport struct {
 // several, a removal per retired spelling plus the canonical set — and reports how
 // the write landed.
 func runServerWrite(stdout, stderr io.Writer, path, statsURL string, changes []edit.ConfigChange, r writeReport) int {
+	return runServerWriteIf(stdout, stderr, path, statsURL, changes, nil, r)
+}
+
+// runServerWriteIf is runServerWrite with a precondition on the file as the write reads it
+// (edit.ConfigWrite.Precondition).
+func runServerWriteIf(stdout, stderr io.Writer, path, statsURL string, changes []edit.ConfigChange,
+	precondition func(*config.Config) error, r writeReport) int {
 	res, err := writePluginConfig(context.Background(), edit.ConfigWrite{
-		Path: path, StatsURL: statsURL, Changes: changes, Verify: servers.Verify,
+		Path: path, StatsURL: statsURL, Changes: changes, Verify: servers.Verify, Precondition: precondition,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "agentop server: %v\n", err)

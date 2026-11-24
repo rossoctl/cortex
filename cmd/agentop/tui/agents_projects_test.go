@@ -126,8 +126,10 @@ func projectsModel(t *testing.T, series map[string]map[string]int64) (*model, fu
 		mu.Lock()
 		asked = append(asked, r.URL.RawQuery)
 		mu.Unlock()
-		if r.URL.Query().Has("project") {
-			t.Errorf("query %q carries project=", r.URL.RawQuery)
+		// project= is sent but not echoed, so this server acts as one older than project=.
+		// agentop's own fold labels must never go on the wire.
+		if p := r.URL.Query().Get("project"); p == otherProjects || p == projectOverflowLabel {
+			t.Errorf("query %q carries project=%s", r.URL.RawQuery, p)
 		}
 		q := r.URL.Query()
 		// The agent is echoed, as the real server does, so fetchUsageScoped takes no fallback.

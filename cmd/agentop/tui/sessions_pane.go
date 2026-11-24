@@ -12,6 +12,7 @@ import (
 
 	"github.com/rossoctl/cortex/cmd/agentop/money"
 	"github.com/rossoctl/cortex/cmd/agentop/tui/table"
+	"github.com/rossoctl/cortex/core/cost/usage"
 	coremodel "github.com/rossoctl/cortex/core/model"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
@@ -125,6 +126,7 @@ var sessionsRightAligned = map[string]bool{
 	"TOKENS":           true,
 	"COST":             true,
 	"SAVED":            true,
+	unitsColumnTitle:   true,
 	contextColumnTitle: true,
 }
 
@@ -234,6 +236,7 @@ func newSessionsTable() table.Model {
 // search matches, and keeps the cursor on the previously-selected session if still
 // present.
 func (m *model) rebuildSessionsTable() {
+	defer m.applyTitleScroll() // a poll must not put the static cell back between two ticks
 	// The FULL id of the previously-selected row, read out of band. Taken from the rendered
 	// cell it was a truncated string compared against other truncated strings, which happened
 	// to work and would have stopped working the moment two ids shared a prefix — at 72
@@ -289,8 +292,10 @@ func (m *model) rebuildSessionsTable() {
 	// AGENT and SERVER are asked for by what is listed, then dropped whole when the terminal has
 	// no room. Kept, so the search can still read a dropped one.
 	twoAgents := m.sessionsListTwoAgents(scope, project)
+	hasUnits := m.sessionsListHasUnits(scope, project)
 	want := alignSessionsHeaders(fitTableColumns(withSessionsIDWidth(
-		sessionsColumnsWith(gateW, twoAgents, showServer), idW), bodyW))
+		sessionsColumnsWith(gateW, twoAgents, showServer, hasUnits), idW), bodyW))
+	unitsW := sessionsColumnWidth(want, unitsColumnTitle)
 	agentW := sessionsColumnWidth(want, "AGENT")
 	serverW := sessionsColumnWidth(want, "SERVER")
 	costW := sessionsColumnWidth(want, "COST")
@@ -333,16 +338,16 @@ func (m *model) rebuildSessionsTable() {
 			continue
 		}
 		b := newRowBuilder(q != "")
-		// An imported session's title starts with "(*) ", and a session that another session
-		// started with "↳ ". Plain text, not dim: the table cuts a cell by its bytes, and a
-		// style's escape bytes would mangle it (see cachedMarker). With no TITLE column, the
-		// SESSION cell has the mark.
+		// A session that asked not to be recorded starts with "(not recorded) ", an imported
+		// session's title with "(*) ", and a session that another session started with "↳ ".
+		// Plain text, not dim: the table cuts a cell by its bytes, and a style's escape bytes
+		// would mangle it (see cachedMarker). With no TITLE column, the SESSION cell has the
+		// mark, in its short form (sessionIDMark).
 		mark := sessionMark(s)
-		markW := lipgloss.Width(mark) // columns, not bytes: "↳" is 3 bytes and 1 column
-		if showTitle || mark == "" {
+		if idMark := sessionIDMark(s); showTitle || idMark == "" {
 			b.cut(sessionIDCell(s.ID, idW), func() string { return sessionIDSearch(s.ID) })
 		} else {
-			b.cut(mark+sessionIDCell(s.ID, idW-markW), func() string { return sessionIDSearch(s.ID) })
+			b.cut(idMark+sessionIDCell(s.ID, idW-lipgloss.Width(idMark)), func() string { return sessionIDSearch(s.ID) })
 		}
 		// s.Title straight off the summary, where sessionLabel reaches the same value by id
 		// through m.servedTitle. Two routes, equal only because they read the same slice —
@@ -351,7 +356,8 @@ func (m *model) rebuildSessionsTable() {
 		// path has only an id and cannot avoid one.
 		title := func() string { return mark + m.sessionTitleCell(s.ID, s.Title, noLimit) }
 		if showTitle {
-			b.cut(mark+m.sessionTitleCell(s.ID, s.Title, titleW-markW), title)
+			cellMark := titleCellMark(s, titleW)
+			b.cut(cellMark+m.sessionTitleCell(s.ID, s.Title, titleW-lipgloss.Width(cellMark)), title)
 		} else {
 			// TITLE is the column a narrow terminal gives up; it is still searched.
 			b.dropped(title)
@@ -381,16 +387,32 @@ func (m *model) rebuildSessionsTable() {
 		// The buckets folded into this session are its calls; their figures are its too.
 		if f, ok := folded[s.ID]; ok {
 			s.CostMicros, s.AvoidedMicros, s.TotalTokens = s.CostMicros+f.cost, s.AvoidedMicros+f.avoided, s.TotalTokens+f.tokens
+			s.PenaltyMicros += f.penalty
+			s.AvoidedUnits += f.units
+			s.PenaltyUnits += f.penaltyUnits
+			s.AvoidedAPIEquivalentMicros += f.apiEquivalent
 		}
+		// SAVED is the net: what the context operators saved minus what they caused (design §5.9),
+		// usd basis only, and not floored — a negative net renders with a minus sign.
+		net := money.NetMicros(usage.Counts{AvoidedMicros: s.AvoidedMicros, PenaltyMicros: s.PenaltyMicros})
 		b.cell(padLeft(sessionTokens(s.TotalTokens, m.events[s.ID]), tokensW))
 		cost := func() string { return sessionMoneyCellIn(s.CostMicros, s.Saturated, noLimit, s.Currencies) }
-		saved := func() string { return sessionMoneyCellIn(s.AvoidedMicros, s.Saturated, noLimit, s.Currencies) }
+		saved := func() string { return sessionSavedCellIn(net, s.Saturated, noLimit, s.Currencies) }
 		if showMoney {
 			b.cut(padLeft(sessionMoneyCellIn(s.CostMicros, s.Saturated, costW, s.Currencies), costW), cost)
-			b.cut(padLeft(sessionMoneyCellIn(s.AvoidedMicros, s.Saturated, savedW, s.Currencies), savedW), saved)
+			b.cut(padLeft(sessionSavedCellIn(net, s.Saturated, savedW, s.Currencies), savedW), saved)
 		} else {
 			b.dropped(cost)
 			b.dropped(saved)
+		}
+		// USAGE-LIMIT UNITS (design §5.7a), for a session on a subscription login: its saving is
+		// not money, so it is not in SAVED. The cell is the net; the full text a search reads
+		// carries the API-equivalent dollars, labelled so.
+		units := func() string { return sessionUnitsCell(s, noLimit, true) }
+		if unitsW > 0 {
+			b.cut(padLeft(sessionUnitsCell(s, unitsW, false), unitsW), units)
+		} else if hasUnits {
+			b.dropped(units)
 		}
 		// The server's published figure is merged with agentop's own — see sessionContextFor for
 		// why neither source dominates. It is what lets a row idle since before agentop attached
@@ -454,6 +476,9 @@ func (m *model) rebuildSessionsTable() {
 			// say the session was free.
 			b.cell(emptyCell)
 			b.cell(emptyCell)
+		}
+		if unitsW > 0 {
+			b.cell(padLeft(emptyCell, unitsW))
 		}
 		// These rows DO have a context, and it is the one case where agentop's cache is the only
 		// possible source: the server has forgotten the session, so nothing else could answer.
@@ -528,9 +553,13 @@ func (m *model) cachedOnlySessionIDs() []string {
 	return out
 }
 
-// sessionMark is the plain-text mark before a session's title: imported, or started by another
-// session. With no TITLE column, the SESSION cell has it.
+// sessionMark is the plain-text mark before a session's title: not recorded, imported, or started
+// by another session, in that order: not recorded is the one that changes what is kept. With no
+// TITLE column, the SESSION cell has it.
 func sessionMark(s session.SessionSummary) string {
+	if s.NoRecord {
+		return noRecordMarker
+	}
 	if strings.HasPrefix(s.Source, coremodel.ImportedSourcePrefix) {
 		return importedMarker
 	}
@@ -538,6 +567,32 @@ func sessionMark(s session.SessionSummary) string {
 		return childMarker
 	}
 	return ""
+}
+
+// titleRoomAfterMark is the fewest title columns a TITLE cell keeps after its mark. A TITLE
+// column too narrow for the full mark and that many columns gets the short mark instead.
+const titleRoomAfterMark = 4
+
+// titleCellMark is the mark in a TITLE cell of titleW columns: sessionMark, or its short form
+// (sessionIDMark) when the full mark would leave fewer than titleRoomAfterMark columns of title.
+// At TITLE's floor, "(not recorded) " alone is wider than the column. Widths are in columns,
+// not bytes: "↳" is 3 bytes and 1 column.
+func titleCellMark(s session.SessionSummary, titleW int) string {
+	mark := sessionMark(s)
+	if titleW-lipgloss.Width(mark) < titleRoomAfterMark {
+		return sessionIDMark(s)
+	}
+	return mark
+}
+
+// sessionIDMark is sessionMark in the SESSION cell, used when there is no TITLE column: the
+// not-recorded mark is the short noRecordIDMarker there, so the id after it still fits. The
+// session's header still says "not recorded" in full.
+func sessionIDMark(s session.SessionSummary) string {
+	if s.NoRecord {
+		return noRecordIDMarker
+	}
+	return sessionMark(s)
 }
 
 // sessionsIDWidth is SESSION's width for the listed rows: the widest SESSION cell, an id counted
@@ -551,7 +606,7 @@ func (m *model) sessionsIDWidth(scope, project string, showTitle bool) int {
 		}
 		cell := sessionIDCell(s.ID, noLimit)
 		if !showTitle {
-			cell = sessionMark(s) + cell
+			cell = sessionIDMark(s) + cell
 		}
 		w = max(w, lipgloss.Width(cell))
 	}
@@ -616,6 +671,42 @@ func (m *model) sessionsListTwoAgents(scope, project string) bool {
 		}
 	}
 	return false
+}
+
+// sessionsListHasUnits reports whether a listed session carries a usage-limit saving, which is
+// when the UNITS column says something.
+func (m *model) sessionsListHasUnits(scope, project string) bool {
+	for _, s := range m.sessions {
+		if (s.AvoidedUnits != 0 || s.PenaltyUnits != 0) && m.sessionListed(s, scope, project) {
+			return true
+		}
+	}
+	return false
+}
+
+// unitsColumnTitle names the usage-limit column: a subscription session's saving, net of its
+// penalty, in usage-limit units (accounting.subscription_weights). Not money.
+const unitsColumnTitle = "UNITS"
+
+// sessionsUnitsWidth fits "-1234.5".
+const sessionsUnitsWidth = 8
+
+// sessionUnitsCell is a session's net usage-limit saving, one decimal, or the em dash when it has
+// none. withEquivalent appends the API-equivalent dollars of the NET saving (may be negative),
+// labelled, for the full text a search reads; the cell itself has no room for them. A cell that
+// does not fit budget is the em dash rather than a cut figure.
+func sessionUnitsCell(s session.SessionSummary, budget int, withEquivalent bool) string {
+	if s.AvoidedUnits == 0 && s.PenaltyUnits == 0 {
+		return emptyCell
+	}
+	cell := fmt.Sprintf("%.1f", float64(s.AvoidedUnits-s.PenaltyUnits)/1000)
+	if withEquivalent && s.AvoidedAPIEquivalentMicros != 0 {
+		cell += " units (API equivalent " + money.USD(float64(s.AvoidedAPIEquivalentMicros)/1e6) + ")"
+	}
+	if lipgloss.Width(cell) > budget {
+		return emptyCell
+	}
+	return cell
 }
 
 // relTime renders "Ns", "Nm", "Nh" for small deltas; absolute time otherwise.
@@ -690,7 +781,8 @@ const emptyCell = "—"
 
 // sessionMoneyCell renders one session's lifetime cost or its lifetime saving. The two are the
 // same cell: they differ only in which micros the caller passes and in the column heading above
-// them, not in how a figure is formatted or marked.
+// them, not in how a figure is formatted or marked. The saving is the accountant's net — saved
+// minus penalty — and reaches this cell through sessionSavedCellIn, which handles a negative net.
 //
 // UNKNOWN AND ZERO ARE THE SAME CELL HERE, and deliberately: micros == 0 means either the
 // session's traffic could not be priced or it genuinely charged nothing, and this function
@@ -701,9 +793,12 @@ const emptyCell = "—"
 //
 // A NEGATIVE figure is refused through the shared negativeCost, not clamped: the session API
 // sums non-negative per-request figures, so a negative can only come from a broken producer,
-// and "-$5.00" in a column of costs reads as a refund nobody issued.
+// and "-$5.00" in a column of costs reads as a refund nobody issued. The SAVED column is the one
+// exception, and it does not come through here with a negative: its figure is the accountant's
+// net (saved minus penalty), which may legitimately be below zero, so sessionSavedCellIn renders
+// that with a leading minus.
 //
-// A saving is estimated — from a bytes-to-tokens ratio, gross of the prompt-cache re-warm, see
+// A saving is estimated — the accountant's token counts and the rate table, see
 // usage.Counts.AvoidedMicros — and that caveat is NOT on this cell. It is on the column HEADER,
 // which reads "SAVED~"; see alignSessionsHeaders.
 //
@@ -842,6 +937,27 @@ func sessionMoneyCellIn(micros int64, saturated bool, budget int, currencies []s
 	return emptyCell
 }
 
+// sessionSavedCellIn is sessionMoneyCellIn for the SAVED column's net figure, which may be
+// negative: the operators cost more than they saved. A negative net is the same cell with a
+// leading minus, fitted one column narrower.
+func sessionSavedCellIn(net int64, saturated bool, budget int, currencies []string) string {
+	if net >= 0 {
+		return sessionMoneyCellIn(net, saturated, budget, currencies)
+	}
+	if net == math.MinInt64 {
+		return emptyCell
+	}
+	b := budget
+	if b > 0 && b != noLimit {
+		b--
+	}
+	cell := sessionMoneyCellIn(-net, saturated, b, currencies)
+	if cell == emptyCell || cell == money.Mixed {
+		return cell
+	}
+	return "-" + cell
+}
+
 // sessionsColumnWidth is the fitted width of one named column, or 0 when it is not present.
 //
 // By headerTitle rather than by the raw Title, so it finds a column whose heading carries
@@ -968,7 +1084,7 @@ func sessionsShowMoney(termWidth int) bool {
 // sessionsColumnsFor is the column set this terminal actually gets. Paired with
 // sessionsShowMoney in rebuildSessionsTable so the row arity always matches the header.
 func sessionsColumnsFor(termWidth int) []table.Column {
-	return sessionsColumnsWith(termWidth, false, false)
+	return sessionsColumnsWith(termWidth, false, false, false)
 }
 
 // sessionsAgentWidth fits "claude-code", an agent label (versionless; see pipeline.AgentName).
@@ -985,20 +1101,25 @@ const sessionsAgentWidth = 11
 // AND NEVER TAKEN AWAY BY WIDENING (TestSessionsTable_WideningNeverDropsAColumnOrNarrowsTitle):
 // see withColumnIfItFits for presence, and growSessionsTitle's pending for TITLE's width, which
 // does not grow into the room an asked-for column has yet to claim.
-func sessionsColumnsWith(termWidth int, agent, server bool) []table.Column {
+//
+// UNITS, asked when a listed session has a usage-limit saving, is offered the same way and seated
+// after SAVED, beside the money it is not.
+func sessionsColumnsWith(termWidth int, agent, server, units bool) []table.Column {
 	cols := sessionsBaseColumns(termWidth)
 	pending := 0
 	for _, opt := range []struct {
 		asked bool
 		col   table.Column
+		after string
 	}{
-		{agent, table.Column{Title: "AGENT", Width: sessionsAgentWidth}},
-		{server, table.Column{Title: "SERVER", Width: sessionsServerWidth}},
+		{agent, table.Column{Title: "AGENT", Width: sessionsAgentWidth}, ""},
+		{server, table.Column{Title: "SERVER", Width: sessionsServerWidth}, ""},
+		{units, table.Column{Title: unitsColumnTitle, Width: sessionsUnitsWidth}, "SAVED"},
 	} {
 		if !opt.asked {
 			continue
 		}
-		if with, ok := withColumnIfItFits(cols, opt.col, termWidth); ok {
+		if with, ok := withColumnAfterIfItFits(cols, opt.col, termWidth, opt.after); ok {
 			cols = with
 		} else {
 			pending += opt.col.Width + cellPadding
@@ -1019,6 +1140,12 @@ func sessionsColumnsWith(termWidth int, agent, server bool) []table.Column {
 // vanished at 93 and came back near 113, so widening the window took a column away. They rank
 // above AGENT and SERVER — a session's spend is what this table is read for — so those two wait.
 func withColumnIfItFits(cols []table.Column, col table.Column, termWidth int) ([]table.Column, bool) {
+	return withColumnAfterIfItFits(cols, col, termWidth, "")
+}
+
+// withColumnAfterIfItFits is withColumnIfItFits seating col right after the column titled after,
+// or after the identifying columns when after is "" or absent.
+func withColumnAfterIfItFits(cols []table.Column, col table.Column, termWidth int, after string) ([]table.Column, bool) {
 	if termWidth > 0 && !sessionsShowMoney(termWidth) {
 		return cols, false
 	}
@@ -1027,6 +1154,13 @@ func withColumnIfItFits(cols []table.Column, col table.Column, termWidth int) ([
 		switch headerTitle(c) {
 		case "SESSION", "TITLE", "AGENT":
 			at = i + 1
+		}
+	}
+	if after != "" {
+		for i, c := range cols {
+			if headerTitle(c) == after {
+				at = i + 1
+			}
 		}
 	}
 	with := make([]table.Column, 0, len(cols)+1)

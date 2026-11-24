@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/rossoctl/accountant"
 	"github.com/rossoctl/cortex/core/capabilities"
 	"github.com/rossoctl/cortex/core/model"
 )
@@ -455,6 +457,29 @@ type Context struct {
 	// call hits a WARN log and early-returns rather than
 	// double-releasing every Finisher's state.
 	finished bool
+
+	// clientBody is the request body before the first plugin, kept by Pipeline.Run only when
+	// the pipeline has an accountant. See ClientBody.
+	clientBody []byte
+	// opsMu guards reportedOps and opsSealed: an engine's model calls report from goroutines
+	// of their own (OpReporter), beside the request goroutine.
+	opsMu sync.Mutex
+	// reportedOps are the context operations plugins reported, in call order. See ReportOps.
+	reportedOps []accountant.Operation
+	// opsSealed is set by Run right before RequestEnd reads the ops; an op reported after it is
+	// dropped and counted (lateOpsDropped).
+	opsSealed bool
+	// accountingThread, accountingParent and accountingThreadSet hold SetAccountingThread's
+	// choice of thread.
+	accountingThread    string
+	accountingParent    string
+	accountingThreadSet bool
+	// billing and billingSet hold BillingSnapshot's answer, captured once by the FIRST
+	// Pipeline.Run call on this pctx (inbound or outbound, whichever runs first) — before any
+	// plugin, inbound or outbound, can rewrite the credential header accountant.BillingFrom
+	// reads (jwt-validation's placeholder_mode, token-exchange). See BillingSnapshot.
+	billing    accountant.Billing
+	billingSet bool
 }
 
 // ClientInfo returns the calling coding agent, parsed from this request's

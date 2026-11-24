@@ -9,9 +9,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 	"github.com/rossoctl/cortex/cmd/agentop/tui"
 )
 
@@ -526,7 +526,7 @@ func runAgentopChild(t *testing.T, args ...string) (string, error) {
 	// Not every argv exits on its own: one that reaches tui.Run opens the terminal. In
 	// a session of its own the child has no controlling terminal, so that open fails
 	// and the child exits.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.SysProcAttr = sessionAttr()
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -555,11 +555,21 @@ func TestMain(m *testing.M) {
 		main()
 		return
 	}
-	// Poll a stub's health 10 times as often. The windows stay real: a shorter
-	// window made tests fail on a loaded machine, where a stub can need more than
-	// 1s to answer or to exit.
+	// Poll a stub's health 10 times as often. A test that calls readyOnFirstAnswer
+	// takes the first answer; the rest keep real windows, because a shorter window
+	// made tests fail on a loaded machine, where a stub can need more than 1s to
+	// answer or to exit.
+	//
+	// Tests set package variables like this one, so tests in this package run
+	// sequentially: none calls t.Parallel.
 	healthPollDivisor = 10
-	os.Exit(m.Run())
+	// The home directory is a temporary one for the whole run, so no test can read or write
+	// the real profile, even one that sets no home of its own (see testhome). The children
+	// above inherit it.
+	cleanup := testhome.Isolate()
+	code := m.Run()
+	cleanup()
+	os.Exit(code)
 }
 
 // The child argv round-trips an argument containing a space, ACROSS the process boundary.

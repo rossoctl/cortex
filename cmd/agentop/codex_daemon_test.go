@@ -13,7 +13,9 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 	"github.com/rossoctl/cortex/core/peerproc"
 )
 
@@ -655,10 +657,13 @@ func TestCodexRun(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses /bin/sh")
 	}
-	t.Setenv("HOME", t.TempDir())
+	testhome.Set(t, t.TempDir())
 	t.Setenv(codexHomeEnv, "")
 	t.Setenv("HTTPS_PROXY", cortexProxyURL)
 	home := t.TempDir()
+	saved := codexWaitDelay
+	t.Cleanup(func() { codexWaitDelay = saved })
+	codexWaitDelay = time.Hour // stderr is read to its end
 	err := codexRun("/bin/sh", home, nil, "-c", `echo "home=$CODEX_HOME proxy=$HTTPS_PROXY" >&2; echo second >&2; exit 3`)
 	if err == nil {
 		t.Fatal("a non-zero exit returned no error")
@@ -671,12 +676,24 @@ func TestCodexRun(t *testing.T) {
 	}
 	// A restart leaves a daemon running, and a daemon that kept the command's stdout or
 	// stderr open must not turn a successful restart into a failure (#1526 review). The
-	// background sleep holds both for longer than WaitDelay.
-	if err := codexRun("/bin/sh", home, nil, "-c", "sleep 5 & exit 0"); err != nil {
+	// background sleep holds both until the cleanup stops it, so each Wait ends on
+	// WaitDelay, here already over.
+	codexWaitDelay = time.Nanosecond
+	pids := filepath.Join(t.TempDir(), "pids")
+	t.Cleanup(func() {
+		b, _ := os.ReadFile(pids) //nolint:gosec // the test's own file
+		for _, f := range strings.Fields(string(b)) {
+			if pid, err := strconv.Atoi(f); err == nil {
+				_ = killPID(pid, syscall.SIGKILL)
+			}
+		}
+	})
+	child := "sleep 3600 & echo $! >> '" + pids + "'; "
+	if err := codexRun("/bin/sh", home, nil, "-c", child+"exit 0"); err != nil {
 		t.Errorf("a successful command whose child kept its output open returned %v", err)
 	}
 	// The same child behind a failed command is still a failure.
-	if err := codexRun("/bin/sh", home, nil, "-c", "sleep 5 & exit 4"); err == nil || !strings.Contains(err.Error(), "exit status 4") {
+	if err := codexRun("/bin/sh", home, nil, "-c", child+"exit 4"); err == nil || !strings.Contains(err.Error(), "exit status 4") {
 		t.Errorf("a failed command whose child kept its output open returned %v, want exit status 4", err)
 	}
 }
@@ -687,13 +704,13 @@ func TestCodexRun(t *testing.T) {
 func startGroupLeader(t *testing.T) (*exec.Cmd, <-chan struct{}) {
 	t.Helper()
 	cmd := exec.Command("/bin/sh", "-c", "sleep 30")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = groupAttr()
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	exited := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(exited) }()
-	t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); <-exited })
+	t.Cleanup(func() { _ = killPID(-cmd.Process.Pid, syscall.SIGKILL); <-exited })
 	prev := codexDaemonAlive
 	t.Cleanup(func() { codexDaemonAlive = prev })
 	codexDaemonAlive = func(pid int) bool {

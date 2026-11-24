@@ -78,7 +78,7 @@ func detachedSleeperAt(t *testing.T, path string) int {
 	// be reused by then.
 	t.Cleanup(func() {
 		if ranFrom(pid, path) {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
+			_ = killPID(pid, syscall.SIGKILL)
 		}
 	})
 	waitReady()
@@ -87,7 +87,7 @@ func detachedSleeperAt(t *testing.T, path string) int {
 
 // ranFrom reports whether pid is alive and was started as path, by ps's argv[0].
 func ranFrom(pid int, path string) bool {
-	if !alive(pid) {
+	if !processAlive(pid) {
 		return false
 	}
 	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "args=").Output()
@@ -231,7 +231,7 @@ func TestSetupStopsAPreRenameBackgroundProxyAndRestartsItOnRollback(t *testing.T
 	if code != 1 {
 		t.Errorf("a failed run exited %d", code)
 	}
-	if alive(newPID) {
+	if processAlive(newPID) {
 		t.Error("the rollback left the new cortex running")
 	}
 	if !ranFrom(restarted, filepath.Join(bin, "authbridge-proxy")) || restarted == old {
@@ -439,6 +439,7 @@ func TestSetupRollbackReportsAServiceItCouldNotUnload(t *testing.T) {
 // adopts and stops. The supervised one is what was serving, so the rollback
 // reloads its unit and starts no background copy.
 func TestSetupRollbackReloadsTheSupervisedCortexOverABackgroundOne(t *testing.T) {
+	readyOnFirstAnswer(t)
 	sc, running := newUpgradeScene(t)
 	bin := filepath.Join(sc.home, ".local", "bin", "cortex")
 	pidFile := filepath.Join(sc.home, ".cortex", "proxy.pid")
@@ -491,10 +492,11 @@ func TestSetupRollbackReloadsTheSupervisedCortexOverABackgroundOne(t *testing.T)
 // health check. That is the background Cortex, which runServiceInstall adopts and
 // stops, so the rollback starts it again and leaves the job stopped.
 func TestSetupRollbackRestartsTheBackgroundCortexBesideAStoppedService(t *testing.T) {
+	readyOnFirstAnswer(t)
 	running := filepath.Join(t.TempDir(), "running")
 	sc := newSetupScene(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, err := os.Stat(running)
-		if err != nil && !alive(readPIDFile(filepath.Join(os.Getenv("HOME"), ".cortex", "proxy.pid"))) {
+		if err != nil && !processAlive(readPIDFile(filepath.Join(os.Getenv("HOME"), ".cortex", "proxy.pid"))) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
 	})
@@ -591,6 +593,7 @@ func TestSetupRollbackWaitsOutLaunchdTeardown(t *testing.T) {
 	if runtimeGOOS() != "darwin" {
 		t.Skip("launchd's bootout only: systemd's disable --now returns once the unit has stopped")
 	}
+	readyOnFirstAnswer(t)
 	t.Run("a fresh service, then the background Cortex it replaced", func(t *testing.T) {
 		sc, old := backgroundCortexScene(t, "cortex")
 		bin := filepath.Join(sc.home, ".local", "bin", "cortex")

@@ -111,6 +111,9 @@ cortex: ## Build cortex to ./bin/cortex (PROFILE=full|lite|local, default full)
 # removes the pre-rename abctl and authbridge-proxy. One code path, so a dev install
 # cannot drift from a release install.
 
+# Read when make reads this file, before the cortex and agentop prerequisites build, so
+# setup's "ready in" counts the build too.
+dev-install: DEV_INSTALL_STARTED := $(shell date +%s)
 dev-install: cortex agentop ## Build from this tree, install it with agentop setup, and restart the proxy (PROFILE=full|lite|local)
 	@# BIN_DIR's agentop, not the installed one: the agentop just built is the one that
 	@# knows how this tree installs. Setup leaves BIN_DIR in place; it deletes only a
@@ -123,4 +126,4 @@ dev-install: cortex agentop ## Build from this tree, install it with agentop set
 	@# No @ on the line itself, so make prints the command before running it: the
 	@# restart is this line's doing and nothing else on screen says so, and a setup
 	@# that refuses names this same command as the one to re-run.
-	$(BIN_DIR)/agentop setup --from $(BIN_DIR) --yes --no-modify-path --restart
+	CORTEX_SETUP_STARTED=$(DEV_INSTALL_STARTED) $(BIN_DIR)/agentop setup --from $(BIN_DIR) --yes --no-modify-path --restart

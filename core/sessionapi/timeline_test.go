@@ -305,7 +305,8 @@ func TestTimelineFollowsRetentionPruningAResumedSession(t *testing.T) {
 	record(time.Now().Add(-time.Hour), "recent.example")
 
 	clock.Store(time.Now().UnixNano())
-	a, err := archive.Open(root, archive.WithClock(now))
+	ticks := make(chan time.Time)
+	a, err := archive.Open(root, archive.WithClock(now), archive.WithTicks(ticks))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,16 +328,11 @@ func TestTimelineFollowsRetentionPruningAResumedSession(t *testing.T) {
 	}
 
 	clock.Add(int64(2 * 24 * time.Hour))
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		info, _, _ := a.Page("s1", 0, 0, func(*pipeline.SessionEvent) bool { return false })
-		if info.OldestSeq > 1 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("retention did not prune the old segment")
-		}
-		time.Sleep(20 * time.Millisecond)
+	// The second send returns once the first tick, which prunes, has run.
+	ticks <- time.Time{}
+	ticks <- time.Time{}
+	if info, _, _ := a.Page("s1", 0, 0, func(*pipeline.SessionEvent) bool { return false }); info.OldestSeq <= 1 {
+		t.Fatalf("retention did not prune the old segment: oldestSeq = %d", info.OldestSeq)
 	}
 	store.Append("s1", pipeline.SessionEvent{At: time.Now(), Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "after.example"})
 	if hs := hosts(); slices.Contains(hs, "old.example") {

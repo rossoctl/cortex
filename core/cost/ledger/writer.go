@@ -122,6 +122,9 @@ type Writer struct {
 	// restart, so it pins the behaviour that hides money (see Window). Unexported and set
 	// directly by this package's tests, so it is not API; nil on every production path.
 	betweenWindowReads func()
+	// syncQueued is a TEST SEAM like betweenWindowReads: sync calls it, when non-nil, once its
+	// barrier is in ops, so a test can tell a waiting Flush from a returned one.
+	syncQueued func()
 
 	// writeMu serialises write, which is the ONE-WRITER INVARIANT run and drainAndWrite document —
 	// held in code now rather than only in prose.
@@ -400,7 +403,14 @@ func (w *Writer) row(e *model.SessionEvent) (minute time.Time, r Row, ok bool) {
 	// usage.PriceableRequest fails on a nil extension and the priced branch is not
 	// taken — so priced-versus-priceable is untouched and the "1/10 priced forever" failure
 	// stays closed. What it adds is one Requests, for a request that really happened.
-	avoidedCost := hasCost && ev.TotalAvoidedMicros() > 0
+	//
+	// ANY FIGURE OF event.Event.Figures admits the row, not only a usd saving: a plugin's own
+	// model call, or a subscription saving in units, is the same kind of fact.
+	var figures event.Figures
+	if hasCost {
+		figures = ev.Figures()
+	}
+	avoidedCost := !figures.IsZero()
 	if e.Inference == nil && !settledCost && !refusedCost && !avoidedCost {
 		// Non-inference traffic the proxy handled — MCP, health checks, tunnels.
 		// Recording it would put every proxied response in the cost denominator, the
@@ -588,7 +598,7 @@ func (w *Writer) row(e *model.SessionEvent) (minute time.Time, r Row, ok bool) {
 		// AFTER the token literal above, which assigns r.Counts wholesale: setting this before
 		// it would be silently overwritten for every inference row, which is all of them that
 		// can carry a saving.
-		r.AvoidedMicros = ev.TotalAvoidedMicros()
+		r.AddFigures(figures)
 		if ev.Priced() {
 			r.CostMicros = ev.Micros()
 			r.PricedRequests = 1
@@ -1143,6 +1153,9 @@ func (w *Writer) sync() error {
 	case w.ops <- batch{done: done}:
 	case <-w.quit:
 		return errClosedWhileFlushing
+	}
+	if w.syncQueued != nil {
+		w.syncQueued()
 	}
 	select {
 	case err := <-done:

@@ -12,14 +12,90 @@ import (
 // mismatched counter is obvious.
 func checkSplit(t *testing.T, ext *model.InferenceExtension, want model.InferenceExtension) {
 	t.Helper()
-	got := fmt.Sprintf("input=%d cache_read=%d cache_write=%d output=%d reasoning=%d prompt=%d completion=%d total=%d",
-		ext.InputTokens, ext.CacheReadTokens, ext.CacheWriteTokens, ext.OutputTokens, ext.ReasoningTokens,
+	got := fmt.Sprintf("input=%d cache_read=%d cache_write=%d cache_write_1h=%d output=%d reasoning=%d prompt=%d completion=%d total=%d",
+		ext.InputTokens, ext.CacheReadTokens, ext.CacheWriteTokens, ext.CacheWrite1hTokens, ext.OutputTokens, ext.ReasoningTokens,
 		ext.PromptTokens, ext.CompletionTokens, ext.TotalTokens)
-	expected := fmt.Sprintf("input=%d cache_read=%d cache_write=%d output=%d reasoning=%d prompt=%d completion=%d total=%d",
-		want.InputTokens, want.CacheReadTokens, want.CacheWriteTokens, want.OutputTokens, want.ReasoningTokens,
+	expected := fmt.Sprintf("input=%d cache_read=%d cache_write=%d cache_write_1h=%d output=%d reasoning=%d prompt=%d completion=%d total=%d",
+		want.InputTokens, want.CacheReadTokens, want.CacheWriteTokens, want.CacheWrite1hTokens, want.OutputTokens, want.ReasoningTokens,
 		want.PromptTokens, want.CompletionTokens, want.TotalTokens)
 	if got != expected {
 		t.Errorf("split token counters mismatch\n got: %s\nwant: %s", got, expected)
+	}
+}
+
+// TestAnthropic_ParsesCacheWrite1h: cache_creation_input_tokens is the TOTAL write
+// (5m + 1h); cache_creation.ephemeral_1h_input_tokens is the 1h SUBSET of it, never
+// an addition.
+func TestAnthropic_ParsesCacheWrite1h(t *testing.T) {
+	ext := &model.InferenceExtension{Model: "claude-sonnet-4-5"}
+	body := []byte(`{
+		"content": [{"type": "text", "text": "ok"}],
+		"stop_reason": "end_turn",
+		"usage": {
+			"input_tokens": 50,
+			"cache_creation_input_tokens": 1000,
+			"cache_creation": {
+				"ephemeral_5m_input_tokens": 400,
+				"ephemeral_1h_input_tokens": 600
+			},
+			"cache_read_input_tokens": 200,
+			"output_tokens": 25
+		}
+	}`)
+	parseAnthropicJSON(body, ext)
+
+	if ext.CacheWriteTokens != 1000 {
+		t.Errorf("CacheWriteTokens = %d, want 1000 (the total, not the 5m-only part)", ext.CacheWriteTokens)
+	}
+	if ext.CacheWrite1hTokens != 600 {
+		t.Errorf("CacheWrite1hTokens = %d, want 600", ext.CacheWrite1hTokens)
+	}
+}
+
+// An off-shape usage.cache_creation must not fail the usage decode. The breakdown is
+// optional, and a relay or shim may serialize it differently. A typed field would
+// zero every count on these bodies. A breakdown that cannot be read means "no 1h
+// writes".
+func TestAnthropic_OffShapeCacheCreationKeepsUsage(t *testing.T) {
+	cases := []struct {
+		raw    string
+		want1h int
+	}{
+		{`null`, 0},
+		{`{"ephemeral_1h_input_tokens":60}`, 60},
+		{`{"ephemeral_1h_input_tokens":60.0}`, 60},
+		// Any JSON number with no fraction counts, not only a decimal literal.
+		{`{"ephemeral_1h_input_tokens":6e1}`, 60},
+		{`{"ephemeral_1h_input_tokens":60.5}`, 0},
+		{`{"ephemeral_1h_input_tokens":-1}`, 0},
+		{`{"ephemeral_1h_input_tokens":"60"}`, 0},
+		// The inner key match is exact, unlike the outer usage struct's case-insensitive decode.
+		{`{"Ephemeral_1h_input_tokens":60}`, 0},
+		// A duplicate key: gjson.Get returns the first occurrence, as verified against the
+		// actual library rather than assumed.
+		{`{"ephemeral_1h_input_tokens":60,"ephemeral_1h_input_tokens":7}`, 60},
+		{`0`, 0},
+		{`[]`, 0},
+		{`"x"`, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.raw, func(t *testing.T) {
+			usage := `{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":100,"cache_read_input_tokens":20,"cache_creation":` + c.raw + `}`
+			ext := &model.InferenceExtension{Model: "claude-sonnet-4-5"}
+			parseAnthropicJSON([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":`+usage+`}`), ext)
+			checkSplit(t, ext, model.InferenceExtension{
+				InputTokens: 10, CacheReadTokens: 20, CacheWriteTokens: 100, CacheWrite1hTokens: c.want1h,
+				OutputTokens: 5, PromptTokens: 130, CompletionTokens: 5, TotalTokens: 135,
+			})
+
+			sse := &model.InferenceExtension{Model: "claude-sonnet-4-5"}
+			parseAnthropicSSE([]byte("data: {\"type\":\"message_start\",\"message\":{\"usage\":"+usage+"}}\n"+
+				"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n"), sse)
+			if sse.InputTokens != 10 || sse.CacheWriteTokens != 100 || sse.CacheReadTokens != 20 || sse.CacheWrite1hTokens != c.want1h {
+				t.Errorf("SSE: input=%d cache_write=%d cache_read=%d cache_write_1h=%d, want 10/100/20/%d",
+					sse.InputTokens, sse.CacheWriteTokens, sse.CacheReadTokens, sse.CacheWrite1hTokens, c.want1h)
+			}
+		})
 	}
 }
 
@@ -424,5 +500,31 @@ func TestChatUsage_WrongTypeCacheCountKeepsReply(t *testing.T) {
 					field, bad, state.completion.String(), ext.FinishReason, state.hasUsage, state.usage.Input)
 			}
 		}
+	}
+}
+
+// A frame whose 1h count exceeds its own total loses the 1h count, so a later
+// frame's larger total cannot make the bogus count look valid after the merge.
+// A frame whose 1h count fits keeps it through the same later frame.
+func TestAnthropic_StreamDropsA1hCountAboveItsOwnFrameTotal(t *testing.T) {
+	for _, c := range []struct {
+		name           string
+		total1, n1h    int
+		total2, want1h int
+	}{
+		{"oversized in its frame", 100, 200, 300, 0},
+		{"fits in its frame", 100, 60, 300, 60},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ext := &model.InferenceExtension{Model: "claude-sonnet-4-5"}
+			parseAnthropicSSE([]byte(fmt.Sprintf(
+				"data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"cache_creation_input_tokens\":%d,\"cache_creation\":{\"ephemeral_1h_input_tokens\":%d}}}}\n"+
+					"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5,\"cache_creation_input_tokens\":%d}}\n",
+				c.total1, c.n1h, c.total2)), ext)
+			if ext.CacheWriteTokens != c.total2 || ext.CacheWrite1hTokens != c.want1h {
+				t.Errorf("cache_write=%d cache_write_1h=%d, want %d/%d",
+					ext.CacheWriteTokens, ext.CacheWrite1hTokens, c.total2, c.want1h)
+			}
+		})
 	}
 }

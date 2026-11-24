@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/rossoctl/cortex/cmd/agentop/updatestatus"
@@ -52,12 +51,9 @@ func lockUpdate(cortexDir string) (unlock func(), held bool, err error) {
 	if err != nil {
 		return nil, false, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if held, err := lockFile(f); held || err != nil {
 		_ = f.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return nil, true, nil
-		}
-		return nil, false, err
+		return nil, held, err
 	}
 	return func() { _ = f.Close() }, false, nil
 }

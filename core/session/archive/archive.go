@@ -59,6 +59,10 @@ type Option func(*Archive)
 // WithClock replaces the archive's time source, for tests.
 func WithClock(now func() time.Time) Option { return func(a *Archive) { a.now = now } }
 
+// WithTicks drives the writer's tick from c in place of its own ticker, for tests: the writer
+// ticks once per receive, so on an unbuffered c a send returns once the tick before it has run.
+func WithTicks(c <-chan time.Time) Option { return func(a *Archive) { a.ticks = c } }
+
 // WithRetentionDays sets how long a segment is kept after its last write. Zero or negative is
 // the default, 30; past MaxRetentionDays it is clamped.
 func WithRetentionDays(days int) Option { return func(a *Archive) { a.retainDays = days } }
@@ -118,9 +122,12 @@ type Archive struct {
 	idleClose  time.Duration
 	maxOpen    int
 	tickEvery  time.Duration
+	ticks      <-chan time.Time // when set, the writer's tick source in place of a ticker
 
-	// Test seams: gate holds the writer before each op; segHook sees each new segment writer.
+	// Test seams: gate holds the writer before each op, and held, when set, is signaled each time
+	// the writer waits there; segHook sees each new segment writer.
 	gate    chan struct{}
+	held    chan struct{}
 	segHook func(*segmentWriter)
 
 	ops       chan op
@@ -546,15 +553,23 @@ func (a *Archive) inWriter(f func()) {
 
 func (a *Archive) run() {
 	defer close(a.done)
-	t := time.NewTicker(a.tickEvery)
-	defer t.Stop()
+	ticks := a.ticks
+	if ticks == nil {
+		t := time.NewTicker(a.tickEvery)
+		defer t.Stop()
+		ticks = t.C
+	}
 	for {
 		select {
 		case o := <-a.ops:
 			a.take(o)
-		case <-t.C:
-			a.applyOptOuts(false)
-			a.tick()
+		case _, ok := <-ticks:
+			if ok {
+				a.applyOptOuts(false)
+				a.tick()
+			} else {
+				ticks = nil
+			}
 		case <-a.stop:
 			a.drain()
 			// From here nothing more is queued or kept (sendLocked and optOutLocked check
@@ -585,6 +600,10 @@ func (a *Archive) drain() {
 
 func (a *Archive) take(o op) {
 	if a.gate != nil {
+		select {
+		case a.held <- struct{}{}:
+		default:
+		}
 		<-a.gate
 	}
 	// A kept opt-out applies before the first op queued after it (#1923).

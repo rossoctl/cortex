@@ -1,6 +1,9 @@
 package pricing
 
-import "math"
+import (
+	"math"
+	"strings"
+)
 
 // MaxCostMicros bounds ONE request's conversion into the micros unit. It is a
 // REPRESENTABILITY bound and nothing more — see "what it does not bound" below, which is the
@@ -297,6 +300,13 @@ func PlausibleUsage(u Usage) bool {
 			return false
 		}
 	}
+	// CacheWrite1h is not one of u.tokens()'s tiers, so the loop above does not bound
+	// it. It gets the same two rules, plus its own: it is a SUBSET of CacheWrite, so
+	// more 1h writes than writes is not a real count. UsageFromInference drops such
+	// a subset before it reaches here, so only a hand-built Usage is refused for it.
+	if u.CacheWrite1h < 0 || u.CacheWrite1h > maxPlausibleTokens || u.CacheWrite1h > u.CacheWrite {
+		return false
+	}
 	return true
 }
 
@@ -311,6 +321,24 @@ func MicrosOrZero(usd float64) int64 {
 		return 0
 	}
 	return m
+}
+
+// SignedMicrosOrZero is MicrosOrZero for a NET figure (a saving minus its penalty), which is
+// allowed to come out negative: a saving whose penalty exceeds it is a real net cost, not a
+// zero. MicrosFromUSD refuses a negative input by design (R29 and the comment on it: that
+// function is for money a party is CHARGED, which cannot be less than zero). This function
+// is for the signed NET figures that sit beside units that are already allowed to go
+// negative (AvoidedUnits - PenaltyUnits) — a floor at zero here would report a net cost as a
+// net gain of nothing, and disagree in sign with the units figure on the same line.
+//
+// It converts the magnitude through MicrosFromUSD (so the same NaN/Inf/MaxCostMicros guards
+// apply) and restores the sign. -0.0 is not negative (`usd < 0` is false for it, same as
+// MicrosFromUSD), so it converts as a settled zero, not a refusal.
+func SignedMicrosOrZero(usd float64) int64 {
+	if usd < 0 {
+		return -MicrosOrZero(-usd)
+	}
+	return MicrosOrZero(usd)
 }
 
 // CostByTier is Cost's arithmetic with the per-tier amounts kept instead of summed away.
@@ -413,4 +441,121 @@ func CostByTier(r Rates, u Usage) (tiers [NumTiers]int64, total int64, ok bool, 
 func CostWithReason(r Rates, u Usage) (int64, bool, Refusal) {
 	_, micros, ok, refusal := CostByTier(r, u)
 	return micros, ok, refusal
+}
+
+// CostWith1h is CostByTier plus the 1-hour cache-write premium: the one modelled
+// figure for a usage. Every caller that models a request's cost from its counters
+// calls this, not CostByTier, so the 1h premium cannot be applied on one path and
+// missed on another.
+//
+// u.CacheWrite1h is a SUBSET of u.CacheWrite, so CostByTier already prices it once,
+// at the 5m rate. This adds only the difference on that subset:
+//
+//	CostByTier:  n_total * rate5m
+//	+ premium:   n_1h * (rate1h - rate5m)
+//	= (n_total - n_1h) * rate5m + n_1h * rate1h
+//
+// The premium goes on TierCacheWrite, so the split still sums to micros.
+//
+// If the 1h rate is unusable, the premium is not applied and the cache writes stay
+// at the 5m rate. The request is not refused over a rate CostByTier did not need.
+// If the premium takes the total past MaxPlausibleRequestCostMicros, or is too large
+// to represent at all, the request is refused as RefusalImplausibleTotal, the same
+// as a base figure past the ceiling.
+//
+// r need not be flattened: CostWith1h flattens it at u.PromptTotal(), as CostByTier
+// does, so the base and the premium use the same threshold rates.
+//
+// estimated1h is true when the premium was priced from the generic 5m-rate
+// fallback (see Rates.CacheWrite1hRate). The caller publishes it as
+// ReasonCacheWrite1hRateEstimated.
+func CostWith1h(r Rates, u Usage, anthropicShaped bool) (
+	tiers [NumTiers]int64, micros int64, ok bool, refusal Refusal, estimated1h bool) {
+	// Flattened once, so the base and the premium use the same threshold rates.
+	// CostByTier flattens again, which is a no-op on flattened rates.
+	r = r.At(u.PromptTotal())
+	tiers, micros, ok, refusal = CostByTier(r, u)
+	if !ok || u.CacheWrite1h <= 0 {
+		return tiers, micros, ok, refusal, false
+	}
+	delta, outcome, estimated := cacheWrite1hPremium(r, u.CacheWrite1h, anthropicShaped)
+	switch outcome {
+	case premiumNoRate:
+		return tiers, micros, true, RefusalNone, false
+	case premiumOverflow:
+		// A premium the micros unit cannot hold puts the total past the ceiling too.
+		return [NumTiers]int64{}, 0, false, RefusalImplausibleTotal, false
+	}
+	// micros is already at most the ceiling, so the subtraction cannot overflow.
+	if delta > MaxPlausibleRequestCostMicros-micros {
+		return [NumTiers]int64{}, 0, false, RefusalImplausibleTotal, false
+	}
+	tiers[TierCacheWrite] += delta
+	return tiers, micros + delta, true, RefusalNone, estimated
+}
+
+// premiumOutcome tells CostWith1h's two non-priced cases apart: a 1h rate it
+// cannot use keeps the 5m price, and a premium too large to represent is refused.
+type premiumOutcome int
+
+const (
+	premiumPriced premiumOutcome = iota
+	premiumNoRate
+	premiumOverflow
+)
+
+// cacheWrite1hPremium is the extra cost of n cache-write tokens written with a
+// 1-hour TTL instead of a 5-minute one. premiumNoRate when either rate is unset,
+// negative or not finite; premiumOverflow when the premium does not fit in micros.
+// A 1h rate cheaper than the 5m rate gives no premium, never a credit. estimated is
+// Rates.CacheWrite1hRate's estimated.
+//
+// When the 2x-input derivation applies (anthropicShaped and the table's own shape
+// both check out, within isAnthropicCacheWriteShape's window), the premium is
+// bounded by the base: rate1h-rate5m is at most 2/3 of rate5m (2x input against a
+// 5m rate as low as 1.2x input, the window's own lower edge), so the premium is at
+// most 2/3 of what n tokens already cost at rate5m. premiumOverflow would need
+// n*rate5m — the base CostByTier already priced — to reach MaxCostMicros on its
+// own 2/3 share alone, which means the base itself is already orders of magnitude
+// past MaxPlausibleRequestCostMicros ($10,000), the ceiling CostByTier refuses on
+// first. See TestCostWith1h_AnImplausibleBaseIsRefusedBeforeThePremium and
+// TestCacheWrite1hPremium_AnUnrepresentableDeltaOverflows.
+func cacheWrite1hPremium(r Rates, n int, anthropicShaped bool) (micros int64, outcome premiumOutcome, estimated bool) {
+	rate5m, ok5m := r.For(TierCacheWrite)
+	rate1h, ok1h, estimated := r.CacheWrite1hRate(anthropicShaped)
+	if !ok5m || !ok1h || !finiteNonNegative(rate5m) || !finiteNonNegative(rate1h) {
+		return 0, premiumNoRate, false
+	}
+	usd := float64(n) * (rate1h - rate5m)
+	if usd <= 0 {
+		// The RATE was still estimated, even though no premium came from it.
+		return 0, premiumPriced, estimated
+	}
+	m, converted := MicrosFromUSD(usd)
+	if !converted {
+		return 0, premiumOverflow, false
+	}
+	return m, premiumPriced, estimated
+}
+
+// finiteNonNegative is the per-rate validity check CostByTier applies inline to
+// Base[i], named so cacheWrite1hPremium states the same rule.
+func finiteNonNegative(rate float64) bool {
+	return rate >= 0 && !math.IsNaN(rate) && !math.IsInf(rate, 0)
+}
+
+// AnthropicShaped reports whether model is in Anthropic's Claude family, the only
+// provider on a Cortex path whose 1-hour cache-write price is documented (see
+// Rates.CacheWrite1hRate). It is the anthropicShaped argument to CostWith1h.
+//
+// Names the MODEL, not the TABLE: a true here is necessary but not sufficient for
+// CacheWrite1hRate to trust the 2x-input derivation. A configured or remote rate
+// table attached to a Claude model name need not bill at Anthropic's documented
+// ratio — see isAnthropicCacheWriteShape, which CacheWrite1hRate also requires.
+//
+// A substring match: bundled model names include dated and provider-prefixed forms
+// ("claude-sonnet-4-5-20250929", "anthropic/claude-opus-5", Bedrock's
+// "anthropic.claude-..."), and all of them contain "claude".
+func AnthropicShaped(model string) bool {
+	return strings.Contains(strings.ToLower(model), "claude")
 }

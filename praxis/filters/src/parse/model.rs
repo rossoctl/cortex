@@ -81,6 +81,9 @@ pub struct InferenceExtension {
     pub cache_read_tokens: i64,
     #[serde(skip_serializing_if = "is_zero")]
     pub cache_write_tokens: i64,
+    /// The part of `cache_write_tokens` written with a 1-hour TTL, never an addition to it.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub cache_write_1h_tokens: i64,
     #[serde(skip_serializing_if = "is_zero")]
     pub output_tokens: i64,
     #[serde(skip_serializing_if = "is_zero")]
@@ -348,6 +351,7 @@ mod tests {
             input_tokens: 1,
             cache_read_tokens: 1,
             cache_write_tokens: 1,
+            cache_write_1h_tokens: 1,
             output_tokens: 1,
             reasoning_tokens: 1,
             present_kinds: 1,

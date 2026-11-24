@@ -6,10 +6,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
 )
@@ -539,7 +541,7 @@ func TestGetBody_ErrNoDetailMarksARefusalThatExplainedNothing(t *testing.T) {
 			}))
 			defer ts.Close()
 
-			_, err := New(ts.URL).Export(context.Background(), []string{"nope"}, "")
+			_, err := New(ts.URL).Export(context.Background(), []string{"nope"}, "", false)
 			if !errors.Is(err, ErrBadRequest) {
 				t.Fatalf("error = %v, want ErrBadRequest in the chain either way", err)
 			}
@@ -849,5 +851,21 @@ func TestPipelinePluginDecodesOnError(t *testing.T) {
 	}
 	if got := view.Outbound[1].OnError; got != pipeline.ErrorPolicyObserve {
 		t.Errorf("inference-router OnError = %q, want observe", got)
+	}
+}
+
+// GetUsageWindowScoped puts project= and agent= on the query.
+func TestGetUsageWindowScoped_SendsProject(t *testing.T) {
+	var got url.Values
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.Query()
+		_, _ = w.Write([]byte(`{"window":"today","totals":{}}`))
+	}))
+	defer ts.Close()
+	if _, err := New(ts.URL).GetUsageWindowScoped(context.Background(), "today", 0, "", "claude-code", "/repo/a", usage.GroupModel); err != nil {
+		t.Fatal(err)
+	}
+	if got.Get("project") != "/repo/a" || got.Get("agent") != "claude-code" || got.Get("group") != "model" {
+		t.Errorf("query = %v, want project=/repo/a, agent=claude-code and group=model", got)
 	}
 }

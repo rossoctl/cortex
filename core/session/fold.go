@@ -266,7 +266,7 @@ type SummaryFold struct {
 	events    int
 	tokens    int
 	cost      event.CostSum
-	avoided   event.CostSum
+	avoided   figureSum
 	units     map[string]int
 	titleRank int
 	title     string
@@ -349,7 +349,7 @@ func (f *SummaryFold) Add(sessionID string, e *model.SessionEvent) {
 	}
 	f.cost.Add(p.money.cost)
 	f.avoided.Add(p.money.avoided)
-	if p.money.priced || p.money.avoided > 0 {
+	if p.money.priced || !p.money.avoided.IsZero() {
 		if f.units == nil {
 			f.units = make(map[string]int, 1)
 		}
@@ -395,7 +395,6 @@ func (f *SummaryFold) Summary(sessionID string) SessionSummary {
 		Title:           f.title,
 		TotalTokens:     f.tokens,
 		CostMicros:      f.cost.Micros,
-		AvoidedMicros:   f.avoided.Micros,
 		Currencies:      currenciesOf(f.units),
 		Saturated:       f.cost.Saturated || f.avoided.Saturated,
 		PromptContext:   f.promptContext(),
@@ -410,6 +409,7 @@ func (f *SummaryFold) Summary(sessionID string) SessionSummary {
 		NoRecord:        f.noRecord,
 		ParentSession:   model.LenientString(f.parentSession),
 	}
+	f.avoided.setOn(&sum)
 	if !f.live {
 		sum.Source = f.imported
 	}
@@ -429,14 +429,24 @@ type foldJSON struct {
 	// Projects is absent from a session.json written before it existed, which decodes to none.
 	Projects []string `json:"projects,omitempty"`
 	// ParentSession is SummaryFold.parentSession. A session.json written before it existed decodes to "".
-	ParentSession    model.LenientString  `json:"parentSession,omitempty"`
-	TotalTokens      int                  `json:"totalTokens,omitempty"`
-	CostMicros       int64                `json:"costMicros,omitempty"`
-	CostSaturated    bool                 `json:"costSaturated,omitempty"`
-	AvoidedMicros    int64                `json:"avoidedMicros,omitempty"`
-	AvoidedSaturated bool                 `json:"avoidedSaturated,omitempty"`
-	Units            map[string]int       `json:"units,omitempty"`
-	PromptContext    *model.PromptContext `json:"promptContext,omitempty"`
+	ParentSession    model.LenientString `json:"parentSession,omitempty"`
+	TotalTokens      int                 `json:"totalTokens,omitempty"`
+	CostMicros       int64               `json:"costMicros,omitempty"`
+	CostSaturated    bool                `json:"costSaturated,omitempty"`
+	AvoidedMicros    int64               `json:"avoidedMicros,omitempty"`
+	AvoidedSaturated bool                `json:"avoidedSaturated,omitempty"`
+	// The other event.Figures fields. Absent from a session.json written before they existed,
+	// which decodes to 0: that history's savings were counted only in AvoidedMicros.
+	PenaltyMicros              int64                `json:"penaltyMicros,omitempty"`
+	AvoidedUnits               int64                `json:"avoidedUnits,omitempty"`
+	PenaltyUnits               int64                `json:"penaltyUnits,omitempty"`
+	AvoidedAPIEquivalentMicros int64                `json:"avoidedApiEquivalentMicros,omitempty"`
+	AvoidedUnknownMicros       int64                `json:"avoidedUnknownMicros,omitempty"`
+	PluginSpendMicros          int64                `json:"pluginSpendMicros,omitempty"`
+	PluginSpendUnits           int64                `json:"pluginSpendUnits,omitempty"`
+	PluginSpendUnknownMicros   int64                `json:"pluginSpendUnknownMicros,omitempty"`
+	Units                      map[string]int       `json:"units,omitempty"`
+	PromptContext              *model.PromptContext `json:"promptContext,omitempty"`
 	// InferenceHost is absent from a session.json written before it existed, which decodes to "".
 	// THERE "" MEANS UNKNOWN, NOT "NO INFERENCE TRAFFIC": that history may hold plenty, folded by
 	// a Cortex that did not record where it went. The session's next inference request sets it.
@@ -496,27 +506,35 @@ type foldAgent struct {
 // rank and each currency's count, which a summary does not carry.
 func (f *SummaryFold) MarshalJSON() ([]byte, error) {
 	j := foldJSON{
-		EventCount:       f.events,
-		Title:            f.title,
-		TitleRank:        &f.titleRank,
-		TotalTokens:      f.tokens,
-		CostMicros:       f.cost.Micros,
-		CostSaturated:    f.cost.Saturated,
-		AvoidedMicros:    f.avoided.Micros,
-		AvoidedSaturated: f.avoided.Saturated,
-		Units:            f.units,
-		PromptContext:    f.promptContext(),
-		InferenceHost:    f.inferenceHost,
-		InferenceServer:  model.LenientString(f.inferenceServer),
-		InferenceKeyOf:   model.LenientString(f.inferenceKeyOf),
-		Procs:            f.procs,
-		Owner:            f.owner,
-		LastRequestAt:    f.lastRequestAt,
-		Projects:         f.projects,
-		ParentSession:    model.LenientString(f.parentSession),
-		Imported:         f.imported,
-		Live:             f.live,
-		NoRecord:         f.noRecord,
+		EventCount:                 f.events,
+		Title:                      f.title,
+		TitleRank:                  &f.titleRank,
+		TotalTokens:                f.tokens,
+		CostMicros:                 f.cost.Micros,
+		CostSaturated:              f.cost.Saturated,
+		AvoidedMicros:              f.avoided.Figures.AvoidedMicros,
+		AvoidedSaturated:           f.avoided.Saturated,
+		PenaltyMicros:              f.avoided.Figures.PenaltyMicros,
+		AvoidedUnits:               f.avoided.Figures.AvoidedUnits,
+		PenaltyUnits:               f.avoided.Figures.PenaltyUnits,
+		AvoidedAPIEquivalentMicros: f.avoided.Figures.AvoidedAPIEquivalentMicros,
+		AvoidedUnknownMicros:       f.avoided.Figures.AvoidedUnknownMicros,
+		PluginSpendMicros:          f.avoided.Figures.PluginSpendMicros,
+		PluginSpendUnits:           f.avoided.Figures.PluginSpendUnits,
+		PluginSpendUnknownMicros:   f.avoided.Figures.PluginSpendUnknownMicros,
+		Units:                      f.units,
+		PromptContext:              f.promptContext(),
+		InferenceHost:              f.inferenceHost,
+		InferenceServer:            model.LenientString(f.inferenceServer),
+		InferenceKeyOf:             model.LenientString(f.inferenceKeyOf),
+		Procs:                      f.procs,
+		Owner:                      f.owner,
+		LastRequestAt:              f.lastRequestAt,
+		Projects:                   f.projects,
+		ParentSession:              model.LenientString(f.parentSession),
+		Imported:                   f.imported,
+		Live:                       f.live,
+		NoRecord:                   f.noRecord,
 	}
 	if !f.hostsUnknown {
 		j.InferenceHosts = &hostsDoc{V: hostRuleVersion, Hosts: f.hosts}
@@ -534,10 +552,20 @@ func (f *SummaryFold) UnmarshalJSON(b []byte) error {
 		return err
 	}
 	*f = SummaryFold{
-		events:          j.EventCount,
-		tokens:          j.TotalTokens,
-		cost:            event.CostSum{Micros: j.CostMicros, Saturated: j.CostSaturated},
-		avoided:         event.CostSum{Micros: j.AvoidedMicros, Saturated: j.AvoidedSaturated},
+		events: j.EventCount,
+		tokens: j.TotalTokens,
+		cost:   event.CostSum{Micros: j.CostMicros, Saturated: j.CostSaturated},
+		avoided: figureSum{Saturated: j.AvoidedSaturated, Figures: event.Figures{
+			AvoidedMicros:              j.AvoidedMicros,
+			PenaltyMicros:              j.PenaltyMicros,
+			AvoidedUnits:               j.AvoidedUnits,
+			PenaltyUnits:               j.PenaltyUnits,
+			AvoidedAPIEquivalentMicros: j.AvoidedAPIEquivalentMicros,
+			AvoidedUnknownMicros:       j.AvoidedUnknownMicros,
+			PluginSpendMicros:          j.PluginSpendMicros,
+			PluginSpendUnits:           j.PluginSpendUnits,
+			PluginSpendUnknownMicros:   j.PluginSpendUnknownMicros,
+		}},
 		units:           j.Units,
 		titleRank:       rankNone,
 		title:           j.Title,

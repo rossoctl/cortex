@@ -18,6 +18,9 @@ pub(crate) struct TokenUsage {
     pub(crate) input: i64,
     pub(crate) cache_read: i64,
     pub(crate) cache_write: i64,
+    /// The part of `cache_write` written with a 1-hour TTL, a subset of it. It has no
+    /// present bit of its own: it rides on `KIND_CACHE_WRITE`.
+    pub(crate) cache_write_1h: i64,
     pub(crate) output: i64,
     /// Reasoning-only output, a subset of `output`.
     pub(crate) reasoning: i64,
@@ -42,6 +45,7 @@ impl TokenUsage {
         ext.input_tokens = self.input;
         ext.cache_read_tokens = self.cache_read;
         ext.cache_write_tokens = self.cache_write;
+        ext.cache_write_1h_tokens = self.cache_write_1h;
         ext.output_tokens = self.output;
         ext.reasoning_tokens = self.reasoning;
         ext.present_kinds = self.present;

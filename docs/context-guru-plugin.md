@@ -14,3 +14,41 @@ engine pulls a large transitive dependency set.
   - `max_tokens` — completion cap, default 4096.
   - `timeout_ms` — per-call timeout, default 150000.
 - `engine` (object) — native context-guru config (preset / pipeline / per-component / store), passed through verbatim. Default: `preset: balanced`.
+
+**The request's own model (`model.source: incoming`).** A component configured with `model.source: incoming` calls the model the agent itself is using, on the agent's own credential. OpenAI Chat Completions only: through `llmclient`, on the request's endpoint and `Authorization`. On other dialects the component uses the `model` block, or degrades to deterministic. Each such call is reported to the request it was made for as a spend op (`pluginSpendMicros`). A call that returns after its request was accounted is dropped and counted in the `late_model_calls_dropped` metric.
+
+**Under `on_error: observe`, no model is built at all**, static or incoming: every
+model-calling component degrades to deterministic/no-op. `observe` is a shadow pass — nothing it does is supposed to take
+effect — and a real, billed model call on the agent's own credential is the opposite of that.
+
+**Session state is kept on disk.** The plugin keeps the state a session needs between turns
+(the summary checkpoint, the last billed input, freeze decisions and similar) in context-guru's
+`session_state` table, in a SQLite file. It is always on while the plugin is on; there is no
+setting for it. So the state survives a restart and a config reload, and the prompt prefix the
+provider has cached stays the same.
+
+- Where: `~/.cortex/context-guru-state.db` on a local install. Otherwise
+  `<user cache dir>/cortex/context-guru-state.db` (`$XDG_CACHE_HOME`, or `~/.cache` on Linux).
+  In a pod the file goes with the pod's filesystem.
+- What: everything the state holds, including text the plugin made from the conversation (the
+  summary, extract rewrites, frozen replacements). Mode 0600 in a 0700 directory.
+- How long: a key stays 24 hours in memory (`store.state_ttl_seconds` overrides this), and a
+  row stays 30 days on disk after its last write. Writes are batched once a second, off the
+  request path.
+- Fails open: with no usable file, the plugin logs one WARN and keeps the state in memory only,
+  where a key keeps the engine's default lifetime (10000s), not 24 hours. With
+  `store.enabled: false` there is no state and no file.
+- Failures after the start: a write or read that fails later (a full disk, a locked file) logs a
+  WARN and is counted in the `state_db_errors` metric.
+
+## Where its own model calls go
+
+The plugin sends its own model calls (summary, extract, and the `model.source: incoming` calls)
+itself, through `llmclient`. They do not pass through the Cortex pipeline, so no pipeline plugin
+sees them, and they are not in `cost_usd` or in any session budget. Their spend reaches the cost
+record as `spends[]` (`pluginSpendMicros`); see [pricing.md](pricing.md#cost-records).
+
+On a local install the calls ignore `HTTPS_PROXY`. A laptop shell that routes agents through
+Cortex sets it to Cortex's own listener, and a call sent back there would be priced once as agent
+traffic and again as the plugin's spend. Anywhere else the calls use `HTTPS_PROXY` as usual,
+because in a cluster an egress proxy may be the only route to the model.
