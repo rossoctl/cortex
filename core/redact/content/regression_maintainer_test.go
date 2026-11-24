@@ -253,6 +253,75 @@ func TestRegression_DollarWordAndDigits(t *testing.T) {
 	}
 }
 
+// A random letters-only password under a password name is redacted, as under a secret name: the
+// type-name exemption keeps only what the secret tier would keep too. Real type names stay.
+func TestRegression_LettersOnlyPasswords(t *testing.T) {
+	pw := "OUYDtpXVFSuh" + "qyGlbDGFbtdfjUHnqFhXq"
+	for _, in := range []string{"DB_PASSWORD=" + pw, "password: " + pw, "--password=" + pw, "PGPASSWORD=" + pw + " psql"} {
+		if out, _ := redact(in); strings.Contains(out, pw) {
+			t.Errorf("%q: leaked: %q", in, out)
+		}
+	}
+	for _, in := range []string{"password: HTMLInputElement", "password: PasswordField", "password: UsernamePasswordCredentials",
+		"password: XMLHttpRequest", "password: SQLAlchemyType", "password: NSSecureTextField", "var password: NSSecureTextField",
+		"password: PasswordStrengthValidator", "password: NSTextFieldDelegate", "password: SecretStr", "password: HTTPBasicAuth"} {
+		if out, st := redact(in); out != in || len(st) != 0 {
+			t.Errorf("%q changed: %q", in, out)
+		}
+	}
+}
+
+// "$" before a word, a dash or a colon and a number is a password, not a reference; PHP's "->",
+// a drive and a list of variables stay references.
+func TestRegression_DollarDashAndColon(t *testing.T) {
+	for _, tc := range []struct{ in, secret string }{
+		{"password=$Summer-" + "2024", "Summer-2024"},
+		{"password=$Spring-" + "2025!", "Spring-2025"},
+		{"password=$Admin-" + "123", "Admin-123"},
+		{"password=$Winter:" + "2024", "Winter:2024"},
+		{`{"password":"$Summer-` + `2024"}`, "Summer-2024"},
+	} {
+		if out, _ := redact(tc.in); strings.Contains(out, tc.secret) {
+			t.Errorf("%q: leaked: %q", tc.in, out)
+		}
+	}
+	for _, in := range []string{"$password = $this->password;", `{"password":"$this->password"}`, "$pass = $user->getPassword()",
+		"$password = $env:DB_PASSWORD", "password=$HOME/.pw", "password=$DB_USER:$DB_PASS", "password=$DB_PASS-backup",
+		"PASSWORD=$PG_PASS-$SUFFIX"} {
+		if out, st := redact(in); out != in || len(st) != 0 {
+			t.Errorf("%q changed: %q", in, out)
+		}
+	}
+}
+
+// An Authorization value under a scheme the list does not know is redacted when it looks like a
+// token; prose after "Authorization:" is kept.
+func TestRegression_UnknownAuthSchemes(t *testing.T) {
+	for _, tc := range []struct{ in, secret string }{
+		{"Authorization: SSWS 00abcDEF" + "1234567890xyzQWERTY", "00abcDEF1234567890xyzQWERTY"},
+		{"Authorization: Splunk 1234abcd-5678-" + "efgh-9012-ijkl3456mnop", "efgh-9012-ijkl3456mnop"},
+		{`{"Authorization":"ApiKey Zk3mQ9xL` + `2pR7vT4wN8yB"}`, "Zk3mQ9xL2pR7vT4wN8yB"},
+	} {
+		out, _ := redact(tc.in)
+		if strings.Contains(out, tc.secret) || !strings.Contains(out, strings.Fields(strings.SplitN(tc.in, ":", 2)[1])[0]) {
+			t.Errorf("%q: %q (the scheme must stay, the token go)", tc.in, out)
+		}
+	}
+	// A token with no scheme, followed by more words, is still the token.
+	for _, in := range []string{`{"authorization":"Zk3mQ9xL2pR7vT4w` + `N8yB extra-words-here"}`,
+		`headers = {"Authorization": "abcd1234efgh` + `5678ijkl sessionid"}`} {
+		if out, _ := redact(in); !strings.Contains(out, "[REDACTED:credential]") {
+			t.Errorf("%q: not redacted: %q", in, out)
+		}
+	}
+	for _, in := range []string{"Authorization: required for every request", "authorization: Please provide a valid token",
+		"Authorization: see the docs at https://example.com/auth", "Authorization: Digest nonce=" + hexRun(32) + ", username=bob"} {
+		if out, st := redact(in); out != in || len(st) != 0 {
+			t.Errorf("%q changed: %q", in, out)
+		}
+	}
+}
+
 // A bare value followed by "(", "[" or "<" is code only when it is an identifier.
 func TestRegression_CallShapes(t *testing.T) {
 	pw := hntPassword()

@@ -110,6 +110,7 @@ func bestOf(k int, f func()) time.Duration {
 	for range k {
 		start := time.Now()
 		f()
+		// timing: measures how the redaction cost scales with the input size
 		best = min(best, time.Since(start))
 	}
 	return best

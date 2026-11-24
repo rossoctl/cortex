@@ -339,6 +339,9 @@ func proseAfter(text string, vs, ve int) bool {
 	if v == "" || strings.Trim(v, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") != "" {
 		return false
 	}
+	if tokenShaped(v) {
+		return false // random letters ("PGPASSWORD=OUYDtpXV... psql") are no word of a sentence
+	}
 	i := ve
 	if i < len(text) && text[i] == ',' {
 		i++
@@ -455,7 +458,10 @@ func secretShaped(t tier, v string, mode valueMode) bool {
 		return t != tierKey // a UUID api key is a secret; an idempotency key is an id
 	}
 	if t == tierPassword {
-		if len(v) < 6 || mode == valueBare && typeNamePattern.MatchString(v) {
+		// A bare type name (HTMLInputElement) is kept, but only if the secret tier would not
+		// redact it either, or it splits into words (camelTypeName): random mixed-case letters
+		// often read as a type name too.
+		if len(v) < 6 || mode == valueBare && typeNamePattern.MatchString(v) && (!tokenShaped(v) || camelTypeName(v)) {
 			return false
 		}
 		switch {
@@ -512,8 +518,9 @@ func notASecret(v string) bool {
 // only its first character: "$", "%", "{" and "~" are common first characters of a chosen
 // password ("$Hnt7rQx2Lp"). A reference opens with its family's own syntax, then a name that
 // reads as a variable's (variableName), where it has a name:
-//   - shell, Terraform, GitHub Actions, Kubernetes: ${...}, ${{ ... }}, $(...), $NAME and
-//     $NAME followed by anything ($HOME/.pw, $env:DB_PASSWORD, $this->password, $DB_USER:$DB_PASS);
+//   - shell, Terraform, GitHub Actions, Kubernetes: ${...}, ${{ ... }}, $(...), and $NAME at the
+//     end of the value or before "/ : . } { [" or PHP's "->" ($HOME/.pw, $env:DB_PASSWORD,
+//     $this->password, $DB_USER:$DB_PASS); a name ending in digits only in capitals;
 //   - Windows and Python: %NAME%, %NAME%\file, %(name)s;
 //   - templates and format strings: {{ ... }} (Jinja, Helm, Go), {name}, {name!r}, {env:NAME},
 //     {db.password};
@@ -530,7 +537,11 @@ func isReference(v string) bool {
 		// A name ending in digits is a variable's only in capitals ($DB_PASS2): "$Summer2024"
 		// and "$Summer2024!" are passwords.
 		name := leadingName(v[1:])
-		if rest := v[1+len(name):]; rest != "" && strings.IndexByte("/:.-}{[", rest[0]) < 0 {
+		if rest := v[1+len(name):]; rest != "" && (strings.IndexByte("/:.-}{[", rest[0]) < 0 ||
+			// "-" only as PHP's "->" (a bare value stops at ">", leaving "-" last), and ":" not
+			// before a digit: "$Summer-2024" and "$Winter:2024" are passwords.
+			len(rest) > 1 && (rest[0] == '-' && rest[1] != '>' && rest[1] != '$' && rest[1] != '{' && strings.ToUpper(name) != name ||
+				rest[0] == ':' && rest[1] >= '0' && rest[1] <= '9')) {
 			return false
 		}
 		if strings.TrimRight(name, "0123456789") != name && strings.ToUpper(name) != name {
@@ -602,6 +613,41 @@ func variableName(s string) bool {
 		return true
 	}
 	return strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_") == "" && wordLike(s)
+}
+
+// camelTypeName reports whether a type-name-shaped v splits into words, as a type's name does
+// ("NSSecureTextField", "PasswordStrengthValidator"): each piece, cut before a capital that
+// starts a lowercase run, is an acronym of up to five capitals, or a capital and lowercase
+// letters, three or more, with a vowel. Random mixed-case letters leave pieces with no vowel
+// ("Dtp", "Glb", "Fh") or a lone capital.
+func camelTypeName(v string) bool {
+	for i := 0; i < len(v); {
+		j := i
+		for j < len(v) && v[j] >= 'A' && v[j] <= 'Z' {
+			j++
+		}
+		caps := j - i
+		if j < len(v) && caps > 1 {
+			j-- // the last capital starts the next word: "HTMLInput" is "HTML", "Input"
+			caps--
+		}
+		if caps > 0 && (j == len(v) || caps > 1) {
+			if caps > 5 {
+				return false
+			}
+			i = j
+			continue
+		}
+		k := j
+		for k < len(v) && v[k] >= 'a' && v[k] <= 'z' {
+			k++
+		}
+		if w := v[i:k]; len(w) < 3 || !strings.ContainsAny(w[1:], "aeiouy") {
+			return false
+		}
+		i = k
+	}
+	return true
 }
 
 // envNamePattern is an environment variable's name, in capitals with an underscore

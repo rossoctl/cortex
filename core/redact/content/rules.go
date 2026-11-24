@@ -110,11 +110,12 @@ var digestResponse = &anchored{
 // authorization is an Authorization header or pair, in text or JSON ("Authorization: Bearer
 // x", `"authorization":"Basic x"`, `\"Authorization\": \"token x\"`). Group 2 is the token; the
 // scheme stays. A value with no scheme must look like a token (16+ characters, two kinds of
-// character), so "authorization: required" is kept.
+// character), so "authorization: required" is kept; so must one after a scheme the list does not
+// know (Okta's "SSWS", "Splunk", "ApiKey", "Bot"), group 2, which is any word before the token.
 var authorization = &anchored{
-	cat: catCredential, triggers: []string{"authorization"}, group: 2, span: 512,
+	cat: catCredential, triggers: []string{"authorization"}, group: 3, span: 512,
 	re: regexp.MustCompile(`(?i)^authorization\\?["']?[ \t]*[:=][ \t]*\\?["']?[ \t]*` +
-		`((?:` + authSchemes + `)[ \t]+)?(` + tokenClass + `{8,})`),
+		`((?:` + authSchemes + `)[ \t]+|([A-Za-z][A-Za-z0-9_-]{1,23})[ \t]+)?(` + tokenClass + `{8,})`),
 }
 
 // sigV4 is an AWS Signature Version 4 signature, in an Authorization header or a presigned URL
@@ -189,7 +190,18 @@ func (a *anchored) find(text string, at []int, out []Edit) []Edit {
 			}
 		}
 		vs, ve := s+m[2*g], s+m[2*g+1]
-		ok := !(a == authorization && m[2] < 0 && !(ve-vs >= 16 && looksLikeToken(text[vs:ve]))) &&
+		// An Authorization value with no scheme, or a scheme the list does not know (group 2),
+		// must look like a token. When the unknown "scheme" is itself the token and a word
+		// follows it ("<token> extra-words"), the word before is the token, and is checked as a
+		// value with no scheme. Digest has its own rule (digestResponse).
+		if a == authorization && m[4] >= 0 {
+			if gs, ge := s+m[4], s+m[5]; strings.EqualFold(text[gs:ge], "digest") {
+				vs = ve // no candidate: Digest's parameters are not a token
+			} else if !(ve-vs >= 16 && looksLikeToken(text[vs:ve])) && ge-gs >= 16 && looksLikeToken(text[gs:ge]) {
+				vs, ve = gs, ge
+			}
+		}
+		ok := vs < ve && !(a == authorization && (m[2] < 0 || m[4] >= 0) && !(ve-vs >= 16 && looksLikeToken(text[vs:ve]))) &&
 			!(a.after && !boundaryAfter(text, ve)) &&
 			(a.check == nil || a.check(text[vs:ve]))
 		covered = rejectedCover(ok, s+m[1], vs, ve)
