@@ -36,10 +36,9 @@ $run run --rm -v "$base/prometheus:/p:ro" -w /p/tests --entrypoint promtool "$PR
   test rules alerts_test.yml dashboards_test.yml
 
 step "otelcol-contrib validate"
-# The token files are read by the bearertokenauth extensions; validate gets placeholders.
+# The token file is read by the context-guru bearertokenauth extension; validate gets a placeholder.
 tokens=$(mktemp -d)
 trap 'rm -rf "$tokens"' EXIT
-echo placeholder > "$tokens/cortex.txt"
 echo placeholder > "$tokens/context-guru.txt"
 chmod 0644 "$tokens"/*.txt
 chmod 0755 "$tokens"

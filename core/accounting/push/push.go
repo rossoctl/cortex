@@ -162,9 +162,15 @@ func newExporter(cfg config.MetricsPushConfig) (sdkmetric.Exporter, error) {
 			},
 		}),
 	}
+	// Always pass an explicit header map, even an empty one (review finding): with no
+	// WithHeaders option, otlpmetrichttp sends OTEL_EXPORTER_OTLP_HEADERS /
+	// OTEL_EXPORTER_OTLP_METRICS_HEADERS, which are often set for another OTLP backend, so that
+	// backend's key would reach this collector. An empty Token must send no Authorization header.
+	headers := map[string]string{}
 	if cfg.Token != "" {
-		opts = append(opts, otlpmetrichttp.WithHeaders(map[string]string{"Authorization": "Bearer " + cfg.Token}))
+		headers["Authorization"] = "Bearer " + cfg.Token
 	}
+	opts = append(opts, otlpmetrichttp.WithHeaders(headers))
 	exp, err := otlpmetrichttp.New(context.Background(), opts...)
 	if err != nil {
 		// The exporter's error can quote its options; say only what failed.
