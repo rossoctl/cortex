@@ -133,23 +133,42 @@ type PingSpend struct {
 // recovered and logged, and the other listeners still run.
 type PingListener func(PingSpend)
 
+// pingListenerEntry is one registered ping listener. key is "" for AddPingListener's.
+type pingListenerEntry struct {
+	key string
+	fn  PingListener
+}
+
 // AddPingListener registers fn for every ping Host.Ping accounts from now on, and returns the
 // function that removes it. A ping is not agent activity, so it never passes through the session
-// store or the pipeline; this is how the consumers that must still count its cost see it: the
-// session store (the session's keep-alive spend) and session-budget (its tokens and call). A
-// plugin registers in Init and removes in Shutdown, so a reload's old instance stops counting.
-func (h *Host) AddPingListener(fn PingListener) (remove func()) {
+// store or the pipeline; this is how the consumers that must still count its cost see it. For a
+// process-wide consumer (cmd/cortex's session store). A plugin uses AddKeyedPingListener.
+func (h *Host) AddPingListener(fn PingListener) (remove func()) { return h.addPingListener("", fn) }
+
+// AddKeyedPingListener is AddPingListener for a consumer that a config reload builds again:
+// of the live registrations under one key, ONLY THE NEWEST IS CALLED. The reloader starts the new
+// pipeline (its plugins' Init) before it stops the old one, and the old one can drain for minutes;
+// with two plain listeners, a consumer that writes shared state (session-budget's Redis counters)
+// would count every ping twice for that time. Removing the newest registration gives the turn back
+// to the one before it, so a reload that fails after the new instance's Init leaves the old
+// instance counting. Removing an older one only drops it. key names what the consumer counts
+// into, so two consumers that share it are one counter; an empty key is a plain listener.
+func (h *Host) AddKeyedPingListener(key string, fn PingListener) (remove func()) {
+	return h.addPingListener(key, fn)
+}
+
+func (h *Host) addPingListener(key string, fn PingListener) (remove func()) {
 	if h == nil || fn == nil {
 		return func() {}
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.pingListeners == nil {
-		h.pingListeners = map[uint64]PingListener{}
+		h.pingListeners = map[uint64]pingListenerEntry{}
 	}
 	h.pingListenerSeq++
 	id := h.pingListenerSeq
-	h.pingListeners[id] = fn
+	h.pingListeners[id] = pingListenerEntry{key: key, fn: fn}
 	return func() {
 		h.mu.Lock()
 		delete(h.pingListeners, id)
@@ -157,17 +176,26 @@ func (h *Host) AddPingListener(fn PingListener) (remove func()) {
 	}
 }
 
-// notifyPing calls every ping listener with s, in registration order.
+// notifyPing calls every plain ping listener and the newest listener of each key with s, in
+// registration order.
 func (h *Host) notifyPing(s PingSpend) {
 	h.mu.Lock()
+	newest := map[string]uint64{}
 	ids := make([]uint64, 0, len(h.pingListeners))
-	for id := range h.pingListeners {
+	for id, e := range h.pingListeners {
+		if e.key == "" {
+			ids = append(ids, id)
+		} else if id > newest[e.key] {
+			newest[e.key] = id
+		}
+	}
+	for _, id := range newest {
 		ids = append(ids, id)
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	fns := make([]PingListener, 0, len(ids))
 	for _, id := range ids {
-		fns = append(fns, h.pingListeners[id])
+		fns = append(fns, h.pingListeners[id].fn)
 	}
 	h.mu.Unlock()
 	for _, fn := range fns {

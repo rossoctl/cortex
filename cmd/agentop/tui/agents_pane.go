@@ -504,7 +504,7 @@ func (m *model) rebuildAgentsTable() {
 // it cost nothing" into "not priced".
 func agentCostCell(c usage.Counts) string {
 	// money.SpendMicros: the agent's requests plus its keep-alive pings on an API key.
-	if c.PricedRequests == 0 || negativeCost(money.SpendMicros(c)) {
+	if !money.HasSpend(c) || negativeCost(money.SpendMicros(c)) {
 		return emptyCell
 	}
 	// formatUSDTotalMicros, not %.2f over micros/1e6: it does the rounding on the integer, so

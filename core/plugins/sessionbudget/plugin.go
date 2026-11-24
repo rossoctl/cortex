@@ -265,9 +265,12 @@ func (p *SessionBudget) Init(_ context.Context) error {
 
 	interval, _ := time.ParseDuration(p.cfg.RefreshInterval)
 	go p.refreshLoop(interval)
-	// Last, so a failed Init leaves nothing subscribed. Shutdown removes it, so the instance a
-	// reload replaces stops counting pings before the new one starts.
-	p.unsubPing = p.acct.AddPingListener(p.onPing)
+	// Last, so a failed Init leaves nothing subscribed. KEYED BY THE REDIS URL, because the
+	// reloader starts this instance before it stops the one it replaces, which can drain for
+	// minutes: both would add each ping to the same Redis counters. Only the newest instance of a
+	// key is called, so this one takes over here; Shutdown removes it, which hands the pings back
+	// to the previous instance if this reload failed and that one still runs.
+	p.unsubPing = p.acct.AddKeyedPingListener(p.pingKey(), p.onPing)
 	return nil
 }
 
@@ -495,6 +498,10 @@ func (p *SessionBudget) count(sessionID string, delta tokenDelta) {
 // SetAccounting receives the process's accountant host (plugins.Deps, before Configure). Init
 // subscribes to its keep-alive pings.
 func (p *SessionBudget) SetAccounting(h *accounting.Host) { p.acct = h }
+
+// pingKey is this instance's AddKeyedPingListener key: the counters it writes, which are the
+// Redis server's. Two instances on one Redis share the counters, so they count a ping once.
+func (p *SessionBudget) pingKey() string { return "session-budget " + p.cfg.RedisURL }
 
 // onPing counts a context-guru keep-alive ping against its session's budget: its tokens by kind,
 // and one call, as OnResponseFrame counts a response. A ping is billed on the caller's credential

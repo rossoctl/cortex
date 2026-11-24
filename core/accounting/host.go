@@ -93,9 +93,10 @@ type Host struct {
 	// pingFacts holds the latest keep-alive ping's facts per (session, thread), until the
 	// thread's next priced request takes them (ping.go). Bounded by pingFactsCap.
 	pingFacts map[threadBillingKey]pingEntry
-	// pingListeners are called for every accounted ping (AddPingListener), keyed by
-	// registration order so removal is exact.
-	pingListeners   map[uint64]PingListener
+	// pingListeners are the registered ping listeners (AddPingListener, AddKeyedPingListener),
+	// by registration id, which grows, so removal is exact and the newest of a key is the
+	// highest id.
+	pingListeners   map[uint64]pingListenerEntry
 	pingListenerSeq uint64
 
 	// Test hooks. beforeEnd runs first on the record's goroutine, computeHook just before the

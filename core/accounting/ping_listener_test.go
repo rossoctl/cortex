@@ -94,3 +94,52 @@ func TestPingListener_NilHostAndNilFunc(t *testing.T) {
 	h.AddPingListener(func(PingSpend) {})()
 	newHost(t).AddPingListener(nil)()
 }
+
+// Of the live listeners under one key, only the newest is called. Removing it gives the turn back
+// to the one before; removing an older one only drops it. Plain listeners and other keys still run.
+func TestKeyedPingListener_NewestOfAKeyOnly(t *testing.T) {
+	h := newHost(t)
+	var calls []string
+	listen := func(name string) PingListener { return func(PingSpend) { calls = append(calls, name) } }
+	h.AddPingListener(listen("plain"))
+	removeOld := h.AddKeyedPingListener("k", listen("old"))
+	removeNew := h.AddKeyedPingListener("k", listen("new"))
+	h.AddKeyedPingListener("other", listen("other"))
+	ping := func() []string {
+		calls = nil
+		if _, ok := h.Ping("s1", nil, "h", testPing(), okInfo()); !ok {
+			t.Fatal("ping refused")
+		}
+		return calls
+	}
+	if got := ping(); !equal(got, "plain", "new", "other") {
+		t.Errorf("calls = %v, want plain, new, other", got)
+	}
+	// A reload that failed after the new instance's Init: the old one counts again.
+	removeNew()
+	if got := ping(); !equal(got, "plain", "old", "other") {
+		t.Errorf("after removing the newest, calls = %v, want plain, old, other", got)
+	}
+	// A reload that succeeded: the old instance's Shutdown removes an older registration.
+	removeNew2 := h.AddKeyedPingListener("k", listen("new2"))
+	removeOld()
+	if got := ping(); !equal(got, "plain", "other", "new2") { // registration order
+		t.Errorf("after removing an older one, calls = %v, want plain, other, new2", got)
+	}
+	removeNew2()
+	if got := ping(); !equal(got, "plain", "other") {
+		t.Errorf("with the key empty, calls = %v, want plain, other", got)
+	}
+}
+
+func equal(got []string, want ...string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}

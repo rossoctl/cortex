@@ -3056,3 +3056,26 @@ func TestRunCost_ReportsTheAccountantsFigures(t *testing.T) {
 		}
 	}
 }
+
+// A window with only keep-alive pings (an idle hour) has no priced request, and still a charge:
+// the headline shows it, so the keep-alive line's "in the total above" is true, and the
+// "no priceable traffic" note, which sits beside "cost unavailable", is not printed.
+func TestRunCost_APingOnlyWindowShowsItsCharge(t *testing.T) {
+	srv := fakeUsageServer(t, `{"window":"1h","totals":{"requests":0,"keepAliveMicros":20000,"keepAlivePings":3},"priced":false}`)
+	defer srv.Close()
+	var out, errOut strings.Builder
+	if code := runCost([]string{"--endpoint", srv.URL, "--window", "1h"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d; stderr = %s", code, errOut.String())
+	}
+	got := out.String()
+	for _, want := range []string{"$0.02", "3 pings", "in the total above"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q:\n%s", want, got)
+		}
+	}
+	for _, bad := range []string{"cost unavailable", "no priceable traffic"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("output says %q for a window with a charge:\n%s", bad, got)
+		}
+	}
+}

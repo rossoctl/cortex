@@ -580,7 +580,7 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string, ownU
 	// make the same refusal (see tui.negativeCost, which is its one spelling there); this
 	// surface printed "$-5.00", which reads as a refund nobody issued. Unavailable rather
 	// than clamped to zero, because $0.00 would assert the traffic was free.
-	negative := snap.Priced && money.SpendMicros(t) < 0
+	negative := money.SpendPriced(snap) && money.SpendMicros(t) < 0
 	// A CROSS-UNIT TOTAL IS NOT A TOTAL, and unlike every other caveat on this surface the figure
 	// cannot be salvaged by qualifying it. Summing credits into dollars yields a number that is
 	// neither, and it looks exactly like a correct one — larger, never obviously wrong. Measured on
@@ -601,7 +601,9 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string, ownU
 	unit, labelled := windowUnit(snap)
 	mixed := !labelled
 	headline := "cost unavailable"
-	if snap.Priced && !negative && labelled {
+	// money.SpendPriced, not snap.Priced: a window with only keep-alive pings has no priced
+	// request and still a charge.
+	if money.SpendPriced(snap) && !negative && labelled {
 		// THE REQUESTS AND THE KEEP-ALIVE PINGS ON AN API KEY (money.SpendMicros): a ping is billed
 		// on the caller's credential, so a headline without it understates the bill. The pings are
 		// in no request or token figure beside it; their own line below says how many there were.
@@ -836,7 +838,7 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string, ownU
 			"the total may not cover them\n",
 			plainCount(snap.DaysOutsideRetention), plainPlural(snap.DaysOutsideRetention))
 	}
-	if !snap.Priced && t.PriceableRequests == 0 {
+	if !money.SpendPriced(snap) && t.PriceableRequests == 0 {
 		// Not a gap and not a failure: there was no inference traffic to price. Said out
 		// loud so an empty answer reads as a finding rather than as a broken command.
 		fmt.Fprintln(stdout, "  no priceable traffic in this window")
@@ -1278,7 +1280,7 @@ func writeCostBreakdown(snap *usage.Snapshot, stdout io.Writer, requested usage.
 		c := series[label]
 		cost := emptyCostCell
 		switch {
-		case c.PricedRequests <= 0:
+		case !money.HasSpend(c):
 			// Left as emptyCostCell: nothing could price this row, which outranks any question
 			// about the unit a figure it does not have would be in.
 		case byUnit && isReportedUnit(snap.Currencies, label):

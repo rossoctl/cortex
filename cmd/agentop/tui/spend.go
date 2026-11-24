@@ -614,7 +614,7 @@ func (m *model) spendHourAndDaySummary() spendSummary {
 		// column, so the arithmetic still holds) rather than being dropped, so tampering
 		// shows.
 		WindowLabel: sanitizeLabel(snap.Window),
-		Priced:      snap.Priced,
+		Priced:      money.SpendPriced(snap), // a ping-only window has a charge too
 		Priceable:   snap.Totals.PriceableRequests,
 		// Carried whether or not the window is priced: a snapshot cannot report an inexact
 		// figure without reporting a priced one, but reading it unconditionally means the
@@ -843,7 +843,7 @@ func unitCosts(snap *usage.Snapshot) map[string]int64 {
 	series := usage.FoldSeriesAcrossWindow(snap.Buckets)
 	out := make(map[string]int64, len(snap.Currencies))
 	for _, u := range snap.Currencies {
-		if c := series[u]; c.PricedRequests > 0 {
+		if c := series[u]; money.HasSpend(c) {
 			out[u] = money.SpendMicros(c)
 		}
 	}
@@ -1078,7 +1078,7 @@ func (m *model) applyTodayFigure(out *spendSummary) {
 	if snap.Window != usage.WindowToday {
 		return
 	}
-	if !snap.Priced {
+	if !money.SpendPriced(snap) {
 		return
 	}
 	// And it must not be NEGATIVE. Declined by leaving HasToday unset, which is this
@@ -1270,7 +1270,7 @@ func (m *model) spanReadings() [numSpendSpans]spanReading {
 			// at "<$0.0001"; the events table reads through it, this does not.) See
 			// TestRenderSpendBand_UnpricedZeroAndSubCentAreThreeDifferentCells, which pins all
 			// three cells.
-			if snap.Priced && !negativeCost(money.SpendMicros(snap.Totals)) {
+			if money.SpendPriced(snap) && !negativeCost(money.SpendMicros(snap.Totals)) {
 				r.USD = float64(money.SpendMicros(snap.Totals)) / 1e6
 				r.Priced = true
 			}

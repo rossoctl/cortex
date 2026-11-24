@@ -14,7 +14,10 @@ plugin's keep-alive pings: each ping adds its tokens by kind and one call to its
 session's counters, as a response does. A ping is never refused, so a ping can
 take a session past its limit, and the session's next request is what is
 refused. Pings are counted only where accounting is on (the plugin learns of
-them from the accountant host). The context-guru plugin's own model calls are
+them from the accountant host). A config reload starts the new plugin instance
+before the old one stops draining; of the instances on one `redis_url`, only the
+newest counts a ping, so a reload does not count it twice. If the reload fails,
+the old instance counts again. The context-guru plugin's own model calls are
 not counted, although the cost ledger records their spend (see
 [pricing.md](pricing.md#cost-records)).
 

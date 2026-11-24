@@ -33,6 +33,18 @@ func NetMicros(c usage.Counts) int64 {
 // penalty minus the keep-alive pings' units.
 func netUnits(c usage.Counts) int64 { return c.AvoidedUnits - c.PenaltyUnits - c.KeepAliveUnits }
 
+// HasSpend reports whether c has a spend figure to show: a priced request, or a keep-alive ping on
+// an API key. PricedRequests alone is not the test any more, because a ping is in no request
+// counter: an idle hour with only pings is the usual window keep-alive makes, and it has a real
+// charge. A genuine zero stays distinguishable from no figure, as with PricedRequests alone.
+func HasSpend(c usage.Counts) bool { return c.PricedRequests > 0 || c.KeepAliveMicros != 0 }
+
+// SpendPriced is HasSpend for a whole snapshot: its Priced flag (PricedRequests > 0 on the wire),
+// or usd keep-alive spend in its totals.
+func SpendPriced(snap *usage.Snapshot) bool {
+	return snap != nil && (snap.Priced || snap.Totals.KeepAliveMicros != 0)
+}
+
 // SpendMicros is what the window spent, in money: the requests' cost plus the keep-alive pings on
 // an API key. A ping is billed on the caller's credential like any request, so a total that left
 // it out would understate the bill. The subscription and unknown-billing pings are not money and

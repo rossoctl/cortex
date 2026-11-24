@@ -1030,10 +1030,10 @@ func drawerFigures(r drawerRow) []stripFigure {
 		// here — every request priced, and the sum still impossible — so coverage is not what is
 		// wrong and naming it would point a reader at the rate table.
 		amount = plainFigure("cost unavailable")
-	case !unitOK && (r.counts.PricedRequests > 0 || money.SpendMicros(r.counts) > 0):
+	case !unitOK && (money.HasSpend(r.counts) || money.SpendMicros(r.counts) > 0):
 		// A row in several units has no amount; see money.Mixed.
 		amount = plainFigure(money.Mixed)
-	case r.counts.PricedRequests > 0 || money.SpendMicros(r.counts) > 0:
+	case money.HasSpend(r.counts) || money.SpendMicros(r.counts) > 0:
 		// Cents, through moneyFigureTotal: this column is scanned and compared down its length,
 		// which is the side of the precision rule cents is for. It read four decimals until the
 		// sessions table moved, and a drawer at "$1.0601" under a band at "$1.06" was the same

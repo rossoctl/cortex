@@ -546,7 +546,7 @@ func renderUsageSummary(snap *usage.Snapshot) string {
 // rather than an edge one. Presenting its subtotal as if it were the whole spend
 // is the failure this coverage count exists to prevent.
 func renderCostSummary(snap *usage.Snapshot) string {
-	if !snap.Priced {
+	if !money.SpendPriced(snap) {
 		// Not "$0.00". A zero cost and an unknown cost are different answers, and
 		// only one of them means the traffic was free.
 		return "COST unavailable"

@@ -127,3 +127,27 @@ func TestAccountantLines_KeepAliveByBasis(t *testing.T) {
 		t.Errorf("AccountantLines = %+v, want the API equivalent shown", got)
 	}
 }
+
+// A priced request or an API-key ping is a spend figure; subscription and unknown-billing pings
+// alone are not money.
+func TestHasSpend(t *testing.T) {
+	for _, tc := range []struct {
+		c    usage.Counts
+		want bool
+	}{
+		{usage.Counts{}, false},
+		{usage.Counts{PricedRequests: 1}, true},
+		{usage.Counts{KeepAliveMicros: 1}, true},
+		{usage.Counts{KeepAliveUnits: 5, KeepAliveAPIEquivalentMicros: 9, KeepAliveUnknownMicros: 9}, false},
+	} {
+		if got := HasSpend(tc.c); got != tc.want {
+			t.Errorf("HasSpend(%+v) = %v, want %v", tc.c, got, tc.want)
+		}
+		if got := SpendPriced(&usage.Snapshot{Totals: tc.c, Priced: tc.c.PricedRequests > 0}); got != tc.want {
+			t.Errorf("SpendPriced(%+v) = %v, want %v", tc.c, got, tc.want)
+		}
+	}
+	if SpendPriced(nil) {
+		t.Error("SpendPriced(nil) = true")
+	}
+}

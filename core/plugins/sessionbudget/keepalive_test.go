@@ -20,14 +20,54 @@ func ping(session string) accountant.Ping {
 	}
 }
 
-// subscribe wires p to h as Init does, without Init's Redis connection.
+// subscribe wires p to a new host as Init does, without Init's Redis connection.
 func subscribe(t *testing.T, p *SessionBudget) *accounting.Host {
 	t.Helper()
 	h := accounting.New(accounting.Options{})
 	t.Cleanup(func() { _ = h.Close() })
-	p.SetAccounting(h)
-	p.unsubPing = p.acct.AddPingListener(p.onPing)
+	subscribeTo(h, p)
 	return h
+}
+
+func subscribeTo(h *accounting.Host, p *SessionBudget) {
+	p.SetAccounting(h)
+	p.unsubPing = p.acct.AddKeyedPingListener(p.pingKey(), p.onPing)
+}
+
+func calls(p *SessionBudget, id string) int64 {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if c := p.cache[id]; c != nil {
+		return c.calls
+	}
+	return 0
+}
+
+// A reload starts the new instance before it stops the old one, which can drain for minutes, and
+// both write the same Redis counters. Only the new instance counts a ping meanwhile; if the reload
+// fails and the new instance is shut down, the old one counts again.
+func TestKeepAlivePing_AReloadCountsAPingOnce(t *testing.T) {
+	h := accounting.New(accounting.Options{})
+	t.Cleanup(func() { _ = h.Close() })
+	old, next := newTestPlugin(1_000_000_000, 0, 0), newTestPlugin(1_000_000_000, 0, 0)
+	subscribeTo(h, old)
+	subscribeTo(h, next)
+	if _, ok := h.Ping("sess-1", nil, "api.anthropic.com", ping("sess-1"), accounting.PingInfo{Status: 200}); !ok {
+		t.Fatal("ping refused")
+	}
+	if o, n := calls(old, "sess-1"), calls(next, "sess-1"); o != 0 || n != 1 {
+		t.Errorf("during the drain: old counted %d, new %d; want 0 and 1", o, n)
+	}
+	close(next.stopped) // no refresh loop was started
+	if err := next.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := h.Ping("sess-1", nil, "api.anthropic.com", ping("sess-1"), accounting.PingInfo{Status: 200}); !ok {
+		t.Fatal("ping refused")
+	}
+	if o, n := calls(old, "sess-1"), calls(next, "sess-1"); o != 1 || n != 1 {
+		t.Errorf("after the new instance stopped: old counted %d, new %d; want 1 and 1", o, n)
+	}
 }
 
 // A keep-alive ping counts against its session like a response: its tokens by kind, and a call.
