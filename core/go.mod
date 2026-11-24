@@ -12,14 +12,18 @@ require (
 	github.com/maximhq/bifrost/core v1.7.15
 	github.com/open-policy-agent/opa v1.22.4
 	github.com/rossoctl/accountant v0.5.0
+	github.com/rossoctl/accountant/metrics v0.0.0-20261111151953-6085d4661624
 	github.com/rossoctl/context-guru v0.7.7
 	github.com/spiffe/go-spiffe/v2 v2.9.0
 	github.com/tidwall/gjson v1.20.5
 	github.com/tidwall/sjson v1.2.9
 	github.com/vmihailenco/msgpack/v5 v5.4.1
 	go.opentelemetry.io/otel v1.47.0
+	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.47.0
+	go.opentelemetry.io/otel/metric v1.47.0
 	go.opentelemetry.io/otel/sdk v1.47.0
+	go.opentelemetry.io/otel/sdk/metric v1.47.0
 	go.opentelemetry.io/otel/trace v1.47.0
 	golang.org/x/net v0.63.0
 	golang.org/x/sync v0.25.0
@@ -28,8 +32,6 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.56.0
 )
-
-require go.opentelemetry.io/otel/metric v1.47.0 // indirect
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect

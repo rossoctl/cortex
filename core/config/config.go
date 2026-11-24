@@ -74,6 +74,9 @@ type Config struct {
 	// operators saved. Absent means auto: on when the outbound pipeline has a context
 	// operator. See AccountingConfig.
 	Accounting *AccountingConfig `yaml:"accounting,omitempty" json:"accounting,omitempty"`
+	// MetricsPush says where the accountant's llm.savings.* counters are pushed. Absent, or
+	// with no URL, nothing is pushed. See MetricsPushConfig.
+	MetricsPush *MetricsPushConfig `yaml:"metrics_push,omitempty" json:"metrics_push,omitempty"`
 }
 
 // CostLedgerConfig configures the durable cost ledger.

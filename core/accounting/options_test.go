@@ -12,7 +12,7 @@ func TestOptionsFrom_CarriesSubscriptionWeights(t *testing.T) {
 	w := config.DefaultSubscriptionWeights()
 	w.Output *= 3
 	c := &config.Config{Accounting: &config.AccountingConfig{SubscriptionWeights: &w}}
-	o := OptionsFrom(c, nil)
+	o := OptionsFrom(c, nil, nil)
 	if o.SubscriptionWeights == nil || *o.SubscriptionWeights != w {
 		t.Fatalf("SubscriptionWeights = %+v, want %+v", o.SubscriptionWeights, w)
 	}
@@ -25,7 +25,7 @@ func TestOptionsFrom_CarriesSubscriptionWeights(t *testing.T) {
 
 func TestOptionsFrom_DefaultsWithoutABlock(t *testing.T) {
 	for _, c := range []*config.Config{nil, {}} {
-		o := OptionsFrom(c, nil)
+		o := OptionsFrom(c, nil, nil)
 		if o.SubscriptionWeights == nil || *o.SubscriptionWeights != config.DefaultSubscriptionWeights() {
 			t.Errorf("SubscriptionWeights = %+v, want the defaults", o.SubscriptionWeights)
 		}

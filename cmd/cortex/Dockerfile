@@ -39,8 +39,10 @@ RUN test -n "${GO_BUILD_TAGS}" || { \
       echo "GO_BUILD_TAGS is required: plugins are opt-in and an untagged build registers none." >&2; \
       echo "Pass a profile, e.g. --build-arg GO_BUILD_TAGS=\"\$(go -C scripts/profile-tags run . full)\"" >&2; \
       exit 1; }
+# VERSION is the image tag (build.yaml passes it): the metrics push sends it as service.version.
+ARG VERSION=dev
 ENV GOWORK=off
-RUN cd cmd/cortex && CGO_ENABLED=0 GOOS=linux go build -tags "${GO_BUILD_TAGS}" -ldflags="-s -w" -o /cortex .
+RUN cd cmd/cortex && CGO_ENABLED=0 GOOS=linux go build -tags "${GO_BUILD_TAGS}" -ldflags="-s -w -X main.version=${VERSION}" -o /cortex .
 
 # Stage 2: Runtime — alpine (has bash, ~5 MB base)
 FROM alpine:3.20@sha256:beefdbd8a1da6d2915566fde36db9db0b524eb737fc57cd1367effd16dc0d06d

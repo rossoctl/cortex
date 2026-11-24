@@ -2,6 +2,7 @@ package accounting
 
 import (
 	"encoding/json"
+	"math"
 	"testing"
 	"time"
 
@@ -13,11 +14,12 @@ import (
 )
 
 // A ping's cost record carries the basis of the thread's billing mode (design §5.7a), so the
-// ledger and /v1/usage book its dollars as money only on an API key. A subscription ping adds
-// nothing to KeepAliveMicros and its usage-limit units, output included, to KeepAliveUnits. An
+// ledger and /v1/usage book its dollars as money only on an API key, exactly where the metrics
+// sink moves its USD counters. A subscription ping adds nothing to KeepAliveMicros and its
+// usage-limit units, output included, to KeepAliveUnits; the sink books no USD for it. An
 // unknown-billing ping is shown apart and moves no money either. Every ping counts in
 // KeepAlivePings.
-func TestPing_BasisFollowsTheThreadsBilling(t *testing.T) {
+func TestPing_BasisFollowsTheThreadsBilling_LedgerAndSinkAgree(t *testing.T) {
 	w := config.DefaultSubscriptionWeights()
 	p := testPing()
 	// Input 1, CacheRead 1800, Output 1 at the default weights: 1 + 180 + 5 units.
@@ -34,10 +36,11 @@ func TestPing_BasisFollowsTheThreadsBilling(t *testing.T) {
 		{accountant.BillingUnknown, event.BasisUnknown},
 	} {
 		t.Run(string(tc.mode), func(t *testing.T) {
+			mp, rd := manual(t)
 			rates := pingRates(t)
 			ring := usage.New(usage.WithPricing(rates))
 			rec := &fakeRecorder{}
-			h := New(Options{Resolver: rates, CostRecorders: []session.Recorder{ring, rec}})
+			h := New(Options{Resolver: rates, Sink: NewSink(mp, rates), CostRecorders: []session.Recorder{ring, rec}})
 			t.Cleanup(func() { _ = h.Close() })
 			h.setThreadBilling("s1", "main", tc.mode)
 			// At now, so the ring's window holds it.
@@ -47,6 +50,7 @@ func TestPing_BasisFollowsTheThreadsBilling(t *testing.T) {
 			if _, ok := h.Ping("s1", nil, "api.anthropic.com", ping, okInfo()); !ok {
 				t.Fatal("ping refused")
 			}
+			h.observing.Wait()
 
 			_, evs := rec.got()
 			if len(evs) != 1 {
@@ -61,8 +65,12 @@ func TestPing_BasisFollowsTheThreadsBilling(t *testing.T) {
 			}
 
 			tot := ring.Snapshot(10*usage.BucketWidth, usage.BucketWidth, "", usage.GroupNone).Totals
+			sinkUSD := sum(t, rd, "llm.savings.added.usd", nil)
 			if tot.KeepAlivePings != 1 {
 				t.Errorf("KeepAlivePings = %d, want 1", tot.KeepAlivePings)
+			}
+			if got := int64(math.Round(sinkUSD * 1e6)); got != tot.KeepAliveMicros {
+				t.Errorf("sink added.usd = %d micros, ledger KeepAliveMicros = %d; they must agree", got, tot.KeepAliveMicros)
 			}
 			switch tc.mode {
 			case accountant.BillingAPI:

@@ -279,6 +279,34 @@ func spendRecord(op accountant.PricedOp, spend SpendPrice, reqHost, basis string
 	return r
 }
 
+// CallUSD prices one operator's model call as the ledger's spends[] does: its prompt tiers and
+// its output at the call's own model, at host, and at the call's own prompt total
+// (callPromptTotal), so a small call never takes the request's long-context premium. The
+// metrics sink binds a spend's model to the same host and total (Sink.Observe), so the pushed
+// llm.savings.added.usd{kind="spend"} equals this figure. A CostUSD the call stated is the
+// ledger's business (spendRecord); this function never reads it.
+func CallUSD(r pricing.Resolver, c *accountant.ModelCall, host string) (float64, bool) {
+	usd, est, _ := CallUSDCurrency(r, c, host)
+	return usd, est
+}
+
+// CallUSDCurrency is CallUSD plus the currency its figure is denominated in — host's, which can
+// differ from the primary request's (a credits-billed gateway beside a USD-endpoint operator
+// call, review finding) — empty for the default (USD), pricing.UnitOf's own convention.
+func CallUSDCurrency(r pricing.Resolver, c *accountant.ModelCall, host string) (usd float64, estimated bool, currency string) {
+	tt := callTiers(c)
+	total := callPromptTotal(c)
+	usdIn, est := TierUSD(r, host, c.Model, total, tt)
+	out, outEst := USD(r, host, c.Model, total, pricing.TierOutput, int64(c.Usage.Output))
+	return usdIn + out, est || outEst, pricing.UnitOf(r, host, c.Model)
+}
+
+// callPromptTotal is the call's whole prompt: input, cache write and cache read.
+func callPromptTotal(c *accountant.ModelCall) int {
+	u := c.Usage.Usage
+	return u.Input + u.CacheWrite + u.CacheRead
+}
+
 // largestTier names the tier with the largest Saved, in pricing.Tier's spelling (cache write 1h
 // has no Tier of its own — see pricing.Tier's doc — so it is named directly); "" when nothing
 // was saved. A tie goes to the earlier of input, cache write 5m, cache write 1h, cache read.
@@ -337,11 +365,7 @@ func (h *Host) Savings(pctx *pipeline.Context) ([]event.Saving, Extras, bool) {
 	// currency is its own host's, which can differ from the primary request's (a credits-billed
 	// gateway beside a USD-endpoint operator call, review finding) — pricing.UnitOf, not assumed.
 	spend := func(c *accountant.ModelCall, at string) (float64, bool, string) {
-		tt := callTiers(c)
-		total := tt.Input + tt.CacheWrite5m + tt.CacheWrite1h + tt.CacheRead
-		usd, est := TierUSD(h.resolver, at, c.Model, total, tt)
-		out, outEst := USD(h.resolver, at, c.Model, total, pricing.TierOutput, int64(c.Usage.Output))
-		return usd + out, est || outEst, pricing.UnitOf(h.resolver, at, c.Model)
+		return CallUSDCurrency(h.resolver, c, at)
 	}
 	res, ok := h.Compute(pctx)
 	if !ok {

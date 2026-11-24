@@ -206,8 +206,11 @@ jobs:
           # Dynamically-resolved args from step 6b: GO_BUILD_TAGS from
           # scripts/profile-tags for every Go image. Images with no Go
           # plugin surface resolve to empty.
+          # VERSION goes to every image; one that declares no ARG VERSION ignores it. The Go
+          # images stamp it into main.version, the metrics push's service.version.
           build-args: |
             ${{ steps.buildargs.outputs.args }}
+            VERSION=${{ steps.tag.outputs.tag }}
           push: ${{ github.event_name != 'pull_request' }}
           # PRs build amd64 only: arm64 runs under QEMU and only adds time.
           platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}

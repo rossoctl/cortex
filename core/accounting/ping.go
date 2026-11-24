@@ -36,6 +36,24 @@ type PingInfo struct {
 	Manual bool
 	// Duration is how long the ping took, for the cost event.
 	Duration time.Duration
+	// TimedOut marks a ping that ran to the keeper's timeout with no answer (#754). It has no
+	// usage, so it is refused like any other unpriced ping, but it is counted as a timeout.
+	TimedOut bool
+	// ProjectedUSD is the keeper's projected cost of a timed-out ping. The provider probably
+	// billed it, so llm.keepalive.cost_usd books it, all of it as estimated. It is the one
+	// figure Cortex takes from the keeper rather than pricing itself: there is no usage to price.
+	ProjectedUSD float64
+}
+
+// pingOutcome is the outcome label of a ping (PingOK, PingFailed, PingTimeout).
+func pingOutcome(info PingInfo) string {
+	switch {
+	case info.TimedOut:
+		return PingTimeout
+	case info.Status < 200 || info.Status > 299:
+		return PingFailed
+	}
+	return PingOK
 }
 
 // pingEntry is one Host.pingFacts value: the facts of the thread's latest ping, and when they
@@ -57,8 +75,10 @@ var (
 // W4.6). Ported from the context-guru proxy's PingSavings, minus the dashboard.
 //
 // It refuses (ok false, nothing recorded, nothing kept) a ping with no Window — its ChangeID
-// would be shared by every such ping —, a status outside 200-299, or no usage: it billed
-// nothing. The billing mode is that of the thread's last request (design §5.7), because a ping
+// would be shared by every such ping —, a status outside 200-299, a timeout, or no usage: it
+// billed nothing that can be priced. A refused ping is still counted once in llm.keepalive.pings,
+// by outcome, and a timeout books its projected cost there (countPing); a priced ping is counted
+// by the observation instead. The billing mode is that of the thread's last request (design §5.7), because a ping
 // uses the same credential.
 //
 // A manual ping is priced and recorded, but its facts are not kept: the write it avoided is
@@ -83,8 +103,21 @@ func (h *Host) Ping(sessionID string, client *model.EventClient, host string, p 
 		}
 	}()
 	u := p.Usage
-	if p.Window.IsZero() || info.Status < 200 || info.Status > 299 ||
-		u.Input+u.CacheRead+u.CacheWrite+u.Output == 0 {
+	outcome := pingOutcome(info)
+	if sessionID == "" {
+		sessionID = p.Session
+	}
+	p.Session = sessionID
+	thread := pingThread(p.ThreadID)
+	// One read, ahead of every return, so the library, the cost record, the sink and a
+	// refused or timed-out ping's countPing call all see the same mode (design §5.7).
+	billing := h.ThreadBilling(sessionID, thread)
+	if outcome != PingOK || p.Window.IsZero() || u.Input+u.CacheRead+u.CacheWrite+u.Output == 0 {
+		projected := 0.0
+		if outcome == PingTimeout {
+			projected = info.ProjectedUSD
+		}
+		h.countPing(p.Model, host, outcome, projected, billing.Mode)
 		return accountant.Result{}, false
 	}
 	// The zero check above lets mixed-sign counters that sum to zero (or an outright negative
@@ -95,24 +128,25 @@ func (h *Host) Ping(sessionID string, client *model.EventClient, host string, p 
 		Input: u.Input, CacheWrite: u.CacheWrite, CacheRead: u.CacheRead, Output: u.Output,
 		CacheWrite1h: u.CacheWrite1h,
 	}) {
+		h.countPing(p.Model, host, outcome, 0, billing.Mode)
 		return accountant.Result{}, false
 	}
-	if sessionID == "" {
-		sessionID = p.Session
-	}
-	p.Session = sessionID
 	if p.Host == "" {
 		p.Host = host
 	}
-	thread := pingThread(p.ThreadID)
-	// One read, so the library, the cost record and the sink all see the same mode.
-	billing := h.ThreadBilling(sessionID, thread)
 	ops, facts := pingOps(p, billing)
 	res = computeStandalone(ops)
 	if !info.Manual {
 		h.putPing(sessionID, thread, facts)
 	}
 	figs := h.recordPing(sessionID, client, host, p, info, billing.Mode)
+	// A ping is not a request of the agent's: its Result is observed with no RequestID.
+	at := p.At
+	if at.IsZero() {
+		at = h.now()
+	}
+	h.observe(accountant.RequestMeta{Session: sessionID, Model: p.Model, At: at, Billing: billing},
+		p.Usage.Usage, p.Usage.Output, res, host, p.Usage.Input+p.Usage.CacheRead+p.Usage.CacheWrite, false)
 	h.notifyPing(PingSpend{Session: sessionID, Thread: thread, Model: p.Model, Host: host, At: p.At,
 		Usage: p.Usage, Figures: figs})
 	return res, true

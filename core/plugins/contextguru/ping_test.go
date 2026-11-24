@@ -1,6 +1,7 @@
 package contextguru
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -16,6 +17,8 @@ import (
 	"github.com/rossoctl/cortex/core/model"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 // costRecorder is a session.Recorder that keeps the events it is given.
@@ -187,5 +190,67 @@ func TestKeeperPingReachesTheCostRecorder(t *testing.T) {
 	}
 	if evs[0].Host != host || evs[0].Inference == nil || evs[0].Inference.CacheReadTokens != 48_000 {
 		t.Errorf("event host %q inference %+v", evs[0].Host, evs[0].Inference)
+	}
+}
+
+// A ping that timed out reaches the Host with the keeper's projection: counted as a timeout and
+// booked at r.CostUSD, the only cost such a ping has (it has no usage to price).
+func TestPingEmitter_PassesATimeoutWithItsProjectedCost(t *testing.T) {
+	rd := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(rd))
+	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+	h := accounting.New(accounting.Options{Sink: accounting.NewSink(mp, nil)})
+	p := New()
+	p.SetAccounting(h)
+	pctx := finishedPctx(200, pipeline.AgentRoleMain)
+	pctx.Host = "api.anthropic.com"
+	// A ping's billing mode is its thread's last request's (design §5.7), and the Tier 1
+	// dollar counters gate on BillingAPI (billing_contract_test.go). Prime it with a real,
+	// API-key-credentialed request on the same session/thread before the ping — the way a
+	// keep-alive ping always follows a real request in production. Run through a bare
+	// pipeline, not RequestStart/RequestEnd directly: RequestEnd reads pctx.ClientBody(),
+	// which only pipeline.Run's own Run sets.
+	pctx.Headers.Set("X-Api-Key", "sk-ant-api03-test")
+	pipe, err := pipeline.New(nil, pipeline.WithAccountant(h))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if act := pipe.Run(context.Background(), pctx); act.Type != pipeline.Continue {
+		t.Fatalf("priming request action = %v", act.Type)
+	}
+	if _, ok := h.Compute(pctx); !ok {
+		t.Fatal("the priming request was refused")
+	}
+	em := p.pingEmitter(pctx, "s1").(cgcomponents.KeepAliveEmitter)
+	em.KeepAlivePing(cgcomponents.KeepAliveReport{Session: "s1", Model: "claude-sonnet-5",
+		TimedOut: true, CostUSD: 0.02, Window: time.Unix(1_700_000_000, 0)})
+	_ = h.Close() // waits for the count
+
+	var rm metricdata.ResourceMetrics
+	if err := rd.Collect(context.Background(), &rm); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]float64{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			switch d := m.Data.(type) {
+			case metricdata.Sum[int64]:
+				for _, dp := range d.DataPoints {
+					if o, _ := dp.Attributes.Value("outcome"); o.AsString() != "" {
+						got[m.Name+"{"+o.AsString()+"}"] += float64(dp.Value)
+					}
+				}
+			case metricdata.Sum[float64]:
+				for _, dp := range d.DataPoints {
+					got[m.Name] += dp.Value
+				}
+			}
+		}
+	}
+	want := map[string]float64{"llm.keepalive.pings{timeout}": 1, "llm.keepalive.cost_usd": 0.02, "llm.keepalive.estimated_cost_usd": 0.02}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s = %v, want %v (all: %v)", k, got[k], v, got)
+		}
 	}
 }
