@@ -660,11 +660,33 @@ func TestCgModel_ConcurrentCompleteOnOneRequest(t *testing.T) {
 // ever in flight together, and all 6 still complete once released.
 func TestCgModel_MaxConcurrentBoundsInFlightCalls(t *testing.T) {
 	const maxConc, n = 2, 6
-	var inFlight, peak atomic.Int64
 	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		<-release
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	p := configured(t, `{"cheap_model":{"base_url":"`+srv.URL+`","model":"cheap-model","max_concurrent":`+
+		"2"+`}}`)
+	pctx := inferencePctx("/v1/chat/completions", nil)
+	pctx.SetCurrentPlugin("context-guru", pipeline.InvocationPhaseRequest)
+	model := p.staticModelFor(pctx)
+	cm, ok := model.(cgModel)
+	if !ok {
+		t.Fatalf("staticModelFor returned %T, want cgModel", model)
+	}
+
+	// onAcquire fires the instant this call's semaphore slot is taken, in-process, with no
+	// network round trip to race against: a broken cap lets every call acquire with no
+	// blocking at all, so peak reaches n almost immediately rather than waiting on anything the
+	// HTTP server on the other end of Complete could delay. The real call still goes on to that
+	// server and blocks on release there, which is what lets this holding pattern exist for the
+	// test to observe at all.
+	var inFlight, peak atomic.Int64
 	atCap := make(chan struct{})
 	var atCapOnce sync.Once
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	cm.onAcquire = func() {
 		cur := inFlight.Add(1)
 		for {
 			p := peak.Load()
@@ -675,30 +697,21 @@ func TestCgModel_MaxConcurrentBoundsInFlightCalls(t *testing.T) {
 		if cur >= maxConc {
 			atCapOnce.Do(func() { close(atCap) })
 		}
-		<-release
-		inFlight.Add(-1)
-		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`)
-	}))
-	t.Cleanup(srv.Close)
-
-	p := configured(t, `{"cheap_model":{"base_url":"`+srv.URL+`","model":"cheap-model","max_concurrent":`+
-		"2"+`}}`)
-	pctx := inferencePctx("/v1/chat/completions", nil)
-	pctx.SetCurrentPlugin("context-guru", pipeline.InvocationPhaseRequest)
-	m := p.staticModelFor(pctx)
+	}
 
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := m.Complete(context.Background(), "summarize"); err != nil {
+			if _, err := cm.Complete(context.Background(), "summarize"); err != nil {
 				t.Errorf("Complete: %v", err)
 			}
+			inFlight.Add(-1)
 		}()
 	}
-	// Wait for the cap to actually bind before releasing, so the peak this observes is the
-	// steady state, not a race against goroutine scheduling.
+	// Wait for the cap to actually bind before releasing: a genuinely bounded run reaches
+	// maxConc and stays there, so this never hangs waiting for a release only a bug would need.
 	<-atCap
 	close(release)
 	wg.Wait()

@@ -189,6 +189,12 @@ type cgModel struct {
 	// a zero cgModel{} (tests that build one directly without going through Configure); Complete
 	// treats a nil sem as unbounded.
 	sem chan struct{}
+	// onAcquire, for tests only (nil otherwise): called the instant this call's semaphore slot
+	// is taken, before the network call. A broken cap lets every call acquire with no blocking
+	// at all, in-process -- so a test observing concurrency here, rather than at the HTTP
+	// server on the other end of a real round trip, sees the true count with no network-timing
+	// race to hide a bound that no longer holds.
+	onAcquire func()
 }
 
 // pluginName is the plugin's registered name, and the Operator of its model-call spend ops.
@@ -213,6 +219,9 @@ func (m cgModel) Complete(ctx context.Context, prompt string) (string, error) {
 		case <-ctx.Done():
 			return "", ctx.Err()
 		}
+	}
+	if m.onAcquire != nil {
+		m.onAcquire()
 	}
 	resp, err := m.c.CallRaw(ctx, &llmclient.ChatRequest{
 		Temperature: 0,
