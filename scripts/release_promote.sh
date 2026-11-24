@@ -12,7 +12,7 @@
 #
 # Two ways in:
 #   - After a smoke run passed (the workflow_run trigger). SMOKE_RUN_ID,
-#     SMOKE_RUN_PATH and SMOKE_RUN_TITLE describe that run. The title is the smoke
+#     SMOKE_RUN_ATTEMPT, SMOKE_RUN_PATH and SMOKE_RUN_TITLE describe that run. The title is the smoke
 #     workflow's run-name, "... for <tag>, release run <id>": a run started by
 #     workflow_run records nothing else that names the run that started it.
 #   - By hand (workflow_dispatch). PROMOTE_TAG names the tag, and the smoke tests
@@ -59,15 +59,16 @@ is_stable() {
 }
 
 # smoke_state <workflow file> <release run id> prints the newest run of that smoke
-# workflow for that release run as "<id> <status> <conclusion>", or nothing. There
-# can be more than one: re-running the release run starts a second smoke run. The
-# newest decides. A workflow it cannot read is an error, not "not started": that
+# workflow for that release run as "<id> <attempt> <status> <conclusion>", or
+# nothing. There can be more than one: re-running the release run starts a second
+# smoke run. The newest decides. Re-running a smoke run keeps its id and raises its
+# attempt, and the API lists only its latest attempt. A workflow it cannot read is an error, not "not started": that
 # would wait for ever without a word.
 smoke_state() {
 	_runs=$(gh api --paginate \
 		"repos/${REPO}/actions/workflows/$1/runs?event=workflow_run&created=%3E%3D${release_created}&per_page=100" \
 		--jq ".workflow_runs[] | select(.display_title | endswith(\", release run $2\"))
-		      | \"\(.id) \(.status) \(.conclusion // \"none\")\"") ||
+		      | \"\(.id) \(.run_attempt // 1) \(.status) \(.conclusion // \"none\")\"") ||
 		die "cannot list the runs of $1"
 	[ -z "${_runs}" ] || printf '%s\n' "${_runs}" | sort -n | tail -n 1
 }
@@ -79,9 +80,13 @@ if [ -n "${PROMOTE_TAG:-}" ]; then
 else
 	title="${SMOKE_RUN_TITLE:?SMOKE_RUN_TITLE is not set}"
 	trigger_id="${SMOKE_RUN_ID:?SMOKE_RUN_ID is not set}"
+	trigger_attempt="${SMOKE_RUN_ATTEMPT:-1}"
 	trigger_path="${SMOKE_RUN_PATH:?SMOKE_RUN_PATH is not set}"
 	case "${trigger_id}" in
 		*[!0-9]*) die "SMOKE_RUN_ID is not a run id: '${trigger_id}'" ;;
+	esac
+	case "${trigger_attempt}" in
+		'' | *[!0-9]*) die "SMOKE_RUN_ATTEMPT is not a run attempt: '${trigger_attempt}'" ;;
 	esac
 	case " ${SMOKE_WORKFLOWS} " in
 		*" ${trigger_path#.github/workflows/} "*) ;;
@@ -116,20 +121,36 @@ else
 		# The run that started this one passed: the trigger fires on success only.
 		# Taken from the event, not the API, so that the API catching up late
 		# cannot lose the promotion: when the newest run the API lists is older than
-		# the trigger, or is the trigger, the trigger decides. Run ids only go up,
-		# so a newer run of the same workflow, listed above the trigger, still wins.
-		if [ ".github/workflows/${wf}" = "${trigger_path}" ] &&
-			{ [ -z "${state}" ] || [ "${state%% *}" -le "${trigger_id}" ]; }; then
-			state="${trigger_id} completed success"
+		# the trigger, or is the trigger at the same attempt or an earlier one, the
+		# trigger decides. Run ids and attempts only go up, so a newer run, or a later
+		# attempt of this one (a re-run that failed, say), still wins.
+		if [ ".github/workflows/${wf}" = "${trigger_path}" ]; then
+			if [ -z "${state}" ]; then
+				state="${trigger_id} ${trigger_attempt} completed success"
+			else
+				listed_id="${state%% *}"
+				listed_rest="${state#* }"
+				listed_attempt="${listed_rest%% *}"
+				if [ "${listed_id}" -lt "${trigger_id}" ] ||
+					{ [ "${listed_id}" -eq "${trigger_id}" ] && [ "${listed_attempt}" -le "${trigger_attempt}" ]; }; then
+					state="${trigger_id} ${trigger_attempt} completed success"
+				fi
+			fi
+		fi
+		# "run <id>", with the attempt when it is not the first.
+		run="run ${state%% *}"
+		if [ -n "${state}" ]; then
+			attempt_rest="${state#* }"
+			[ "${attempt_rest%% *}" = 1 ] || run="${run} attempt ${attempt_rest%% *}"
 		fi
 		case "${state}" in
-			*" completed success") say "${wf}: passed (run ${state%% *})" ;;
+			*" completed success") say "${wf}: passed (${run})" ;;
 			*" completed "*)
-				warn_summary "${tag} stays a prerelease: ${wf} run ${state%% *} ended '${state##* }'. If the failure is not the release's, re-run the failed jobs. If ${tag} is still a prerelease after they pass, run release-promote.yaml for it by hand."
+				warn_summary "${tag} stays a prerelease: ${wf} ${run} ended '${state##* }'. If the failure is not the release's, re-run the failed jobs. If ${tag} is still a prerelease after they pass, run release-promote.yaml for it by hand."
 				exit 0
 				;;
 			'') waiting="${waiting} ${wf}(not started)" ;;
-			*) waiting="${waiting} ${wf}(run ${state%% *})" ;;
+			*) waiting="${waiting} ${wf}(${run})" ;;
 		esac
 	done
 	if [ -n "${waiting}" ]; then
@@ -150,9 +171,10 @@ case "${flags}" in
 esac
 
 # Latest goes to the highest stable version, not to whichever was promoted last.
-# gh's --limit counts the releases left after the excludes, as the smoke scripts note.
+# Every stable release, so --limit is far past any real count: gh pages until it runs
+# out, and the highest version need not be among the newest releases.
 stable=$(gh release list --repo "${REPO}" --exclude-drafts --exclude-pre-releases \
-	--limit 200 --json tagName --jq '.[].tagName')
+	--limit 10000 --json tagName --jq '.[].tagName')
 highest=$(printf '%s\n%s\n' "${stable}" "${tag}" | while IFS= read -r t; do
 	if is_stable "${t}"; then printf '%s\n' "${t}"; fi
 done | sort -V | tail -n 1)

@@ -356,8 +356,12 @@ Things to know:
   - a stable tag on a candidate's commit from before the gate;
   - a backport from a branch cut before it, such as `release-0.6` or `release-0.7`.
 
-  Tag a newer commit instead, or first cherry-pick the gate and the macOS smoke test
-  (#2036) onto the branch. If a backport has already taken Latest, mark the right release
+  For a candidate, tag a newer commit instead. For a backport, first cherry-pick the gate
+  onto the branch, so the release is created as a prerelease. On `release-0.6` and
+  `release-0.7` the smoke tests still cannot run: those branches have no smoke scripts,
+  and their binaries predate `agentop setup`. So the Linux run fails, and the release
+  stays a prerelease until you promote it by hand. That is untested, but it keeps Latest
+  on the highest version. If a backport has already taken Latest, mark the right release
   Latest again, as in [Stopping a bad release](#stopping-a-bad-release).
 - **The auto-updater's wait counts from publication, not promotion.** `update.wait`, 6
   hours by default, is measured from the upload of the release's `checksums.txt`. A

@@ -70,6 +70,7 @@ jobs:
           REPO: ${{ github.repository }}
           PROMOTE_TAG: ${{ inputs.tag }}
           SMOKE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SMOKE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           SMOKE_RUN_PATH: ${{ github.event.workflow_run.path }}
           SMOKE_RUN_TITLE: ${{ github.event.workflow_run.display_title }}
         run: sh scripts/release_promote.sh

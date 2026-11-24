@@ -109,8 +109,9 @@ release_run() {
 		  created_at: "2026-11-20T16:17:16Z"}' >"${FIXTURES}/run-$1.json"
 }
 
-# smoke <workflow file> <id:status:conclusion:release run id>...: that workflow's
-# runs, each titled the way its run-name titles it. A conclusion of "null" is null.
+# smoke <workflow file> <id:status:conclusion:release run id[:attempt]>...: that
+# workflow's runs, each titled the way its run-name titles it. A conclusion of "null"
+# is null, and the attempt is 1 when left out.
 smoke() {
 	wf="$1"
 	shift
@@ -119,6 +120,7 @@ smoke() {
 	done | jq -R -s --arg wf "${wf}" '{workflow_runs: [split("\n")[] | select(length > 0)
 		| split(":") | {id: (.[0] | tonumber), status: .[1],
 		  conclusion: (if .[2] == "null" then null else .[2] end),
+		  run_attempt: ((.[4] // "1") | tonumber),
 		  display_title: "Release Smoke Test (\($wf)) for v0.9.6, release run \(.[3])"}]}' \
 		>"${FIXTURES}/wf-${wf}.json"
 }
@@ -135,11 +137,11 @@ stable() {
 		>"${FIXTURES}/releases.json"
 }
 
-# after_smoke <path> <id> <tag> <release run id>: run the script as the
+# after_smoke <path> <id> <tag> <release run id> [attempt]: run the script as the
 # workflow_run trigger does. Sets status, out and edits.
 after_smoke() {
 	status=0
-	out=$(REPO=o/r SMOKE_RUN_PATH="$1" SMOKE_RUN_ID="$2" \
+	out=$(REPO=o/r SMOKE_RUN_PATH="$1" SMOKE_RUN_ID="$2" SMOKE_RUN_ATTEMPT="${5:-1}" \
 		SMOKE_RUN_TITLE="Release Smoke Test (x) for $3, release run $4" \
 		sh "${PROMOTE_SH}" 2>&1) || status=$?
 	edits=$(grep '^release edit' "${GH_LOG}" || true)
@@ -162,6 +164,7 @@ stable v0.9.5 v0.9.4
 after_smoke "${MACOS}" 301 v0.9.6 100
 check "exit 0" 0 "${status}"
 check "promoted and made Latest" "release edit v0.9.6 --repo o/r --prerelease=false --latest" "${edits}"
+check_contains "every stable release is read" "--exclude-pre-releases --limit 10000" "$(cat "${GH_LOG}")"
 check_contains "smoke runs listed from the release run's start" \
 	"event=workflow_run&created=%3E%3D2026-11-20T16:17:16Z" "$(cat "${GH_LOG}")"
 
@@ -243,6 +246,42 @@ check "exit 0" 0 "${status}"
 check "the trigger, newer than anything listed, decides" \
 	"release edit v0.9.6 --repo o/r --prerelease=false --latest" "${edits}"
 
+echo "a re-run of the triggering run failed before this read the API"
+# Attempt 1 of 301 passed and started this; attempt 2 has failed since.
+fresh
+release_run 100 v0.9.6
+smoke release-smoke-linux.yaml 201:completed:success:100
+smoke release-smoke-macos.yaml 301:completed:failure:100:2
+release v0.9.6 false true
+after_smoke "${MACOS}" 301 v0.9.6 100 1
+check "exit 0" 0 "${status}"
+check "nothing edited: the later attempt decides" "" "${edits}"
+check_contains "names the attempt" "release-smoke-macos.yaml run 301 attempt 2 ended 'failure'" "${out}"
+
+echo "a re-run of the triggering run is still running"
+fresh
+release_run 100 v0.9.6
+smoke release-smoke-linux.yaml 201:completed:success:100
+smoke release-smoke-macos.yaml 301:in_progress:null:100:2
+release v0.9.6 false true
+after_smoke "${MACOS}" 301 v0.9.6 100 1
+check "exit 0" 0 "${status}"
+check "nothing edited" "" "${edits}"
+check_contains "waits for it" "release-smoke-macos.yaml(run 301 attempt 2)" "${out}"
+
+echo "the API still lists an earlier attempt of the triggering run"
+# Attempt 2 of 301, a re-run, passed and started this; the API still shows attempt 1's
+# failure.
+fresh
+release_run 100 v0.9.6
+smoke release-smoke-linux.yaml 201:completed:success:100
+smoke release-smoke-macos.yaml 301:completed:failure:100:1
+release v0.9.6 false true
+after_smoke "${MACOS}" 301 v0.9.6 100 2
+check "exit 0" 0 "${status}"
+check "the trigger's attempt decides" \
+	"release edit v0.9.6 --repo o/r --prerelease=false --latest" "${edits}"
+
 echo "a newer smoke run of the triggering workflow is still running"
 fresh
 release_run 100 v0.9.6
@@ -322,6 +361,10 @@ fresh
 after_smoke "${LINUX}" "201 x" v0.9.6 100
 check "a run id that is not a number: fails" 1 "${status}"
 check_contains "says so" "SMOKE_RUN_ID is not a run id" "${out}"
+fresh
+after_smoke "${LINUX}" 201 v0.9.6 100 "2x"
+check "a run attempt that is not a number: fails" 1 "${status}"
+check_contains "says so" "SMOKE_RUN_ATTEMPT is not a run attempt" "${out}"
 
 echo "by hand"
 fresh

@@ -453,6 +453,17 @@ jobs:
             add 'This is a prerelease: the plain one-liner does not install it. To try it:'
             add "    curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh -s -- --ref=${TAG}"
           fi
+          # A new stable release is staged (${staged} above) until both release smoke
+          # tests pass. Nothing edits these notes when it is promoted, so this has to
+          # read true before and after. Not for an odd spelling (v0.9.0-pre1), which
+          # is staged but never promoted.
+          if [ -n "${staged}" ] && printf '%s\n' "${TAG}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            add ''
+            add 'A new release is published as a prerelease, and made a full release once the Linux'
+            add 'and macOS release smoke tests pass. If this one is still marked Pre-release, they'
+            add 'have not passed yet. To try it anyway:'
+            add "    curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh -s -- --ref=${TAG}"
+          fi
           # The rolling release is not a release, and its notes should not read like
           # one — someone landing on it from a search result needs to know that
           # before they install it.
