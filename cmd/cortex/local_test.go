@@ -118,32 +118,47 @@ func TestDemoConfig_WriteLoadsAndValidates(t *testing.T) {
 		gotPlugins[i] = p.Name
 	}
 	// The parsers come first: the pipeline refuses a chain where a body reader
-	// follows any body writer, and tool-prune and context-guru, the two writers
-	// this config ships, rewrite the request body. Request writers may chain
-	// after the readers — agentop server add appends the inference-router last.
-	wantPlugins := []string{"inference-parser", "mcp-parser", "a2a-parser", "tool-prune", "context-guru"}
+	// follows any body writer, and context-guru, the one writer this config
+	// ships, rewrites the request body. Request writers may chain after the
+	// readers — agentop server add appends the inference-router last.
+	wantPlugins := []string{"inference-parser", "mcp-parser", "a2a-parser", "context-guru"}
 	if !slices.Equal(gotPlugins, wantPlugins) {
 		t.Errorf("outbound plugins = %v, want %v", gotPlugins, wantPlugins)
 	}
 
-	// tool-prune ships inert, and that is a property worth pinning: the demo
-	// must never silently start rewriting a user's traffic. The empty remove
-	// list is the guard — with no tool named there is nothing to remove, whatever
-	// the policy — so filling the list is the single, deliberate act that
-	// enables it. Asserting the policy too would just pin a default that is
-	// meant to be edited.
-	var tp *config.PluginEntry
+	// The prune list is context-guru's toolfilter.remove. It ships present and
+	// empty, so `agentop tools scan --write` finds the line to fill, and with
+	// no tool named nothing is removed.
+	var cg *config.PluginEntry
 	for i := range cfg.Pipeline.Outbound.Plugins {
-		if cfg.Pipeline.Outbound.Plugins[i].Name == "tool-prune" {
-			tp = &cfg.Pipeline.Outbound.Plugins[i]
+		switch cfg.Pipeline.Outbound.Plugins[i].Name {
+		case "context-guru":
+			cg = &cfg.Pipeline.Outbound.Plugins[i]
+		case "tool-prune":
+			t.Error("the built-in config must not have a tool-prune entry")
 		}
 	}
-	if tp == nil {
-		t.Fatal("tool-prune entry not found")
+	if cg == nil {
+		t.Fatal("context-guru entry not found")
 	}
-	if !strings.Contains(string(tp.Config), "\"remove\":[]") &&
-		!strings.Contains(string(tp.Config), "\"remove\": []") {
-		t.Errorf("tool-prune must ship with an empty remove list, got %s", tp.Config)
+	var cgCfg struct {
+		Engine struct {
+			Preset     string `json:"preset"`
+			Components struct {
+				Toolfilter struct {
+					Remove *[]string `json:"remove"`
+				} `json:"toolfilter"`
+			} `json:"components"`
+		} `json:"engine"`
+	}
+	if err := json.Unmarshal(cg.Config, &cgCfg); err != nil {
+		t.Fatalf("decode context-guru config %s: %v", cg.Config, err)
+	}
+	if cgCfg.Engine.Preset != "xhigh" {
+		t.Errorf("context-guru engine.preset = %q, want xhigh", cgCfg.Engine.Preset)
+	}
+	if r := cgCfg.Engine.Components.Toolfilter.Remove; r == nil || len(*r) != 0 {
+		t.Errorf("context-guru engine.components.toolfilter.remove must be present and empty, got %s", cg.Config)
 	}
 }
 
