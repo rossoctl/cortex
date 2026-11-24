@@ -519,8 +519,10 @@ func notASecret(v string) bool {
 // password ("$Hnt7rQx2Lp"). A reference opens with its family's own syntax, then a name that
 // reads as a variable's (variableName), where it has a name:
 //   - shell, Terraform, GitHub Actions, Kubernetes: ${...}, ${{ ... }}, $(...), and $NAME at the
-//     end of the value or before "/ : . } { [" or PHP's "->" ($HOME/.pw, $env:DB_PASSWORD,
-//     $this->password, $DB_USER:$DB_PASS); a name ending in digits only in capitals;
+//     end of the value or before "/ : . - } { [" ($HOME/.pw, $env:DB_PASSWORD, $this->password,
+//     $DB_USER:$DB_PASS, $pass-suffix), but not ":" before a digit, and "-" only after a
+//     lowercase or capitals name, before a digit only in capitals; a name ending in digits only
+//     in capitals;
 //   - Windows and Python: %NAME%, %NAME%\file, %(name)s;
 //   - templates and format strings: {{ ... }} (Jinja, Helm, Go), {name}, {name!r}, {env:NAME},
 //     {db.password};
@@ -538,10 +540,12 @@ func isReference(v string) bool {
 		// and "$Summer2024!" are passwords.
 		name := leadingName(v[1:])
 		if rest := v[1+len(name):]; rest != "" && (strings.IndexByte("/:.-}{[", rest[0]) < 0 ||
-			// "-" only as PHP's "->" (a bare value stops at ">", leaving "-" last), and ":" not
-			// before a digit: "$Summer-2024" and "$Winter:2024" are passwords.
-			len(rest) > 1 && (rest[0] == '-' && rest[1] != '>' && rest[1] != '$' && rest[1] != '{' && strings.ToUpper(name) != name ||
-				rest[0] == ':' && rest[1] >= '0' && rest[1] <= '9')) {
+			// ":" not before a digit: "$Winter:2024" is a password. "-" after a shell variable's
+			// name, in lowercase or capitals ("$pass-suffix" is $pass, then "-suffix";
+			// "$DB_PASS-2024"), but before a digit only in capitals ("$Summer-2024", "$pass-2fa");
+			// after a mixed-case word only as PHP's "->" ("$Summer-Fun!" is a password).
+			len(rest) > 1 && (rest[0] == ':' && rest[1] >= '0' && rest[1] <= '9' || rest[0] == '-' && strings.ToUpper(name) != name &&
+				(rest[1] >= '0' && rest[1] <= '9' || strings.ToLower(name) != name && rest[1] != '>' && rest[1] != '$' && rest[1] != '{'))) {
 			return false
 		}
 		if strings.TrimRight(name, "0123456789") != name && strings.ToUpper(name) != name {
@@ -617,9 +621,10 @@ func variableName(s string) bool {
 
 // camelTypeName reports whether a type-name-shaped v splits into words, as a type's name does
 // ("NSSecureTextField", "PasswordStrengthValidator"): each piece, cut before a capital that
-// starts a lowercase run, is an acronym of up to five capitals, or a capital and lowercase
-// letters, three or more, with a vowel. Random mixed-case letters leave pieces with no vowel
-// ("Dtp", "Glb", "Fh") or a lone capital.
+// starts a lowercase run, is an acronym of up to eight capitals (acronyms run together:
+// "XMLHTTPRequest", "AWSKMSEncryptionContext"), a lone capital first ("OAuth"), or a capital and
+// lowercase letters, three or more, with a vowel. Random mixed-case letters leave pieces with
+// no vowel ("Dtp", "Glb", "Fh") or a lone capital inside the name.
 func camelTypeName(v string) bool {
 	for i := 0; i < len(v); {
 		j := i
@@ -631,8 +636,8 @@ func camelTypeName(v string) bool {
 			j-- // the last capital starts the next word: "HTMLInput" is "HTML", "Input"
 			caps--
 		}
-		if caps > 0 && (j == len(v) || caps > 1) {
-			if caps > 5 {
+		if caps > 0 && (j == len(v) || caps > 1 || i == 0 && v[j] >= 'A' && v[j] <= 'Z') {
+			if caps > 8 {
 				return false
 			}
 			i = j

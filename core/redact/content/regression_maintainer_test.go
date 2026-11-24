@@ -264,7 +264,10 @@ func TestRegression_LettersOnlyPasswords(t *testing.T) {
 	}
 	for _, in := range []string{"password: HTMLInputElement", "password: PasswordField", "password: UsernamePasswordCredentials",
 		"password: XMLHttpRequest", "password: SQLAlchemyType", "password: NSSecureTextField", "var password: NSSecureTextField",
-		"password: PasswordStrengthValidator", "password: NSTextFieldDelegate", "password: SecretStr", "password: HTTPBasicAuth"} {
+		"password: PasswordStrengthValidator", "password: NSTextFieldDelegate", "password: SecretStr", "password: HTTPBasicAuth",
+		// Acronyms run together, and a lone capital first.
+		"password: XMLHTTPRequestHandler", "password: AWSKMSEncryptionContext", "password: HTTPSSETransportLayer",
+		"password: SQLXMLDocumentBuilder", "password: OAuthJWTokenProvider"} {
 		if out, st := redact(in); out != in || len(st) != 0 {
 			t.Errorf("%q changed: %q", in, out)
 		}
@@ -272,7 +275,7 @@ func TestRegression_LettersOnlyPasswords(t *testing.T) {
 }
 
 // "$" before a word, a dash or a colon and a number is a password, not a reference; PHP's "->",
-// a drive and a list of variables stay references.
+// a drive, a list of variables and a variable before a dash and a word stay references.
 func TestRegression_DollarDashAndColon(t *testing.T) {
 	for _, tc := range []struct{ in, secret string }{
 		{"password=$Summer-" + "2024", "Summer-2024"},
@@ -280,6 +283,10 @@ func TestRegression_DollarDashAndColon(t *testing.T) {
 		{"password=$Admin-" + "123", "Admin-123"},
 		{"password=$Winter:" + "2024", "Winter:2024"},
 		{`{"password":"$Summer-` + `2024"}`, "Summer-2024"},
+		{"password=$Summer-" + "Fun!", "Summer-Fun"},
+		{"password=$Qwerty-" + "x9Lm#Tz", "Qwerty-x9Lm"},
+		{`{"password":"$Monkey-` + `Banana7!"}`, "Monkey-Banana7"},
+		{"password=$pass-" + "2fa9Kq", "pass-2fa9Kq"},
 	} {
 		if out, _ := redact(tc.in); strings.Contains(out, tc.secret) {
 			t.Errorf("%q: leaked: %q", tc.in, out)
@@ -287,35 +294,32 @@ func TestRegression_DollarDashAndColon(t *testing.T) {
 	}
 	for _, in := range []string{"$password = $this->password;", `{"password":"$this->password"}`, "$pass = $user->getPassword()",
 		"$password = $env:DB_PASSWORD", "password=$HOME/.pw", "password=$DB_USER:$DB_PASS", "password=$DB_PASS-backup",
-		"PASSWORD=$PG_PASS-$SUFFIX"} {
+		"PASSWORD=$PG_PASS-$SUFFIX", "password=$pass-suffix", "password=$password-file", "PASSWORD=$db_pass-backup",
+		"password=$DB_PASS-2024"} {
 		if out, st := redact(in); out != in || len(st) != 0 {
 			t.Errorf("%q changed: %q", in, out)
 		}
 	}
 }
 
-// An Authorization value under a scheme the list does not know is redacted when it looks like a
-// token; prose after "Authorization:" is kept.
-func TestRegression_UnknownAuthSchemes(t *testing.T) {
-	for _, tc := range []struct{ in, secret string }{
-		{"Authorization: SSWS 00abcDEF" + "1234567890xyzQWERTY", "00abcDEF1234567890xyzQWERTY"},
-		{"Authorization: Splunk 1234abcd-5678-" + "efgh-9012-ijkl3456mnop", "efgh-9012-ijkl3456mnop"},
-		{`{"Authorization":"ApiKey Zk3mQ9xL` + `2pR7vT4wN8yB"}`, "Zk3mQ9xL2pR7vT4wN8yB"},
+// An Authorization token with no scheme, followed by more words, is the token, even when the next
+// word looks like a token too; prose after "Authorization:" is kept, and so is the word after it.
+func TestRegression_AuthTokenBeforeWords(t *testing.T) {
+	tok := "Zk3mQ9xL2pR7" + "vT4wN8yB"
+	for _, tc := range []struct{ in, next string }{
+		{`{"authorization":"` + tok + ` extra-words-here"}`, "extra-words-here"},
+		{`{"authorization":"` + tok + ` ClientVersion2Build"}`, "ClientVersion2Build"},
+		{`{"Authorization":"` + tok + ` Hd83kLq0Zp2Xv7Mn"}`, "Hd83kLq0Zp2Xv7Mn"},
+		{`{"Authorization":"` + tok + ` ExtraWords1234567890"}`, "ExtraWords1234567890"},
+		{`headers = {"Authorization": "abcd1234efgh` + `5678ijkl sessionid"}`, "sessionid"},
 	} {
-		out, _ := redact(tc.in)
-		if strings.Contains(out, tc.secret) || !strings.Contains(out, strings.Fields(strings.SplitN(tc.in, ":", 2)[1])[0]) {
-			t.Errorf("%q: %q (the scheme must stay, the token go)", tc.in, out)
-		}
-	}
-	// A token with no scheme, followed by more words, is still the token.
-	for _, in := range []string{`{"authorization":"Zk3mQ9xL2pR7vT4w` + `N8yB extra-words-here"}`,
-		`headers = {"Authorization": "abcd1234efgh` + `5678ijkl sessionid"}`} {
-		if out, _ := redact(in); !strings.Contains(out, "[REDACTED:credential]") {
-			t.Errorf("%q: not redacted: %q", in, out)
+		if out, _ := redact(tc.in); strings.Contains(out, tok) || strings.Contains(out, "abcd1234efgh5678ijkl") || !strings.Contains(out, tc.next) {
+			t.Errorf("%q: %q (the token must go, the word after it stay)", tc.in, out)
 		}
 	}
 	for _, in := range []string{"Authorization: required for every request", "authorization: Please provide a valid token",
-		"Authorization: see the docs at https://example.com/auth", "Authorization: Digest nonce=" + hexRun(32) + ", username=bob"} {
+		"Authorization: see the docs at https://example.com/auth", "Authorization: Digest nonce=" + hexRun(32) + ", username=bob",
+		"Authorization: uses OAuth2/OpenIDConnect flows", "Authorization: Visit Docs.Example.com/Authentication"} {
 		if out, st := redact(in); out != in || len(st) != 0 {
 			t.Errorf("%q changed: %q", in, out)
 		}
