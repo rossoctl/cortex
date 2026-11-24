@@ -65,7 +65,10 @@ func TestSkipSet_TTLExpires(t *testing.T) {
 	if !s.Contains("h") {
 		t.Fatal("should contain immediately after Fail")
 	}
-	time.Sleep(40 * time.Millisecond)
+	if got := window(t, s, "h"); got > s.ttl {
+		t.Errorf("window %v exceeds the cap %v", got, s.ttl)
+	}
+	expireWindow(t, s, "h")
 	if s.Contains("h") {
 		t.Error("entry should have expired (self-healing re-attempt)")
 	}
@@ -241,7 +244,20 @@ func window(t *testing.T, s *SkipSet, host string) time.Duration {
 	if !ok {
 		t.Fatalf("no entry for %q", host)
 	}
+	// timing: SkipSet reads the real clock; the windows compared differ by doublings
 	return time.Until(e.expiry)
+}
+
+// expiryOf returns when host's skip window ends.
+func expiryOf(t *testing.T, s *SkipSet, host string) time.Time {
+	t.Helper()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e, ok := s.m[host]
+	if !ok {
+		t.Fatalf("no entry for %q", host)
+	}
+	return e.expiry
 }
 
 // TestSkipSet_SucceedClears is the signal the set never had.
@@ -342,18 +358,20 @@ func expireWindow(t *testing.T, s *SkipSet, host string) {
 // outcome the backoff's own comment rules out.
 func TestSkipSet_PinnedHostEscalatesAcrossWindows(t *testing.T) {
 	s := NewSkipSet()
+	var last time.Time
 	for i := 1; i <= 6; i++ {
 		if s.Contains("h") {
 			t.Fatalf("rejection %d: host is still skipped, so the proxy would not have forged", i)
 		}
+		last = time.Now()
 		s.Fail("h")
 		if i < 6 {
 			expireWindow(t, s, "h")
 		}
 	}
-	if got := window(t, s, "h"); got < s.ttl-time.Second {
-		t.Errorf("window after 6 rejections, each after the last window expired = %v, "+
-			"want the %v ceiling; an expired entry must not restart the backoff", got, s.ttl)
+	if got := expiryOf(t, s, "h"); got.Before(last.Add(s.ttl)) {
+		t.Errorf("window after 6 rejections, each after the last window expired, ends at %v, "+
+			"want the %v ceiling from the last one; an expired entry must not restart the backoff", got, s.ttl)
 	}
 }
 
@@ -375,9 +393,10 @@ func TestSkipSet_TransientAfterExpiryGetsTheBaseAndKeepsTheCount(t *testing.T) {
 	}
 
 	expireWindow(t, s, "h")
+	before := time.Now()
 	s.Fail("h")
-	if got := window(t, s, "h"); got < s.ttl-time.Second {
-		t.Errorf("window after the next rejection = %v, want the %v ceiling; the transient "+
+	if got := expiryOf(t, s, "h"); got.Before(before.Add(s.ttl)) {
+		t.Errorf("window after the next rejection ends at %v, want the %v ceiling; the transient "+
 			"failure reset the count", got, s.ttl)
 	}
 }
@@ -400,9 +419,10 @@ func TestSkipSet_TransientOnALiveWindow(t *testing.T) {
 	}
 
 	setWindow(t, s, "h", time.Minute) // an earned window, partly elapsed
+	set := expiryOf(t, s, "h")
 	s.FailTransient("h")
-	if got := window(t, s, "h"); got > time.Minute || got < time.Minute-time.Second {
-		t.Errorf("transient failure on a live window with 1m left = %v, want it left at about 1m", got)
+	if got := expiryOf(t, s, "h"); !got.Equal(set) {
+		t.Errorf("transient failure on a live window with 1m left moved its end from %v to %v, want it left", set, got)
 	}
 }
 
@@ -463,12 +483,12 @@ func TestSkipSet_TransientDoesNotShortenAnEarnedWindow(t *testing.T) {
 
 // refuseAcrossWindows records n rejections of key, each after the window the one before
 // it earned has ended: a program refusing again when it is next tried, which is the only
-// rejection the program set counts. s's windows must be a few milliseconds for this to
-// be quick.
-func refuseAcrossWindows(s *SkipSet, key string, n int) {
+// rejection the program set counts.
+func refuseAcrossWindows(t *testing.T, s *SkipSet, key string, n int) {
+	t.Helper()
 	for i := 0; i < n; i++ {
 		if i > 0 {
-			time.Sleep(s.ttl + 5*time.Millisecond)
+			expireWindow(t, s, key)
 		}
 		s.Fail(key)
 	}
@@ -479,15 +499,14 @@ func refuseAcrossWindows(s *SkipSet, key string, n int) {
 // rejection stops the retries. The window would otherwise re-arm forever (#912).
 func TestProgramSkipSet_StopsAfterThreeRejections(t *testing.T) {
 	s := NewProgramSkipSet()
-	s.base, s.ttl = time.Millisecond, 4*time.Millisecond
 
-	refuseAcrossWindows(s, "p", 2)
-	time.Sleep(10 * time.Millisecond) // past any window two rejections earn
+	refuseAcrossWindows(t, s, "p", 2)
+	expireWindow(t, s, "p")
 	if s.Contains("p") {
 		t.Fatal("two rejections stopped the retries; three are required")
 	}
 	s.Fail("p")
-	time.Sleep(10 * time.Millisecond) // past the ceiling
+	expireWindow(t, s, "p")
 	if !s.Contains("p") {
 		t.Fatal("three rejections in a row did not stop the retries: the program will fail again when the window ends")
 	}
@@ -519,10 +538,10 @@ func TestProgramSkipSet_ABurstCountsOnce(t *testing.T) {
 	s.Fail("q")
 	expireWindow(t, s, "q")
 	s.Fail("q") // counted: a 2x window
-	earned := window(t, s, "q")
+	earned := expiryOf(t, s, "q")
 	s.Fail("q") // the rest of that connection's burst
-	if got := window(t, s, "q"); got < earned-time.Second {
-		t.Errorf("a burst cut the earned window from %v to %v", earned, got)
+	if got := expiryOf(t, s, "q"); got.Before(earned) {
+		t.Errorf("a burst cut the earned window's end from %v to %v", earned, got)
 	}
 }
 
@@ -531,14 +550,13 @@ func TestProgramSkipSet_ABurstCountsOnce(t *testing.T) {
 // ends, where a rejection would count.
 func TestProgramSkipSet_TransientFailuresDoNotCountTowardStopping(t *testing.T) {
 	s := NewProgramSkipSet()
-	s.base, s.ttl = time.Millisecond, 4*time.Millisecond
 
 	s.Fail("p")
 	for i := 0; i < 5; i++ {
-		time.Sleep(10 * time.Millisecond)
+		expireWindow(t, s, "p")
 		s.FailTransient("p")
 	}
-	time.Sleep(10 * time.Millisecond)
+	expireWindow(t, s, "p")
 	if s.Contains("p") {
 		t.Fatal("transient failures stopped the retries")
 	}
@@ -550,12 +568,11 @@ func TestProgramSkipSet_TransientFailuresDoNotCountTowardStopping(t *testing.T) 
 // docs/troubleshooting.md says so; this pins it.
 func TestProgramSkipSet_AHangUpFirstStartsTheCount(t *testing.T) {
 	s := NewProgramSkipSet()
-	s.base, s.ttl = time.Millisecond, 4*time.Millisecond
 
 	s.FailTransient("p")
-	time.Sleep(10 * time.Millisecond) // past the hang-up's window
-	refuseAcrossWindows(s, "p", 2)
-	time.Sleep(10 * time.Millisecond) // past the ceiling: only a stop still holds it
+	expireWindow(t, s, "p") // the hang-up's window ends
+	refuseAcrossWindows(t, s, "p", 2)
+	expireWindow(t, s, "p") // only a stop still holds it
 	if !s.Contains("p") {
 		t.Fatal("a hang-up and two spaced rejections did not stop the program")
 	}
@@ -563,9 +580,8 @@ func TestProgramSkipSet_AHangUpFirstStartsTheCount(t *testing.T) {
 
 func TestProgramSkipSet_SucceedClearsAStop(t *testing.T) {
 	s := NewProgramSkipSet()
-	s.base, s.ttl = time.Millisecond, 4*time.Millisecond
-	refuseAcrossWindows(s, "p", programStopAfter)
-	time.Sleep(10 * time.Millisecond) // past the ceiling: only a stop still holds it
+	refuseAcrossWindows(t, s, "p", programStopAfter)
+	expireWindow(t, s, "p") // only a stop still holds it
 	if !s.Contains("p") {
 		t.Fatal("precondition: the program is not stopped")
 	}
@@ -579,11 +595,10 @@ func TestProgramSkipSet_SucceedClearsAStop(t *testing.T) {
 // every client and the next one may well trust the CA.
 func TestSkipSet_HostSetNeverStops(t *testing.T) {
 	s := NewSkipSet()
-	s.base, s.ttl = time.Millisecond, 4*time.Millisecond
 	for i := 0; i < 10; i++ {
 		s.Fail("h")
 	}
-	time.Sleep(10 * time.Millisecond)
+	expireWindow(t, s, "h")
 	if s.Contains("h") {
 		t.Fatal("the host set stopped retrying; only the program set may")
 	}
@@ -594,14 +609,12 @@ func TestSkipSet_HostSetNeverStops(t *testing.T) {
 func TestSkipSet_StoppedEntriesAreEvictedLast(t *testing.T) {
 	s := NewProgramSkipSet()
 	s.max = 2
-	// The stopped entry earns a window that has ended by the time the set fills, so it
-	// is both the one expiring soonest and one the sweep would purge as expired. Left at
-	// the default windows its three rejections outlast live's one, and ordering by
-	// expiry alone would pass.
-	s.base, s.ttl = time.Millisecond, time.Millisecond
-	refuseAcrossWindows(s, "stopped", programStopAfter)
-	time.Sleep(5 * time.Millisecond)
-	s.base, s.ttl = skipBackoffBase, skipTTL
+	// The stopped entry's window has ended by the time the set fills, so it is both the
+	// one expiring soonest and one the sweep would purge as expired. With its window left
+	// open, its three rejections outlast live's one, and ordering by expiry alone would
+	// pass.
+	refuseAcrossWindows(t, s, "stopped", programStopAfter)
+	expireWindow(t, s, "stopped")
 	s.Fail("live")
 	s.Fail("newcomer") // full: one entry must go
 	if !s.Contains("stopped") {
@@ -617,14 +630,11 @@ func TestSkipSet_StoppedEntriesAreEvictedLast(t *testing.T) {
 
 func TestSkipSet_EntriesListsWhatContainsReports(t *testing.T) {
 	s := NewProgramSkipSet()
-	// Tiny windows to stop one entry across them and let another expire, then long
-	// ones so the live entry stays live for the rest of the test.
-	s.base, s.ttl = time.Millisecond, 2*time.Millisecond
-	refuseAcrossWindows(s, "stopped", programStopAfter)
+	refuseAcrossWindows(t, s, "stopped", programStopAfter)
+	expireWindow(t, s, "stopped")
 	s.Fail("expired")
-	s.base, s.ttl = time.Hour, time.Hour
+	expireWindow(t, s, "expired")
 	s.Fail("live")
-	time.Sleep(5 * time.Millisecond)
 
 	got := map[string]SkipEntry{}
 	for _, e := range s.Entries() {

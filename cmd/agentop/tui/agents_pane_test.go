@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -169,13 +170,13 @@ func TestAgentRowsFromBuckets_MoneySaturatesRatherThanWrapping(t *testing.T) {
 
 // esc leaves the AGENTS pane and lands where `A` was pressed.
 //
-// A KEY-OPENED SURFACE MUST RETURN TO ITS CALLER, which is the rule paneCatalog's own esc
-// case states and the reason the sessions pane is the only one whose esc costs the
+// A KEY-OPENED SURFACE MUST RETURN TO ITS CALLER, which is the rule every key-opened
+// pane's esc case states and the reason the sessions pane is the only one whose esc costs the
 // connection. Without a case of its own a new pane is a DEAD END: esc falls through, the
 // reader is stuck, and the only way out is `q`.
 //
 // The paneNone fallback is Sessions rather than the pane enum's zero value. It is reachable
-// rather than defensive — the same way paneCatalog's is — and Sessions is the one pane that is
+// rather than defensive, and Sessions is the one pane that is
 // always a defensible place to land; falling back to the zero value would drop the reader on
 // the Kubernetes namespace picker, tearing down nothing but looking like the connection went
 // away.
@@ -613,9 +614,8 @@ func TestAgentsPane_StartupFetchFailureIsSilent(t *testing.T) {
 // (--endpoint mode's Init, the pod picker's portForwardReadyMsg, and [l]'s local endpoint), and it
 // is where the gate has to live for a second pod's connection to re-run it.
 //
-// THE BATCH IS FANNED OUT CONCURRENTLY WITH A DEADLINE, because tea.Batch's leaves include a 1s
-// tick and an SSE pump that never returns on their own. Running them in sequence would hang on
-// the first blocker rather than reaching the gate's fetch.
+// THE BATCH IS FANNED OUT CONCURRENTLY, and every leaf returns: ticks fire at once (see
+// TestMain), and the SSE pump returns with the stream's first status, "open" or "reconnecting".
 func TestInitSessionView_ArmsTheStartupAgentsGate(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Only /v1/usage matters here; the batch's other leaves may 404 harmlessly.
@@ -640,16 +640,20 @@ func TestInitSessionView_ArmsTheStartupAgentsGate(t *testing.T) {
 		t.Fatalf("initSessionView produced %T, want tea.BatchMsg", first)
 	}
 	got := make(chan agentRowsLoadedMsg, len(batch))
+	var wg sync.WaitGroup
 	for _, leaf := range batch {
 		if leaf == nil {
 			continue
 		}
+		wg.Add(1)
 		go func(c tea.Cmd) {
+			defer wg.Done()
 			if msg, ok := c().(agentRowsLoadedMsg); ok {
 				got <- msg
 			}
 		}(leaf)
 	}
+	wg.Wait()
 	select {
 	case msg := <-got:
 		// The VALUE, not just the arrival: a gate armed with agentsOpenOnPress would flash a
@@ -667,7 +671,7 @@ func TestInitSessionView_ArmsTheStartupAgentsGate(t *testing.T) {
 		if len(msg.rows) != 2 {
 			t.Errorf("the startup fetch carried %d rows, want the fixture's 2", len(msg.rows))
 		}
-	case <-time.After(10 * time.Second):
+	default:
 		t.Fatal("no agentRowsLoadedMsg came out of initSessionView's batch — the startup gate is not armed")
 	}
 }

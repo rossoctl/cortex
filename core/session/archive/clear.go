@@ -53,16 +53,19 @@ func (a *Archive) Cleared() {
 	a.mu.Lock()
 	p.seqs = maps.Clone(a.lastSeq)
 	a.pending = p
-	a.mu.Unlock()
 	if a.closed.Load() {
+		a.mu.Unlock()
 		p.finish(ClearResult{}, errors.New("the session archive is closed"))
 		return
 	}
 	// Into the reserve, like a rename: Record stops short of it, so only renames and clears can
 	// fill it.
-	select {
-	case a.ops <- op{kind: opClear, clear: p}:
-	default:
+	ok := a.sendLocked(op{kind: opClear, clear: p})
+	if ok {
+		a.marks = a.sent // a clear removes every mark: see optOutLocked
+	}
+	a.mu.Unlock()
+	if !ok {
 		slog.Error("session archive: a clear was lost to a full queue; history on disk is unchanged")
 		p.finish(ClearResult{}, errors.New("the session archive's queue is full; nothing on disk was cleared"))
 	}

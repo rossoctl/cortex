@@ -222,7 +222,13 @@ function mergeRuns(snapshots) {
     if (!Array.isArray(s.smoke_runs)) continue;
     for (const r of s.smoke_runs) {
       if (r && r.id != null && r.created_at) {
-        byId.set(r.id, { at: r.created_at, installs: installsOf(r) });
+        // A run recorded before the collector named platforms was a Linux run: the
+        // macOS smoke test did not exist yet (#956).
+        byId.set(r.id, {
+          at: r.created_at,
+          installs: installsOf(r),
+          platform: r.platform === "darwin" ? "darwin" : "linux",
+        });
       }
     }
   }
@@ -238,6 +244,11 @@ function mergeRuns(snapshots) {
 const tally = (rs) => ({
   runs: rs.length,
   installs: rs.reduce((n, r) => n + r.installs, 0),
+  // Per platform as well, for the releases table, which takes each off its own
+  // column: a macOS run fetches darwin tarballs, a Linux run linux ones. The daily
+  // table needs only the total, since checksums.txt counts installs on every platform.
+  linux: rs.reduce((n, r) => n + (r.platform === "darwin" ? 0 : r.installs), 0),
+  darwin: rs.reduce((n, r) => n + (r.platform === "darwin" ? r.installs : 0), 0),
 });
 
 let runs = [];
@@ -606,13 +617,23 @@ function renderReleases(snapshots) {
     const ciPartial = ci !== null && partialFor(r);
 
     // Both platform columns are NON-CI, so that "Installs" means one thing across
-    // the whole table. CI comes off Linux alone because the smoke test runs only
-    // on Linux, so the Mac figure needs no adjustment.
+    // the whole table. Each comes off its own column: the Linux smoke test's from
+    // Linux and, since #956, the macOS smoke test's from Mac.
     //
     // Through people(), not a bare Math.max: the clamp alone would render an
     // underflow as a bold, plausible number, which is the failure people() exists
     // to prevent.
-    const linuxEst = ciInstalls !== null ? people(r.linux, ciInstalls) : null;
+    const linuxEst = ci !== null ? people(r.linux, ci.linux) : null;
+    // Not marked as a floor the way Linux can be: the macOS smoke test began long
+    // after the oldest run this page holds, so no span has lost macOS runs off its
+    // front, and a span before it began truly had none.
+    const macEst = ci !== null ? people(r.mac, ci.darwin) : null;
+    // Unadjusted is said, as in the Linux column, now that Mac has CI to subtract.
+    const macCell = macEst === null
+      ? `<span class="delta" title="not adjusted for CI — the run history does not reach a span when the smoke test installed this release, so its CI installs are unknown">${r.mac}</span>`
+      : macEst.underflow
+        ? `<span class="delta" title="${r.mac} Mac installs including CI, against ${ci.darwin} CI, so this would be ${macEst.raw}">~0</span>`
+        : `${macEst.value}`;
 
     // Where no estimate is possible the figure is shown UNADJUSTED and said to be,
     // rather than printed bare under a footnote claiming CI is excluded. Four ways
@@ -624,7 +645,7 @@ function renderReleases(snapshots) {
     const linuxCell = linuxEst === null
       ? `<span class="delta" title="not adjusted for CI — the run history does not reach a span when the smoke test installed this release, so its CI installs are unknown">${r.linux}</span>`
       : linuxEst.underflow
-        ? `<span class="delta" title="${r.linux} Linux installs including CI, against ${ciInstalls} CI, so this would be ${linuxEst.raw}">~0</span>`
+        ? `<span class="delta" title="${r.linux} Linux installs including CI, against ${ci.linux} CI, so this would be ${linuxEst.raw}">~0</span>`
         // A floor subtracted gives an upper bound, not a figure.
         : ciPartial
           ? `<span class="delta" title="CI for this release is a floor, so this is an upper bound">≤${linuxEst.value}</span>`
@@ -636,9 +657,9 @@ function renderReleases(snapshots) {
           : r.prerelease ? ' <span class="pre">pre-release</span>' : ""
       }</td>
       <td>${linuxCell}</td>
-      <td class="mac">${r.mac}</td>
+      <td class="mac">${macCell}</td>
       <td class="delta"${ciRuns !== null
-        ? ` title="${ciRuns} runs, one install per job that ran, while ${esc(r.tag)} was the highest stable version${ciPartial ? " — at least this many; the run history does not reach back to publication" : ""}"`
+        ? ` title="${ciRuns} runs, one install per job that ran (${ci.linux} Linux, ${ci.darwin} macOS), while ${esc(r.tag)} was the highest stable version${ciPartial ? " — at least this many; the run history does not reach back to publication" : ""}"`
         : ""}>${
         ciInstalls === null ? "—"
           : (ciPartial ? "≥" : "") + ciInstalls
@@ -656,10 +677,11 @@ function renderReleases(snapshots) {
   </table>
   <p class="sub" style="margin-top:.7rem">
     <strong>Linux</strong> and <strong>Mac Installs</strong> are lifetime figures.
-    CI is subtracted from Linux on <strong>every release the run history reaches</strong>,
-    because the smoke test installs the highest stable version when it runs — so each
+    CI is subtracted on <strong>every release the run history reaches</strong>,
+    because the smoke tests install the highest stable version when they run — so each
     stable release owns the runs from its publication until a higher version is
-    published. The test runs only on Linux, so Mac needs no adjustment. A Linux figure
+    published. Each platform loses its own test's installs: the Linux smoke test's come
+    off Linux, and the macOS smoke test's, which began with #956, off Mac. A figure
     is greyed and <strong>unadjusted</strong> where its CI cannot be counted: no run
     list in any snapshot, a release with no publication date, or a pre-release or
     backport, which the smoke test never takes as its fresh install.
@@ -671,8 +693,9 @@ function renderReleases(snapshots) {
     two binaries of one platform, so they can disagree with the independent
     <code>checksums.txt</code> count. <code>checksums.txt</code> is the figure to
     trust where they differ.
-    <strong>CI Tests</strong> is one install per job of the smoke test that ran
-    (one job per architecture): a run carries no tag, so what is known is that it
+    <strong>CI Tests</strong> is one install per job of either smoke test that ran
+    (one job per runner), with the Linux and macOS split in its hover text: a run
+    carries no tag, so what is known is that it
     installed the highest stable version when it started, which is what assigns it
     to a release.
     <code>—</code> means unknown, not zero; <code>≥</code> means the run history does

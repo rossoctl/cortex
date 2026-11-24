@@ -133,6 +133,9 @@ type child struct {
 	// call made meanwhile is not held up by it.
 	start *startup
 	now   func() time.Time
+	// withTimeout bounds a call's wait for sem and its exchange with the child. A
+	// field so a test can choose when a call's time runs out.
+	withTimeout func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 }
 
 // startup is one background start of the child.
@@ -150,7 +153,7 @@ func New(cfg Config) *Worker {
 	if cfg.CallTimeout <= 0 {
 		cfg.CallTimeout = DefaultCallTimeout
 	}
-	c := &child{cfg: cfg, name: filepath.Base(cfg.Path), sem: make(chan struct{}, 1), now: time.Now}
+	c := &child{cfg: cfg, name: filepath.Base(cfg.Path), sem: make(chan struct{}, 1), now: time.Now, withTimeout: context.WithTimeout}
 	return c.with(cfg.CallTimeout)
 }
 
@@ -161,6 +164,9 @@ func (w *child) with(d time.Duration) *Worker {
 	}
 	return &Worker{child: w, callTimeout: d}
 }
+
+// CallTimeout is the bound on each of w's calls.
+func (w *Worker) CallTimeout() time.Duration { return w.callTimeout }
 
 func (w *child) lock(ctx context.Context) error {
 	select {
@@ -218,7 +224,7 @@ func (w *child) Handshake() Handshake {
 // marshal to a JSON object. more holds the parts the child gets only when it
 // fetches them; each is encoded at that time.
 func (w *Worker) Call(ctx context.Context, msg, more map[string]any) (Reply, error) {
-	queued, cancel := context.WithTimeout(ctx, w.callTimeout)
+	queued, cancel := w.withTimeout(ctx, w.callTimeout)
 	defer cancel()
 	if err := w.lock(queued); err != nil {
 		return Reply{}, err
@@ -260,7 +266,7 @@ func (w *Worker) Call(ctx context.Context, msg, more map[string]any) (Reply, err
 	ch := make(chan result, 1)
 	go func() {
 		defer w.unlock()
-		sctx, cancel := context.WithTimeout(context.Background(), w.callTimeout)
+		sctx, cancel := w.withTimeout(context.Background(), w.callTimeout)
 		defer cancel()
 		reply, err := w.proc.call(sctx, append(line, '\n'), id, answer)
 		if err != nil {

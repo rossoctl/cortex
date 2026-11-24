@@ -164,17 +164,21 @@ func projectUsageJSON(agent string) string {
   "totals":{"requests":4,"costMicros":400}}`
 }
 
-// projectUsageFetch runs one usage fetch from m against a server that records every query. The
-// server fails the test when a query has a project key (D3).
+// projectUsageFetch runs one usage fetch from m against a server older than project=: it does not
+// echo project, so each project= read is followed by the fallback read. It returns the fallback
+// reads only, and fails the test when a project= read names another project than the scope.
 func projectUsageFetch(t *testing.T, m *model) (usageLoadedMsg, []url.Values) {
 	t.Helper()
 	var queries []url.Values
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		if q.Has("project") {
-			t.Errorf("query %q carries project=", r.URL.RawQuery)
+			if q.Get("project") != m.projectScope {
+				t.Errorf("query %q carries project=, want project=%s", r.URL.RawQuery, m.projectScope)
+			}
+		} else {
+			queries = append(queries, q)
 		}
-		queries = append(queries, q)
 		_, _ = w.Write([]byte(projectUsageJSON(q.Get("agent"))))
 	}))
 	t.Cleanup(ts.Close)

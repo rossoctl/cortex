@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -43,7 +44,9 @@ const (
 	spendDrawerSeries = 3
 
 	// spendDrawerMinHeight is the terminal height at which the drawer may open: the
-	// strip's own floor, the drawer's rows, and the separator between them.
+	// strip's own floor, the drawer's rows, and the two box edges between the drawer and the
+	// table (drawerBoxExtraLines). At the floor the table keeps the 16 rows it had when the
+	// floor was 28 and a one-row divider sat between them.
 	//
 	// Below it the answer is "no", not "a table with two visible rows": the drawer exists
 	// to be read ALONGSIDE the data, and one that squeezes the data out has defeated its
@@ -55,11 +58,17 @@ const (
 	//
 	// spendDrawerLines, not spendDrawerLinesFor: a floor has to admit the TALLEST form, or
 	// widening the terminal would squeeze the table.
-	spendDrawerMinHeight = spendStripMinHeight + spendDrawerLines + dividerLines
+	spendDrawerMinHeight = spendStripMinHeight + spendDrawerLines + drawerBoxExtraLines
+
+	// drawerBoxExtraLines is what the drawer's own panel costs beyond its rows: its bottom edge
+	// and the table box's top edge. Its top edge is the band's, which the closed layout already
+	// reserves (boxTopLines).
+	drawerBoxExtraLines = 2
 
 	// spendDrawerLines is the drawer's MAXIMUM height — the two-column form. What layout()
-	// actually holds back is spendDrawerLinesFor(width), which is this at a width that
-	// affords the tier column and one row less below it.
+	// actually holds back is spendDrawerLinesFor(m.innerWidth()) framed rows, which is this at
+	// an inner width that affords the tier column and one row less below it, plus
+	// drawerBoxExtraLines for the panel's edges.
 	//
 	// spendDrawerSeries named rows, plus the "(other)" band, plus the hint line. Derived rather
 	// than written as 5 so the two cannot drift: renderSpendDrawer emits exactly this many at
@@ -286,7 +295,7 @@ func spendDrawerHostPane(pane paneID) (bool, string) {
 		// its key handler runs before this one and returns, so the drawer's own keys could never
 		// reach it. A drawer whose hint line advertises [w] on the one pane where `w` belongs to
 		// something else is a lie printed on screen.
-		return false, "spend: the usage pane is the breakdown — use its own [b] and [w]"
+		return false, "spend: the usage pane is the breakdown — use its own [o] and [w]"
 	case paneTimeline:
 		// Its own [w] picks the time window, and runs before the drawer's.
 		return false, "spend: the timeline's [w] is its window — open the drawer from the events pane"
@@ -307,8 +316,8 @@ func spendDrawerHostPane(pane paneID) (bool, string) {
 	return true, ""
 }
 
-// spendDrawerReservesRows reports whether layout() must hold spendDrawerLinesFor(width)
-// back.
+// spendDrawerReservesRows reports whether layout() must hold the drawer's panel back:
+// spendDrawerLinesFor(m.innerWidth()) framed rows and drawerBoxExtraLines edges.
 //
 // ONLY ON A PANE THAT CAN HOST THE DRAWER. The flag survives a move to the timeline or the usage
 // pane, and a reservation that ignored the pane left the drawer's rows there as blank lines
@@ -449,7 +458,7 @@ func (m *model) syncSpendScope() tea.Cmd {
 // does not blink through an empty frame — it is a breakdown of the same traffic either way.
 func (m *model) cycleSpendAxis() tea.Cmd {
 	axes := m.spendAxes()
-	// A project scope has no axes, and `a` does nothing.
+	// The project Other has no axes, and `a` does nothing.
 	if len(axes) == 0 {
 		return nil
 	}
@@ -1096,12 +1105,35 @@ func drawerFigures(r drawerRow) []stripFigure {
 	// "$1.06" would read as a second spend figure with no way to tell which is which. The word is
 	// this figure's identity rather than an explanation of it, so it is not the part that yields;
 	// the strip's own saved figure made the same argument before it was replaced.
-	if r.counts.AvoidedMicros > 0 {
+	//
+	// NET OF THE PENALTY when the operators caused one (design §5.9): "net -$0.02" can be
+	// negative, and is not floored. The gross saving and the penalty go to the row's note, with
+	// the accountant's other figures (money.AccountantLines), so the column stays one figure.
+	if r.counts.AvoidedMicros != 0 || r.counts.PenaltyMicros != 0 {
+		label, micros := "saved ", r.counts.AvoidedMicros
+		if r.counts.PenaltyMicros != 0 {
+			label, micros = "net ", money.NetMicros(r.counts)
+		}
 		figure := money.Mixed
 		if unitOK {
-			figure = money.Relabel(formatUSDTotalMicros(r.counts.AvoidedMicros), unit, 0)
+			figure = money.Relabel(money.Signed(micros, ""), unit, 0)
 		}
-		saved = plainFigure("saved " + figure)
+		saved = plainFigure(label + figure)
+	}
+	if unitOK {
+		var extras []string
+		for _, l := range money.AccountantLines(r.counts, unit) {
+			if l.Label == "saved" && r.counts.PenaltyMicros == 0 {
+				continue // the saved column already says it all
+			}
+			extras = append(extras, l.Label+" "+l.Figure)
+		}
+		if len(extras) > 0 {
+			if note.full != "" {
+				extras = append([]string{note.full}, extras...)
+			}
+			note = plainFigure(strings.Join(extras, "; "))
+		}
 	}
 
 	// THE COLUMNAR SLOTS, IN ORDER, each at its own width. A slot with nothing in it still occupies
@@ -1158,9 +1190,13 @@ func drawerHints(axis usage.Group, axes []usage.Group, windowLabel string) []str
 }
 
 // drawerScopeNote is the series column's line when a scoped reply came back without the breakdown
-// it was asked for, or "". A reply narrowed to a project never has a breakdown.
+// it was asked for, or "". A project reply has none when an older proxy or the window could not
+// break it down, and agentop narrowed it to one series.
 func drawerScopeNote(snap *usage.Snapshot, asked usage.Group, windowLabel, project string) string {
-	if project != "" && snap != nil {
+	if project != "" {
+		if snap == nil || snap.Group != usage.GroupNone || asked == "" || asked == usage.GroupNone {
+			return ""
+		}
 		return "no breakdown for this scope in " + windowLabel
 	}
 	if snap == nil || snap.Agent == "" || snap.Group != usage.GroupNone || asked == "" || asked == usage.GroupNone {
@@ -1226,4 +1262,73 @@ func rankSeriesByCost(buckets []usage.Bucket) []seriesKey {
 		return out[i].label < out[j].label
 	})
 	return out
+}
+
+// drawerMarkRe finds the runs of a drawer line that are not muted, in the order they win at one
+// position: headings, bar glyphs, a saving up to the next two spaces, a (…) caveat, an amount, a
+// [bracket].
+var drawerMarkRe = regexp.MustCompile(`WHERE IT WENT|BY [A-Z]+|[█▉▊▋▌▍▎▏]+|saved (?:[^ ]| [^ ])+|\([^()]*\)|[<~!]*\$[0-9.,]+\+?|\[[^\[\]\s]+\]`)
+
+// drawerKeys are the drawer's key hints, the only brackets that become chips.
+var drawerKeys = map[string]bool{"[a]": true, "[w]": true, "[$]": true}
+
+// styleDrawerLines dresses the drawer's lines, each already cut to width. The hint line is the
+// last line that is not empty (renderSpendDrawerAxes writes it last, then pads), and only it
+// gets key chips: a diagnostic or a server label that holds "[w]" keeps its text.
+func styleDrawerLines(lines []string) []string {
+	hint := -1
+	for i, l := range lines {
+		if l != "" {
+			hint = i
+		}
+	}
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		out[i] = styleDrawerLine(l, i == hint)
+	}
+	return out
+}
+
+// styleDrawerLine dresses one drawer line. Under Ascii it is styleMuted.Render(line), as before.
+// With color the text stays the same except that, on the controls line, [a], [w] and [$] become
+// chips and the bracketed axis keeps its brackets in styleSeg.
+func styleDrawerLine(line string, controls bool) string {
+	if !colorOn() {
+		return styleMuted.Render(line)
+	}
+	var b strings.Builder
+	last := 0
+	for _, loc := range drawerMarkRe.FindAllStringIndex(line, -1) {
+		if loc[0] > last {
+			b.WriteString(styleMuted.Render(line[last:loc[0]]))
+		}
+		b.WriteString(styleDrawerMark(line[loc[0]:loc[1]], controls))
+		last = loc[1]
+	}
+	if last < len(line) {
+		b.WriteString(styleMuted.Render(line[last:]))
+	}
+	return b.String()
+}
+
+// styleDrawerMark is one drawerMarkRe match in its own ink.
+func styleDrawerMark(m string, controls bool) string {
+	switch {
+	case controls && drawerKeys[m]:
+		return styleChip.Render(" " + m[1:len(m)-1] + " ")
+	case m[0] == '[':
+		if controls {
+			return styleSeg.Render(m)
+		}
+		return styleMuted.Render(m)
+	case m == "WHERE IT WENT" || strings.HasPrefix(m, "BY "):
+		return styleMutedBold.Render(m)
+	case strings.HasPrefix(m, "saved "):
+		return styleOK.Render(m)
+	case m[0] == '(':
+		return styleDim.Render(m)
+	case strings.Contains(m, "$"):
+		return styleBold.Render(m)
+	}
+	return styleAccent.Render(m)
 }

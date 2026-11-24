@@ -783,12 +783,9 @@ func TestInitPicksUpCredentialFilesThatArriveLater(t *testing.T) {
 	if err := os.WriteFile(dir+"/secret", []byte("s3cret\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for !p.Ready() {
-		if time.Now().After(deadline) {
-			t.Fatal("credentials written to disk were never loaded")
-		}
-		time.Sleep(50 * time.Millisecond)
+	<-p.bgDone
+	if !p.Ready() {
+		t.Fatal("credentials written to disk were not loaded")
 	}
 	pctx := outbound("github-tool", "Bearer user-token")
 	if a := p.OnRequest(context.Background(), pctx); a.Type != pipeline.Continue {

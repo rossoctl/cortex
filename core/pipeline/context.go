@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/rossoctl/accountant"
 	"github.com/rossoctl/cortex/core/capabilities"
 	"github.com/rossoctl/cortex/core/model"
 )
@@ -171,11 +173,22 @@ type Context struct {
 	// bobChild is true when subagent came from Bob's X-Task-Id, not Claude Code's header.
 	bobChild bool
 
+	// noRecord and noRecordParsed memoize NoRecord's answer, on the same terms as client
+	// and clientParsed: filled by ResolveClient before any plugin runs.
+	noRecord       bool
+	noRecordParsed bool
+	// recordHeaderSeen is true when the client sent model.RecordHeader with any value, so a
+	// listener that forwards by explicit mutation (ext_proc) knows to remove it.
+	recordHeaderSeen bool
+
 	// attributedProc, namingHeader and attributed hold SetAttribution's pin.
 	attributedProc string
 	clientProc     string
 	namingHeader   string
 	attributed     bool
+	// namedSession and namedSet hold SetNamedSession's pin.
+	namedSession string
+	namedSet     bool
 
 	// project and projectSet hold SetProject's pin.
 	project    string
@@ -444,6 +457,29 @@ type Context struct {
 	// call hits a WARN log and early-returns rather than
 	// double-releasing every Finisher's state.
 	finished bool
+
+	// clientBody is the request body before the first plugin, kept by Pipeline.Run only when
+	// the pipeline has an accountant. See ClientBody.
+	clientBody []byte
+	// opsMu guards reportedOps and opsSealed: an engine's model calls report from goroutines
+	// of their own (OpReporter), beside the request goroutine.
+	opsMu sync.Mutex
+	// reportedOps are the context operations plugins reported, in call order. See ReportOps.
+	reportedOps []accountant.Operation
+	// opsSealed is set by Run right before RequestEnd reads the ops; an op reported after it is
+	// dropped and counted (lateOpsDropped).
+	opsSealed bool
+	// accountingThread, accountingParent and accountingThreadSet hold SetAccountingThread's
+	// choice of thread.
+	accountingThread    string
+	accountingParent    string
+	accountingThreadSet bool
+	// billing and billingSet hold BillingSnapshot's answer, captured once by the FIRST
+	// Pipeline.Run call on this pctx (inbound or outbound, whichever runs first) — before any
+	// plugin, inbound or outbound, can rewrite the credential header accountant.BillingFrom
+	// reads (jwt-validation's placeholder_mode, token-exchange). See BillingSnapshot.
+	billing    accountant.Billing
+	billingSet bool
 }
 
 // ClientInfo returns the calling coding agent, parsed from this request's
@@ -557,10 +593,14 @@ func (c *Context) ClientInfo() *EventClient {
 // X-Claude-Code-Agent-Id a plugin rewrote must not re-file a row under another subagent,
 // and recorders reading the memo must not be the ones filling it.
 //
+// It pins NoRecord too, which also removes model.RecordHeader from Headers, so no plugin
+// sees it and the forwarded request does not carry it.
+//
 // Idempotent: the second call is the memo's own no-op.
 func (c *Context) ResolveClient() {
 	_ = c.ClientInfo()
 	_ = c.Subagent()
+	_ = c.NoRecord()
 }
 
 // SetSessionFacts is for listeners: pass what session.Store.ViewFacts returned. A zero

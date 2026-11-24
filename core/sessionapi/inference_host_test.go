@@ -16,22 +16,19 @@ func inferenceRequest(host string) pipeline.SessionEvent {
 		Inference: &pipeline.InferenceExtension{Model: "claude-opus-5-5"}}
 }
 
-// listedRow polls url until id's row satisfies ok — the archive marks a resumed entry's start on
-// its own goroutine — and returns it.
-func listedRow(t *testing.T, url, id string, ok func(session.SessionSummary) bool) session.SessionSummary {
+// listedRow settles a — it marks a resumed entry's start on its own goroutine — and returns id's
+// row from url, which must satisfy ok.
+func listedRow(t *testing.T, a *archive.Archive, url, id string, ok func(session.SessionSummary) bool) session.SessionSummary {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		for _, s := range getList(t, url).Sessions {
-			if s.ID == id && ok(s) {
-				return s
-			}
+	settleArchive(t, a)
+	sessions := getList(t, url).Sessions
+	for _, s := range sessions {
+		if s.ID == id && ok(s) {
+			return s
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: no row for %s matched; list is %+v", url, id, getList(t, url).Sessions)
-		}
-		time.Sleep(5 * time.Millisecond)
 	}
+	t.Fatalf("%s: no row for %s matched; list is %+v", url, id, sessions)
+	return session.SessionSummary{}
 }
 
 // /v1/sessions carries inferenceHost for every row it serves: a resident session, a session
@@ -68,18 +65,18 @@ func TestHandleList_CarriesInferenceHost(t *testing.T) {
 	// A tunnel row resumes s1 without moving its host.
 	store.Append("s1", pipeline.SessionEvent{At: time.Now(), Phase: pipeline.SessionRequest, Tunnel: true,
 		HTTPMethod: "CONNECT", Host: "api.anthropic.com:443"})
-	resumed := listedRow(t, ts.URL+"/v1/sessions", "s1", func(s session.SessionSummary) bool { return s.EventCount == 2 })
+	resumed := listedRow(t, a, ts.URL+"/v1/sessions", "s1", func(s session.SessionSummary) bool { return s.EventCount == 2 })
 	if resumed.InferenceHost != "ete.example.com" {
 		t.Errorf("resumed s1: inferenceHost = %q, want the archive's ete.example.com", resumed.InferenceHost)
 	}
-	old := listedRow(t, ts.URL+"/v1/sessions?archived=true", "old", func(session.SessionSummary) bool { return true })
+	old := listedRow(t, a, ts.URL+"/v1/sessions?archived=true", "old", func(session.SessionSummary) bool { return true })
 	if old.Resident == nil || *old.Resident || old.InferenceHost != "glm.example.com:8443" {
 		t.Errorf("archive-only old: %+v, want resident false and inferenceHost glm.example.com:8443", old)
 	}
 
 	// The entry's own inference request wins over the history.
 	store.Append("s1", inferenceRequest("glm.example.com:8443"))
-	if got := listedRow(t, ts.URL+"/v1/sessions", "s1", func(s session.SessionSummary) bool { return s.EventCount == 3 }); got.InferenceHost != "glm.example.com:8443" {
+	if got := listedRow(t, a, ts.URL+"/v1/sessions", "s1", func(s session.SessionSummary) bool { return s.EventCount == 3 }); got.InferenceHost != "glm.example.com:8443" {
 		t.Errorf("s1 after its own inference request: inferenceHost = %q", got.InferenceHost)
 	}
 	if _, body := getBody(t, ts.URL+"/v1/sessions"); !strings.Contains(string(body), `"inferenceHost":"glm.example.com:8443"`) {

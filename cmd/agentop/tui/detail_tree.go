@@ -421,7 +421,7 @@ func (r *renderer) head(n *node, indent int, open bool) string {
 		if open {
 			m = "▾ "
 		}
-		pad = pad[2:] + styleJSONPunct.Render(m)
+		pad = pad[2:] + styleAccent.Render(m)
 	}
 	if n.hasKey {
 		pad += styleJSONKey.Render(strconv.Quote(n.key)) + styleJSONPunct.Render(": ")
@@ -463,7 +463,7 @@ func (r *renderer) value(n *node, indent int, more bool) {
 		if r.fs.all {
 			marker = ""
 		}
-		r.emit(styleJSONPunct.Render(marker)+styleTitle.Render(n.label), n, true, open)
+		r.emit(styleAccentBold.Render(marker)+styleTitle.Render(n.label), n, true, open)
 		if open {
 			for _, h := range n.heads {
 				for _, l := range strings.Split(h, "\n") {

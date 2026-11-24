@@ -80,10 +80,19 @@ func (s *Server) attributeForRecording(pctx *pipeline.Context, trusted string, c
 		at = s.attribute(clientHeaders, chain)
 	}
 	pctx.SetAttribution(at.Proc, at.ClientProc, at.Header)
+	pctx.SetNamedSession(namedSession(at))
 	pctx.SetProject(s.projectFor(trusted, m, chain, at))
 	sid := at.RecordSession(trusted, s.activeSession)
 	pctx.SetParent(s.parentFor(trusted, m, chain, at, sid))
 	return sid
+}
+
+// namedSession is the session id a session-id header named in at, "" when none did.
+func namedSession(at attribution.Attribution) string {
+	if at.Header == "" {
+		return ""
+	}
+	return at.Session
 }
 
 // tunnelSessionID is recordingSessionID for a tunnel's own row. Under client affinity
@@ -179,6 +188,7 @@ func (s *Server) hydrateSession(pctx *pipeline.Context, trusted string, clientHe
 		at = s.attribute(clientHeaders, chain)
 	}
 	pctx.SetAttribution(at.Proc, at.ClientProc, at.Header)
+	pctx.SetNamedSession(namedSession(at))
 	pctx.SetProject(s.projectFor(trusted, m, chain, at))
 	sid, source := at.PluginSession(trusted, s.activeSession)
 	pctx.SetParent(s.parentFor(trusted, m, chain, at, sid))

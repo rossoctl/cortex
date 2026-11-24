@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"weak"
 
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
@@ -304,7 +305,8 @@ func TestTimelineFollowsRetentionPruningAResumedSession(t *testing.T) {
 	record(time.Now().Add(-time.Hour), "recent.example")
 
 	clock.Store(time.Now().UnixNano())
-	a, err := archive.Open(root, archive.WithClock(now))
+	ticks := make(chan time.Time)
+	a, err := archive.Open(root, archive.WithClock(now), archive.WithTicks(ticks))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,16 +328,11 @@ func TestTimelineFollowsRetentionPruningAResumedSession(t *testing.T) {
 	}
 
 	clock.Add(int64(2 * 24 * time.Hour))
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		info, _, _ := a.Page("s1", 0, 0, func(*pipeline.SessionEvent) bool { return false })
-		if info.OldestSeq > 1 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("retention did not prune the old segment")
-		}
-		time.Sleep(20 * time.Millisecond)
+	// The second send returns once the first tick, which prunes, has run.
+	ticks <- time.Time{}
+	ticks <- time.Time{}
+	if info, _, _ := a.Page("s1", 0, 0, func(*pipeline.SessionEvent) bool { return false }); info.OldestSeq <= 1 {
+		t.Fatalf("retention did not prune the old segment: oldestSeq = %d", info.OldestSeq)
 	}
 	store.Append("s1", pipeline.SessionEvent{At: time.Now(), Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "after.example"})
 	if hs := hosts(); slices.Contains(hs, "old.example") {
@@ -373,18 +370,16 @@ func TestTimelineHeldHistoryIsBounded(t *testing.T) {
 // A history replaced or dropped from the cache is not kept alive by it.
 func TestTimelineDroppedHistoryIsCollectable(t *testing.T) {
 	var c timelineCache
-	collected := make(chan struct{})
 	p := &timelinePrefix{events: make([]pipeline.SessionEvent, 1), readAt: time.Now()}
-	runtime.AddCleanup(p, func(ch chan struct{}) { close(ch) }, collected)
+	w := weak.Make(p)
 	c.putPrefix("a", 0, p)
 	c.putPrefix("a", 0, &timelinePrefix{events: make([]pipeline.SessionEvent, 1), readAt: time.Now()})
 	p = nil
+	// A collection that finds p unreachable clears w before runtime.GC returns.
 	for range 20 {
 		runtime.GC()
-		select {
-		case <-collected:
+		if w.Value() == nil {
 			return
-		case <-time.After(10 * time.Millisecond):
 		}
 	}
 	t.Error("a replaced history is still reachable")
@@ -392,21 +387,27 @@ func TestTimelineDroppedHistoryIsCollectable(t *testing.T) {
 
 // A held history goes timelinePrefixTTL after it was read, though nothing else is stored.
 func TestTimelineIdleHistoryExpires(t *testing.T) {
-	defer func(d time.Duration) { timelinePrefixTTL = d }(timelinePrefixTTL)
-	timelinePrefixTTL = 10 * time.Millisecond
+	defer func(f func(time.Duration, func()) *time.Timer) { prefixAfterFunc = f }(prefixAfterFunc)
+	var expire func()
+	prefixAfterFunc = func(d time.Duration, f func()) *time.Timer {
+		if d != timelinePrefixTTL {
+			t.Errorf("expiry scheduled after %v, want %v", d, timelinePrefixTTL)
+		}
+		expire = f
+		return nil
+	}
 	var c timelineCache
 	c.putPrefix("a", 0, &timelinePrefix{events: make([]pipeline.SessionEvent, 1), readAt: time.Now()})
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		c.mu.Lock()
-		n := len(c.prefixes)
-		c.mu.Unlock()
-		if n == 0 {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
+	if expire == nil {
+		t.Fatal("no expiry was scheduled")
 	}
-	t.Error("an idle history was kept past its expiry")
+	expire()
+	c.mu.Lock()
+	n := len(c.prefixes)
+	c.mu.Unlock()
+	if n != 0 {
+		t.Error("an idle history was kept past its expiry")
+	}
 }
 
 // A cached timeline outlives the old one-minute bound while its session records nothing, and an

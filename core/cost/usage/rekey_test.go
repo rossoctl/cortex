@@ -103,7 +103,7 @@ func richTurn(t *testing.T, at time.Time, model, agent, host string, ms int) []*
 		CostUSD: 0.005, Source: event.SourceUsageFallback, Provenance: "configured",
 		Settled: true, Incomplete: true, IncompleteReason: pricing.ReasonOutputUncounted,
 		Avoided: []event.Saving{{
-			Component: "tool-prune", TokensAvoided: 400, USD: 0.0012,
+			Basis: event.BasisUSD, Component: "tool-prune", TokensAvoided: 400, USD: 0.0012,
 			Tier: "input", Provenance: "configured", Estimated: true,
 		}},
 	})

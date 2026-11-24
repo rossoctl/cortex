@@ -8,16 +8,17 @@ import (
 	"github.com/rossoctl/cortex/cmd/agentop/money"
 )
 
-// spendBandLines is the band's height: ONE row, labels inline with their figures.
+// spendBandLines is the band's height: ONE row, labels inline with their figures. That row
+// is the body box's top edge (#2020): the band is the edge's label, so it costs layout() no
+// row of its own.
 //
 // Constant in every state, for the same reason numTierRows is — layout() reserves it from
 // the terminal height and paneView fills it, and a renderer whose height follows its data
 // floats the footer or overflows the terminal.
 //
 // IT WAS TWO, stacking labels over values so their figures could share a column stride. The
-// row is worth more to the sessions table than the stride was to a reader: keys.go does
-// `bodyH -= spendBandLines`, so this hands a row back to the body of every pane the band draws
-// on, drawer open or closed. What is given up and why it is affordable is recorded on
+// row is worth more to the sessions table than the stride was to a reader, so it handed a row
+// back to the body of every pane the band draws on, drawer open or closed. What is given up and why it is affordable is recorded on
 // TestRenderSpendBand_EveryLabelSitsBesideItsOwnFigure, which replaced the stride assertion.
 const spendBandLines = 1
 
@@ -40,21 +41,23 @@ type bandCell struct{ label, value string }
 //
 // PLAIN, ALWAYS. Width arithmetic runs over this, and an escape sequence is not a display column —
 // the rule app.go's composition site states for the band and footer.go records the cost of
-// breaking. renderMuting below is the styled form, and it is width-identical by construction.
+// breaking. renderInk below is the styled form, and it is width-identical by construction.
 func (c bandCell) render() string { return c.label + " " + c.value }
 
-// renderMuting is render with the LABEL dimmed and the figure left alone.
+// bandInk is how the styled band dresses each kind of run: the label, the value, and the
+// separator. Funcs, not styles, so this file stays free of the package's styles and a test can
+// assert the geometry with an identity function.
+type bandInk struct{ label, value, sep func(string) string }
+
+// renderInk is render with each half dressed by its own ink. Width-identical to render.
 //
 // THE HIERARCHY THE TWO-LINE BAND GOT FOR FREE. app.go used to mute the whole label ROW and leave
 // the whole value row bright — `styleMuted.Render(band[0]), band[1]` — which folding to one line
 // would have destroyed silently, muting labels and figures together into one uniform grey. The
 // contrast is the thing that makes four readings scannable, so it moves down here where a cell
 // knows which half is which.
-//
-// mute is passed in rather than reaching for styleMuted directly so this file stays free of the
-// package's styles and a test can assert the geometry with an identity function.
-func (c bandCell) renderMuting(mute func(string) string) string {
-	return mute(c.label) + " " + c.value
+func (c bandCell) renderInk(ink bandInk) string {
+	return ink.label(c.label) + " " + ink.value(c.value)
 }
 
 // width is what that pair occupies.
@@ -280,8 +283,8 @@ func (m *model) spendBandNeedsScopeMarker() bool {
 // reading survives and the marker is what goes.
 //
 // Width-identical in both forms for the reason renderSpendBandStyled documents: the
-// mute wraps text without changing its columns.
-func prefixAllSessions(line string, width int, mute func(string) string) string {
+// ink wraps text without changing its columns.
+func prefixAllSessions(line string, width int, ink *bandInk) string {
 	if line == "" {
 		return line
 	}
@@ -289,10 +292,11 @@ func prefixAllSessions(line string, width int, mute func(string) string) string 
 	if lipgloss.Width(line)+lipgloss.Width(marker)+bandSeparatorWidth > width {
 		return line
 	}
-	if mute != nil {
-		marker = mute(marker)
+	sep := bandSeparator
+	if ink != nil {
+		marker, sep = ink.label(marker), ink.sep(sep)
 	}
-	return marker + bandSeparator + line
+	return marker + sep + line
 }
 
 // renderSpendBandStyled is renderSpendBand with each label muted and each figure left bright, plus
@@ -316,10 +320,14 @@ func renderSpendBandStyled(s spendSummary, width int, scoped bool) (lines []stri
 	cells := spendBandCells(s, width)
 	// Wrapped rather than passed directly: lipgloss's Render is variadic, and a variadic mute would
 	// let a caller pass several strings and get them joined by a rule this file does not own.
-	mute := func(s string) string { return styleMuted.Render(s) }
-	line := joinBandCells(cells, mute)
+	ink := &bandInk{
+		label: func(s string) string { return styleMuted.Render(s) },
+		value: styleBandValue,
+		sep:   func(s string) string { return styleDim.Render(s) },
+	}
+	line := joinBandCells(cells, ink)
 	if scoped {
-		line = prefixAllSessions(line, width, mute)
+		line = prefixAllSessions(line, width, ink)
 	}
 	// `drew` still reports whether a FIGURE reached the screen, which the marker is not:
 	// the drawer must not open under a band that is only a label.
@@ -328,23 +336,70 @@ func renderSpendBandStyled(s spendSummary, width int, scoped bool) (lines []stri
 
 // joinBandCells lays surviving cells out on one line, separated by bandSeparator.
 //
-// A nil mute means plain. One walk for both forms, so the styled band cannot come out in a different
+// A nil ink means plain. One walk for both forms, so the styled band cannot come out in a different
 // order or with a different separator from the one that was measured.
-func joinBandCells(cells []bandCell, mute func(string) string) string {
+func joinBandCells(cells []bandCell, ink *bandInk) string {
 	var line strings.Builder
 	for i, c := range cells {
 		if i > 0 {
-			line.WriteString(bandSeparator)
+			if ink == nil {
+				line.WriteString(bandSeparator)
+			} else {
+				line.WriteString(ink.sep(bandSeparator))
+			}
 		}
-		if mute == nil {
+		if ink == nil {
 			line.WriteString(c.render())
 			continue
 		}
-		line.WriteString(c.renderMuting(mute))
+		line.WriteString(c.renderInk(*ink))
 	}
 	// One line whatever happened, including when nothing survived: an empty band is one blank
 	// line, never zero. See spendBandLines.
 	return line.String()
+}
+
+// styleBandValue dresses one band figure without changing its text: each amount bold in every
+// unit, the word of a unit that is not dollars muted, the "~" and "+" markers, the " + " between
+// units and an em dash dim. "(mixed)" keeps the default ink: it is not an amount. No unit is warn
+// (#2019): a unit is not a problem.
+func styleBandValue(v string) string {
+	switch v {
+	case emptyCell:
+		return styleDim.Render(v)
+	case money.Mixed:
+		return v
+	}
+	parts := strings.Split(v, " + ")
+	for i, p := range parts {
+		parts[i] = styleBandAmount(p)
+	}
+	return strings.Join(parts, styleDim.Render(" + "))
+}
+
+// styleBandAmount is one unit's amount with its markers: a leading "~" and a trailing "+" dim,
+// the amount (with any "!") bold, and for a unit that is not dollars, the trailing " <unit>" word
+// (" Bobcoins") muted.
+func styleBandAmount(p string) string {
+	ink := styleBold
+	var b strings.Builder
+	for len(p) > 0 && (p[0] == '~' || p[0] == '!') {
+		if p[0] == '~' {
+			b.WriteString(styleDim.Render(inexactMarker))
+		} else {
+			b.WriteString(ink.Render(damagedMarker))
+		}
+		p = p[1:]
+	}
+	tail := ""
+	if body, ok := strings.CutSuffix(p, partialMarker); ok {
+		p, tail = body, styleDim.Render(partialMarker)
+	}
+	unit := ""
+	if i := strings.LastIndexByte(p, ' '); i >= 0 && !strings.Contains(p, "$") {
+		p, unit = p[:i], styleMuted.Render(p[i:])
+	}
+	return b.String() + ink.Render(p) + unit + tail
 }
 
 // bandWidth is what these cells render at on one line, skipping the dropped ones.
@@ -430,12 +485,19 @@ func bandAmount(r spanReading) (string, bool) {
 	if unit, ok := money.WindowUnit(r.Units); ok {
 		return money.Relabel(formatUSDTotal(r.USD), unit, 0), true
 	}
-	if r.ByUnit == nil {
+	return unitsAmount(r.Units, r.ByUnit)
+}
+
+// unitsAmount is a cost in several units, printed side by side and never added, dollars first:
+// "$6.20 + 0.03 Bobcoins". ok is false when byUnit is nil or misses one of units. The band and
+// the Agents pane cost cell share it.
+func unitsAmount(units []string, byUnit map[string]int64) (string, bool) {
+	if byUnit == nil {
 		return "", false
 	}
-	order := make([]string, 0, len(r.Units))
-	for _, u := range r.Units {
-		if _, ok := r.ByUnit[u]; !ok {
+	order := make([]string, 0, len(units))
+	for _, u := range units {
+		if _, ok := byUnit[u]; !ok {
 			return "", false
 		}
 		if money.IsDefault(u) {
@@ -446,7 +508,7 @@ func bandAmount(r spanReading) (string, bool) {
 	}
 	parts := make([]string, 0, len(order))
 	for _, u := range order {
-		parts = append(parts, money.Relabel(formatUSDTotalMicros(r.ByUnit[u]), u, 0))
+		parts = append(parts, money.Relabel(formatUSDTotalMicros(byUnit[u]), u, 0))
 	}
 	if len(parts) == 0 {
 		return "", false

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -971,5 +972,21 @@ func TestRenderColumnPicker_ShowsSort(t *testing.T) {
 	none := stripANSI(renderColumnPicker(sel, nil, 0, 160, 40, "", false))
 	if strings.Contains(none, sortGlyphDesc) || strings.Contains(none, sortGlyphAsc) {
 		t.Errorf("picker marks a sort when none is active: %q", none)
+	}
+}
+
+// `x` is the erase key, so the picker does not reuse it: only `space` toggles.
+func TestColumnPicker_XDoesNotToggle(t *testing.T) {
+	m := newTestEventsModel(t)
+	m.handleKey(keyRune('c'))
+	before := maps.Clone(m.eventColumns)
+	m.handleKey(keyRune('x'))
+	if !maps.Equal(before, m.eventColumns) || !m.colPicker {
+		t.Errorf("`x` changed the columns (%v -> %v) or closed the picker", before, m.eventColumns)
+	}
+	id := eventColumns[m.colCursor].id
+	m.handleKey(keyRune(' '))
+	if m.eventColumns[id] == before[id] {
+		t.Errorf("`space` did not toggle column %q", id)
 	}
 }

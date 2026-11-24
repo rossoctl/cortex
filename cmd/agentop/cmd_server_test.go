@@ -13,6 +13,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 	"github.com/rossoctl/cortex/core/plugins/inferencerouter/routerconfig"
 )
 
@@ -99,7 +100,7 @@ func serverEnvWithSessions(t *testing.T, statsAddr, sessionsAddr, router string)
 	t.Helper()
 	stubServerModels(t, testModels, anyModels)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testhome.Set(t, home)
 	src := fmt.Sprintf(`mode: proxy-sidecar
 stats:
   address: %s
@@ -173,8 +174,8 @@ func TestServer_HelpGoesToStdoutAndAWrongActionToStderr(t *testing.T) {
 	if code, out, _ := runServerCmd(t, "", "--help"); code != 0 || !strings.Contains(out, "agentop server add <name> <url>") {
 		t.Errorf("--help: exit %d, stdout:\n%s", code, out)
 	}
-	if code, _, errOut := runServerCmd(t, "", "rename"); code != 2 || !strings.Contains(errOut, `unknown action "rename"`) {
-		t.Errorf("rename: exit %d, stderr:\n%s", code, errOut)
+	if code, _, errOut := runServerCmd(t, "", "frobnicate"); code != 2 || !strings.Contains(errOut, `unknown action "frobnicate"`) {
+		t.Errorf("frobnicate: exit %d, stderr:\n%s", code, errOut)
 	}
 }
 

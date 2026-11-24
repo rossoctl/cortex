@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/rossoctl/cortex/core/clientstate"
 	"github.com/rossoctl/cortex/core/config"
@@ -162,6 +163,14 @@ func parseBridgeCAPEM(pemBytes []byte) *x509.Certificate {
 	return crt
 }
 
+// yamlSingleQuoted is s as a YAML single-quoted scalar. In single quotes a backslash is a plain
+// character and the only escape is a doubled single quote, so a Windows path such as
+// C:\Users\me\.cortex\ca reads back unchanged. In double quotes \U and \. are escape sequences,
+// and a fresh install's config did not load (#1520).
+func yamlSingleQuoted(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
 // builtinConfigYAML returns the built-in --local config with caDir interpolated: a
 // forward-only proxy with the TLS bridge on (auto-generated CA in caDir) and
 // the LLM / MCP / A2A parsers, so an agent's egress is decrypted and parsed.
@@ -213,7 +222,7 @@ stats:
   address: 127.0.0.1:47602
 tls_bridge:
   mode: enabled
-  ca_dir: "` + caDir + `"
+  ca_dir: ` + yamlSingleQuoted(caDir) + `
   generate_ca: true
   # passthrough_hosts is deliberately absent. Left unset, the bridge tunnels a
   # built-in list of developer-tooling hosts — GitHub, the Go module proxy, the

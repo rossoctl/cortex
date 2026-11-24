@@ -42,7 +42,7 @@ func TestSearch_InMessageDetail(t *testing.T) {
 		t.Errorf("the match is not on screen:\n%s", detailScreen(m))
 	}
 	press(m, tea.KeyEnter)
-	if st := stripANSI(statusRow(m.footerView())); !strings.Contains(st, "[/needle-r0 1/1]") {
+	if st := stripANSI(m.footerView()); !strings.Contains(st, "[/needle-r0 1/1]") {
 		t.Errorf("status row = %q, want [/needle-r0 1/1]", st)
 	}
 }

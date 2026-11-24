@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -186,7 +187,7 @@ func (m *model) resumeTimeline() tea.Cmd {
 }
 
 func timelineTick(gen uint64) tea.Cmd {
-	return tea.Tick(timelineRefresh, func(time.Time) tea.Msg { return timelineTickMsg{gen: gen} })
+	return tick(timelineRefresh, func(time.Time) tea.Msg { return timelineTickMsg{gen: gen} })
 }
 
 func (m *model) fetchTimeline() tea.Cmd {
@@ -358,7 +359,7 @@ const (
 
 // timelineCells is how many cells the chart gets at the current width.
 func (m *model) timelineCells() int {
-	return max(m.width-timelineLabelWidth-timelineGutterWidth, 10)
+	return max(m.innerWidth()-timelineLabelWidth-timelineGutterWidth, 10)
 }
 
 // timelineRange is the window's [from, to] and the layout's now. For a live session now is the
@@ -407,14 +408,13 @@ func (m *model) timelineLayoutNow() (tlLayout, bool) {
 	return t.layout, true
 }
 
-// The pane's fixed lines: tabs, axis, column heads, the separator, the closing rule, the
-// legend's lines and the cursor line. Each agent and host row takes two lines, its own and the
+// The pane's fixed lines: the header (window tabs, axis and column heads), the separator, the
+// closing rule, the legend's line and the cursor line. Each agent and host row takes two lines, its own and the
 // blank one that keeps a row's bars off the next row's.
 const (
-	timelineFixedLines = 8
-	// timelineLegendLines is how many lines legend draws. The tok/s note has a line of its own,
-	// so it is not cut at a width where the chart itself still fits.
-	timelineLegendLines = 2
+	timelineFixedLines = 5
+	// timelineLegendLines is how many lines legend draws.
+	timelineLegendLines = 1
 )
 
 // tlEmptyLines is what an empty side draws in place of its rows: a note and a blank line.
@@ -615,10 +615,18 @@ func (m *model) revealPendingSeq() bool {
 
 // timelineBody is the pane drawn and searched. Every line is clipped to the terminal: the
 // chart is sized to fit, but a header or cursor line naming a long command is not.
+//
+// An empty state (timelineEmptyState) is drawn in the middle of the body and is not searched:
+// the document has no lines then, so a search finds nothing.
 func (m *model) timelineBody() string {
+	if msg, before, key, after, ok := m.timelineEmptyState(); ok {
+		m.timelineDoc.setLines(nil, 0)
+		m.timelineDoc.render("") // only render resets the matches, so the chart's do not stay
+		return m.paneEmptyState(msg, before, key, after)
+	}
 	lines := strings.Split(strings.TrimRight(m.renderTimeline(), "\n"), "\n")
 	for i, l := range lines {
-		lines[i] = truncToWidth(l, max(m.width, 20))
+		lines[i] = truncToWidth(l, max(m.innerWidth(), 20))
 	}
 	m.timelineDoc.setLines(lines, 0)
 	return m.timelineDoc.render(m.searchQuery(paneTimeline))
@@ -694,48 +702,48 @@ func shareGlyph(s share) string {
 	return lipgloss.NewStyle().Foreground(tlStateColor[big]).Render(tlEighths[topE])
 }
 
-func (m *model) renderTimeline() string {
+// timelineEmptyState is the state the pane shows in place of the chart, when it has no chart to
+// draw. Each one is left with esc, which goes back to where the Timeline was opened from.
+func (m *model) timelineEmptyState() (msg, before, key, after string, ok bool) {
 	t := &m.timeline
-	var b strings.Builder
 	switch {
 	case t.err != nil && errors.Is(t.err, errTimelineUnsupported):
-		b.WriteString(styleWarn.Render("  This proxy does not serve /v1/sessions/{id}/timeline — upgrade cortex to see the timeline.") + "\n")
-		return b.String()
+		msg = "This proxy does not serve the timeline. Upgrade Cortex to see it."
 	case t.err != nil && t.tl == nil:
 		// Retried on its backoff, so a slow first read reads as loading, not as a dead end.
 		wait := ""
 		if left := t.retryAt.Sub(m.clock()); left > 0 {
 			wait = fmt.Sprintf(" in %ds", int(left.Round(time.Second).Seconds()))
 		}
-		b.WriteString(styleMuted.Render("  loading… the last try failed, retrying"+wait+": "+t.err.Error()) + "\n")
-		return b.String()
+		msg = "Loading… The last try failed. Retrying" + wait + ": " + t.err.Error()
 	case t.tl == nil && !m.sessionServed(t.session):
-		b.WriteString(styleMuted.Render("  The proxy no longer has this session, so it has no timeline.") + "\n")
-		return b.String()
+		msg = "The proxy no longer has this session, so it has no timeline."
 	case t.tl == nil:
-		b.WriteString(styleMuted.Render("  loading…") + "\n")
-		return b.String()
-	}
-	// The chart needs its fixed lines, any empty side's note and one row; below that, say so
-	// rather than run past the terminal.
-	lay, _ := m.timelineLayoutNow()
-	if m.bodyHeight < m.timelineFixed(lay)+1 {
-		b.WriteString(styleMuted.Render("  make the terminal taller to see the timeline"))
-		return b.String()
-	}
-	_, _, now, win := m.timelineRange()
-	var tabs []string
-	for _, i := range offeredWindows(t.sessionSpan(now)) {
-		l := timelineWindows[i].label
-		if i == win {
-			l = "[" + l + "]"
+		msg = "Loading…"
+	default:
+		// The chart needs its fixed lines, any empty side's note and one row; below that, say
+		// so rather than run past the terminal.
+		lay, _ := m.timelineLayoutNow()
+		if m.bodyHeight >= m.timelineFixed(lay)+1 {
+			return "", "", "", "", false
 		}
-		tabs = append(tabs, l)
+		msg = "Make the terminal taller to see the timeline."
 	}
-	fmt.Fprintf(&b, "%s  %s\n", styleTitle.Render("window "+strings.Join(tabs, " ")), styleMuted.Render(m.timelineStatus(lay)))
+	return msg, "Press ", "esc", " to go back.", true
+}
+
+func (m *model) renderTimeline() string {
+	t := &m.timeline
+	var b strings.Builder
+	// timelineBody draws these in the middle of the body; the message alone keeps this safe to
+	// call without a timeline.
+	if msg, _, _, _, ok := m.timelineEmptyState(); ok {
+		return styleMuted.Render(msg)
+	}
+	lay, _ := m.timelineLayoutNow()
+	_, _, now, win := m.timelineRange()
 	width := lay.axis.width()
-	b.WriteString(strings.Repeat(" ", timelineLabelWidth) + styleMuted.Render(axisLabels(lay)) + "\n")
-	b.WriteString(strings.Repeat(" ", timelineLabelWidth+width) + styleMuted.Render("   model  tools  tok/s") + "\n")
+	b.WriteString(m.timelineHeader(lay, offeredWindows(t.sessionSpan(now)), win) + "\n")
 
 	agentRows := m.timelineAgentRows(lay)
 	agentOff, hostOff := m.timelineOffsets(lay)
@@ -753,7 +761,7 @@ func (m *model) renderTimeline() string {
 			b.WriteString("\n")
 		}
 	}
-	b.WriteString(styleMuted.Render(strings.Repeat("╌", timelineLabelWidth+width+timelineGutterWidth)) + "\n")
+	b.WriteString(styleDim.Render(strings.Repeat("╌", timelineLabelWidth+width+timelineGutterWidth)) + "\n")
 	hostRows := m.timelineHostRows(lay, agentRows)
 	for i, r := range m.visibleHostRows(lay) {
 		b.WriteString(m.hostLine(r, lay) + "\n")
@@ -766,7 +774,7 @@ func (m *model) renderTimeline() string {
 	if len(lay.hosts) == 0 {
 		b.WriteString(styleMuted.Render("  no outbound requests in this window") + "\n\n")
 	}
-	b.WriteString(styleMuted.Render(strings.Repeat("─", timelineLabelWidth+width+timelineGutterWidth)) + "\n")
+	b.WriteString(styleDim.Render(strings.Repeat("─", timelineLabelWidth+width+timelineGutterWidth)) + "\n")
 	if m.bodyHeight >= timelineFixedLines+2*4 {
 		b.WriteString(m.legend() + "\n")
 	}
@@ -774,19 +782,32 @@ func (m *model) renderTimeline() string {
 	return b.String()
 }
 
+// legend is one line that fits m.innerWidth(): whole items drop from the right, never a wrap.
 func (m *model) legend() string {
-	sw := func(c lipgloss.AdaptiveColor, s string) string {
-		return lipgloss.NewStyle().Foreground(c).Render("█") + styleMuted.Render(" "+s+"  ")
+	sw := func(sep string, c lipgloss.AdaptiveColor, s string) [2]string {
+		return [2]string{sep + "█ " + s, styleMuted.Render(sep) + lipgloss.NewStyle().Foreground(c).Render("█") + styleMuted.Render(" "+s)}
 	}
-	return sw(colorTLTool, "tools") + sw(colorTLModel, "model") + sw(colorTLRetry, "retrying") +
-		sw(colorTLSubs, "waiting on subagents") + sw(colorTLUser, "waiting on you") +
-		styleMuted.Render("┆ time cut from the axis, in its colour   ▁…█ requests in flight") + "\n" +
-		styleMuted.Render("  tok/s output per second of model time, last 60 s")
+	note := func(s string) [2]string { return [2]string{s, styleMuted.Render(s)} }
+	items := [][2]string{
+		sw("", colorTLTool, "tools"), sw("  ", colorTLModel, "model"), sw("  ", colorTLRetry, "retrying"),
+		sw("  ", colorTLSubs, "waiting on subagents"), sw("  ", colorTLUser, "waiting on you"),
+		note("  ┆ time cut from the axis"), note("   ▁…█ requests in flight"),
+	}
+	var plain, styled strings.Builder
+	for _, it := range items {
+		if lipgloss.Width(plain.String()+it[0]) > m.innerWidth() {
+			break
+		}
+		plain.WriteString(it[0])
+		styled.WriteString(it[1])
+	}
+	return styled.String()
 }
 
-func (m *model) timelineStatus(lay tlLayout) string {
+// timelineStatus is the pane's notes, joined, or "" when there are none.
+func (m *model) timelineStatus() string {
 	t := &m.timeline
-	parts := []string{fmt.Sprintf("%s → %s", lay.from.Local().Format("01-02 15:04"), lay.to.Local().Format("01-02 15:04"))}
+	var parts []string
 	if t.tl.Truncated {
 		parts = append(parts, "oldest events not shown")
 	}
@@ -796,50 +817,142 @@ func (m *model) timelineStatus(lay tlLayout) string {
 	return strings.Join(parts, " · ")
 }
 
-// axisLabels is the time axis: each collapsed gap's length centred on its marker, then a time
-// every 16 cells where it does not crowd one.
-func axisLabels(lay tlLayout) string {
-	w := lay.axis.width()
-	line := []rune(strings.Repeat(" ", w+16))
-	taken := make([]bool, len(line))
-	claim := func(c int, s string) {
-		rs := []rune(s)
-		if c < 0 || c+len(rs) > len(line) {
-			return
+// timelineHeader is the pane's one header line: the window selector in the label column, the
+// time axis, and the gutter's column heads.
+func (m *model) timelineHeader(lay tlLayout, offered []int, win int) string {
+	var b strings.Builder
+	b.WriteString(styleMuted.Render("window "))
+	for _, i := range offered {
+		l := timelineWindows[i].label
+		switch {
+		case i != win:
+			b.WriteString(styleMuted.Render(" " + l + " "))
+		case lipgloss.ColorProfile() == termenv.Ascii:
+			b.WriteString("[" + l + "]")
+		default:
+			b.WriteString(styleSeg.Render(" " + l + " "))
 		}
-		for i := max(c-1, 0); i <= c+len(rs) && i < len(taken); i++ {
+	}
+	return padRight(b.String(), timelineLabelWidth) + renderAxisLine(axisLabels(lay), lay.axis.width()) +
+		styleMuted.Render(padRight("   model  tools  tok/s", timelineGutterWidth))
+}
+
+// tlAxisLabel is one label on the time axis. cell is the first column of text; date is the byte
+// length of the "MM-DD " part at the start of text, after any leading tick; bold marks the two
+// ends.
+type tlAxisLabel struct {
+	cell int
+	text string
+	date int
+	bold bool
+}
+
+// axisLabels places the time axis's labels: the dated start and finish, each collapsed gap's
+// length centred on its marker, then a time every 16 cells, dated on a new day. A label that
+// would touch a placed one is dropped, never cut.
+func axisLabels(lay tlLayout) []tlAxisLabel {
+	w := lay.axis.width()
+	taken := make([]bool, w)
+	var out []tlAxisLabel
+	claim := func(l tlAxisLabel) bool {
+		n := utf8.RuneCountInString(l.text)
+		if l.cell < 0 || l.cell+n > w {
+			return false
+		}
+		for i := max(l.cell-1, 0); i <= l.cell+n && i < w; i++ {
 			if taken[i] {
-				return
+				return false
 			}
 		}
-		for i, r := range rs {
-			line[c+i], taken[c+i] = r, true
+		for i := l.cell; i < l.cell+n; i++ {
+			taken[i] = true
 		}
+		out = append(out, l)
+		return true
+	}
+	if w == 0 {
+		return nil
+	}
+	format := "15:04"
+	if lay.to.Sub(lay.from) <= 10*time.Minute {
+		format = "15:04:05"
+	}
+	start, finish := lay.axis.cells[0].from.Local(), lay.axis.cells[w-1].to.Local()
+	ends := func(dated bool) (tlAxisLabel, tlAxisLabel) {
+		f, d := format, 0
+		if dated {
+			f, d = "01-02 "+format, len("01-02 ")
+		}
+		s, e := start.Format(f), finish.Format(f)
+		return tlAxisLabel{0, "╷" + s, d, true}, tlAxisLabel{w - utf8.RuneCountInString(e) - 1, e + "╷", d, true}
+	}
+	fits := func(s, e tlAxisLabel) bool { return utf8.RuneCountInString(s.text)+1 <= e.cell }
+	s, e := ends(true)
+	if !fits(s, e) {
+		s, e = ends(false)
+	}
+	if !claim(s) {
+		return nil
+	}
+	if fits(s, e) {
+		claim(e)
 	}
 	for c, cell := range lay.axis.cells {
 		if cell.marker {
 			label := tlDuration(cell.to.Sub(cell.from))
-			claim(c-len(label)/2, label)
+			claim(tlAxisLabel{cell: c - len(label)/2, text: label})
 		}
 	}
 	// A squeezed live wait is labelled with its length, like a gap, since its cells are not to
-	// scale with the rest.
+	// scale with the rest. The finish covers those cells, so the label goes just before it.
 	if n := lay.axis.tail; n > 0 {
 		label := "+" + tlDuration(lay.axis.cells[w-1].to.Sub(lay.axis.cells[w-n].from))
-		claim(w-n, label)
+		claim(tlAxisLabel{cell: min(w-n, e.cell-1-utf8.RuneCountInString(label)), text: label})
 	}
-	format := "15:04"
-	if span := lay.to.Sub(lay.from); span <= 10*time.Minute {
-		format = "15:04:05"
-	} else if span > 36*time.Hour {
-		format = "01-02 15:04"
-	}
-	for c := 0; c < w-5; c += 16 {
-		if !lay.axis.cells[c].gap {
-			claim(c, lay.axis.cells[c].from.Local().Format(format))
+	day := start.Format("01-02")
+	for c := 16; c < w; c += 16 {
+		if lay.axis.cells[c].gap {
+			continue
+		}
+		t := lay.axis.cells[c].from.Local()
+		l := tlAxisLabel{cell: c, text: "╷" + t.Format(format)}
+		if t.Format("01-02") != day {
+			l.text, l.date = "╷"+t.Format("01-02 "+format), len("01-02 ")
+		}
+		if claim(l) {
+			day = t.Format("01-02")
 		}
 	}
-	return strings.TrimRight(string(line[:min(len(line), w+8)]), " ")
+	return out
+}
+
+// renderAxisLine draws labels on a line exactly w columns wide: ticks dim, dates muted, the
+// ends' times bold and the other times muted.
+func renderAxisLine(labels []tlAxisLabel, w int) string {
+	labels = slices.SortedFunc(slices.Values(labels), func(a, b tlAxisLabel) int { return a.cell - b.cell })
+	var b strings.Builder
+	col := 0
+	for _, l := range labels {
+		b.WriteString(strings.Repeat(" ", l.cell-col))
+		col = l.cell + utf8.RuneCountInString(l.text)
+		s, tick := l.text, styleDim.Render("╷")
+		if r, ok := strings.CutPrefix(s, "╷"); ok {
+			b.WriteString(tick)
+			s = r
+		}
+		r, tail := strings.CutSuffix(s, "╷")
+		b.WriteString(styleMuted.Render(r[:l.date]))
+		if l.bold {
+			b.WriteString(styleBold.Render(r[l.date:]))
+		} else {
+			b.WriteString(styleMuted.Render(r[l.date:]))
+		}
+		if tail {
+			b.WriteString(tick)
+		}
+	}
+	b.WriteString(strings.Repeat(" ", max(w-col, 0)))
+	return b.String()
 }
 
 // timelineLabelHarvestEvery is the shortest time between two harvests that the timeline pane
@@ -902,7 +1015,7 @@ func (m *model) agentLine(r tlAgentRow, lay tlLayout) string {
 		}
 		b.WriteString(m.cursorAt(c, g))
 	}
-	fmt.Fprintf(&b, "%s%s%s", styleMuted.Render("│"),
+	fmt.Fprintf(&b, "%s%s%s", styleDim.Render("│"),
 		lipgloss.NewStyle().Foreground(colorTLModel).Render(fmt.Sprintf("%6s", tlDuration(r.modelTime))),
 		lipgloss.NewStyle().Foreground(colorTLTool).Render(fmt.Sprintf("%7s", tlDuration(r.toolTime))))
 	rate, st := "", styleMuted
@@ -937,7 +1050,7 @@ func (m *model) hostLine(r tlHostRow, lay tlLayout) string {
 		}
 		b.WriteString(m.cursorAt(c, g))
 	}
-	b.WriteString(styleMuted.Render("│" + fmt.Sprintf("%15d req", r.requests)))
+	b.WriteString(styleDim.Render("│") + styleMuted.Render(fmt.Sprintf("%15d req", r.requests)))
 	return b.String()
 }
 
@@ -959,10 +1072,18 @@ func (m *model) cursorAt(c int, s string) string {
 func (m *model) cursorStrip(lay tlLayout) string {
 	c := m.timeline.cursor
 	if c < 0 || c >= lay.axis.width() {
-		return styleMuted.Render("▸ [←→] pick a moment: lists the tools running then, with their durations and commands")
+		// The row stays, so the chart does not move when a moment is picked; until then it
+		// carries the pane's notes.
+		if st := m.timelineStatus(); st != "" {
+			return styleMuted.Render(truncToWidth(st, max(m.innerWidth(), 1)))
+		}
+		return ""
 	}
 	cell := lay.axis.cells[c]
 	head := fmt.Sprintf("▸ %s  ", cell.from.Local().Format("15:04:05"))
+	if m.timeline.err != nil {
+		head += "refresh failed · "
+	}
 	started, running := m.cellTools(lay, cell)
 	var parts []string
 	for i, x := range append(started, running...) {
@@ -1004,7 +1125,7 @@ func (m *model) cursorStrip(lay tlLayout) string {
 	// Whole entries only: a duration cut in half reads as a different number. Past what fits,
 	// the rest is counted.
 	const hint = "  [enter] events"
-	budget := max(m.width-1-lipgloss.Width(hint), 20)
+	budget := max(m.innerWidth()-1-lipgloss.Width(hint), 20)
 	line := head + parts[0]
 	if lipgloss.Width(line) > budget {
 		line = truncToWidth(line, budget-1) + "…"

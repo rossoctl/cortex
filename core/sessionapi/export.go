@@ -35,6 +35,17 @@ import (
 // values are a caller bug, and the first one looking valid must not hide the second.
 // Absent parameters carry everything.
 //
+// `include=toolCalls` ADDS the paired tool-call records (sessionexport's toolCall kind),
+// and is the only parameter that changes what KINDS of record the stream carries. Opt-in
+// per item rather than one Tier-2 switch, which would opt a consumer into items it never
+// asked for (#1810 R49). Without it this endpoint's output is BYTE-IDENTICAL to the one
+// that shipped before those records existed — which is why the event record's `kind` is
+// scoped to the opted-in stream too. An unrecognised include VALUE is a 400 rather than a
+// silent ignore: `?include=toolcalls` is a typo a caller wants told about, and answering it
+// with the plain stream looks like the feature is broken. A repeated include is accepted
+// (each value is a separate item), and an empty one reads as absent, as an empty session
+// does.
+//
 // A WALK THAT FAILS PAST ITS FIRST RECORD RESETS THE CONNECTION. The status line is long
 // gone by then, so the client cannot be told in the response — and it must not be left
 // believing the export is whole: returning normally would write the terminating chunk and
@@ -94,10 +105,46 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 			f.Since = s.clock().Add(-d)
 		}
 	}
+	// A CLOSED VOCABULARY, matched by name. Refusing an unknown value is what keeps a typo
+	// from reading as "the feature did nothing"; see this function's note.
+	withToolCalls := false
+	for _, raw := range q["include"] {
+		switch raw {
+		case "":
+			// A trailing separator, not a request for an item named "".
+		case "toolCalls":
+			withToolCalls = true
+		default:
+			jsonError(w, `{"error":"include must be toolCalls"}`, http.StatusBadRequest)
+			return
+		}
+	}
+	if withToolCalls {
+		// The key labels hashed tool names. A FAILURE HERE IS A 400-CLASS REFUSAL, NOT A
+		// DEGRADED EXPORT: without a key an MCP name has no exportable label at all (a keyless
+		// ToolNameKey yields an empty `tool`), so answering 200 would hand back a stream whose
+		// tool column is silently blank for exactly the traffic the opt-in was asked for. It is
+		// a 500 rather than a 400 because the cause is this install's state directory, not the
+		// caller's request.
+		key, err := sessionexport.LoadToolNameKey(s.archive.Root())
+		if err != nil {
+			slog.Warn("sessionapi: export tool-name key unavailable", "error", err)
+			jsonError(w, `{"error":"tool-call export unavailable: cannot load the tool-name key"}`,
+				http.StatusInternalServerError)
+			return
+		}
+		f.ToolNameKey = key
+	}
 
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	cw := &flushWriter{ResponseWriter: w}
-	if _, err := sessionexport.Walk(s.archive, sessionexport.NewWriter(cw), f); err != nil {
+	// The constructor carries BOTH halves of the opt-in — toolCall records and the event
+	// record's `kind` — so they cannot drift apart. See sessionexport.NewToolCallWriter.
+	ew := sessionexport.NewWriter(cw)
+	if withToolCalls {
+		ew = sessionexport.NewToolCallWriter(cw)
+	}
+	if _, err := sessionexport.Walk(s.archive, ew, f); err != nil {
 		var unknown *sessionexport.UnknownSessionsError
 		if errors.As(err, &unknown) && !cw.wrote {
 			// json.Marshal rather than %q: %q is Go quoting, and a session id with a

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 )
 
 // The tri-state's words are what the table prints, so they are pinned here rather
@@ -575,7 +577,7 @@ func TestConfigureStatusTable_OneAgentsMissingConfigDoesNotBreakTheTable(t *test
 	// findOpenCode consults PATH before ~/.opencode/bin, so an empty PATH with an
 	// empty HOME is what makes the opencode row's "not installed" arm reachable here.
 	t.Setenv("PATH", "")
-	t.Setenv("HOME", home)
+	testhome.Set(t, home)
 	// CODEX_HOME would otherwise point codex at a real file on the machine running
 	// the test, which is the one path defaultCodexEnvPath honours over HOME.
 	t.Setenv(codexHomeEnv, filepath.Join(home, ".codex"))
@@ -635,7 +637,7 @@ func TestConfigureStatusTable_OneAgentsMissingConfigDoesNotBreakTheTable(t *test
 func TestConfigureStatusTable_CoversEveryAgentInUsage(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("PATH", "")
-	t.Setenv("HOME", home)
+	testhome.Set(t, home)
 	t.Setenv(codexHomeEnv, filepath.Join(home, ".codex"))
 
 	covered := map[string]bool{}
@@ -682,7 +684,7 @@ func TestConfigureStatusTable_CoversEveryAgentInUsage(t *testing.T) {
 func TestRunConfigure_StatusDispatch(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("PATH", "")
-	t.Setenv("HOME", home)
+	testhome.Set(t, home)
 	t.Setenv(codexHomeEnv, filepath.Join(home, ".codex"))
 
 	t.Run("prints the table", func(t *testing.T) {

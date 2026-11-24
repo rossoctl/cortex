@@ -14,10 +14,10 @@
 # version check to the exact commit that triggered this run rather than
 # whatever main-latest happens to point at by the time the check executes.
 #
-# Deliberately NOT covered here: driving a real request through the proxy and
-# asserting a parsed event with a non-zero token count (#957's third bullet).
-# That needs the unattended/headless capture path from #955, which does not
-# exist yet — tracked there, not attempted here.
+# It also sends one model request through the upgraded Cortex, to a fake model API,
+# and checks the session recorded its tokens (smoke_inference_check.sh, #956 3d).
+# Not covered: a real provider, which needs a key and should not gate a release,
+# and the unattended capture path #956 names, which #955 has not built yet.
 set -eu
 
 TAG="${1:?usage: release_smoke_test_linux.sh <tag-under-test> [sha]}"
@@ -323,6 +323,9 @@ if [ -n "${OLDER_TAG}" ]; then
 	assert_running_version_is "${expected_version}"
 fi
 
+log "A request through Cortex: ${TAG}"
+sh "$(dirname "$0")/smoke_inference_check.sh"
+
 log "No-op re-run: ${TAG}"
 # Redirected, not piped through tee: install_cortex now returns on failure
 # instead of exiting, so its own stderr lands in reinstall_out for the
@@ -349,7 +352,14 @@ log "Uninstall"
 # afterward.
 cfg_before="$(cksum <"${CFG}")"
 uninstall_out="$(mktemp "${TMP_DIR}/uninstall.XXXXXX")"
-"${AGENTOP}" service uninstall --yes | tee "${uninstall_out}"
+# Redirected, not piped through tee: under set -e a pipeline's status is tee's,
+# so a failing uninstall would go on to the checks below instead of failing here.
+if ! "${AGENTOP}" service uninstall --yes >"${uninstall_out}" 2>&1; then
+	echo "FAIL: agentop service uninstall exited non-zero" >&2
+	cat "${uninstall_out}" >&2
+	exit 1
+fi
+cat "${uninstall_out}"
 assert_contains "${uninstall_out}" "Removed" "uninstall did not report success"
 if [ -f "${UNIT}" ]; then
 	echo "FAIL: unit file still present after uninstall: ${UNIT}" >&2

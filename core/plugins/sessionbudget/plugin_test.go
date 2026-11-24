@@ -666,7 +666,7 @@ func newPausePlugin(t *testing.T, maxCalls int64, webhookURL, timeoutAction stri
 		"max_calls": %d,
 		"on_exceed": "pause",
 		"pause_webhook": %q,
-		"pause_timeout": "200ms",
+		"pause_timeout": "1h",
 		"pause_timeout_action": %q,
 		"refresh_interval": "100ms"
 	}`, maxCalls, webhookURL, timeoutAction)
@@ -722,6 +722,9 @@ func TestOnRequest_PauseWebhookFailureFallback(t *testing.T) {
 			defer func() { close(done); srv.Close() }()
 
 			p := newPausePlugin(t, 3, srv.URL, tt.action)
+			if tt.handler == nil {
+				p.pauseTimeout = time.Nanosecond // the hanging webhook times out at once
+			}
 			p.mu.Lock()
 			p.cache["sess-1"] = &counters{tokens: 0, calls: 3, startedAt: time.Now()}
 			p.mu.Unlock()
@@ -761,7 +764,7 @@ func TestRefreshCache_PreservesLastApprovedAt(t *testing.T) {
 		"max_calls": 3,
 		"on_exceed": "pause",
 		"pause_webhook": %q,
-		"pause_timeout": "2s",
+		"pause_timeout": "1h",
 		"pause_timeout_action": "deny",
 		"pause_grace_period": "10m",
 		"refresh_interval": "100ms"
@@ -820,7 +823,7 @@ func TestOnRequest_PauseGraceWindow(t *testing.T) {
 		"max_calls": 3,
 		"on_exceed": "pause",
 		"pause_webhook": %q,
-		"pause_timeout": "2s",
+		"pause_timeout": "1h",
 		"pause_timeout_action": "deny",
 		"pause_grace_period": "10m",
 		"refresh_interval": "100ms"
@@ -869,7 +872,7 @@ func TestOnRequest_PauseGraceExpired(t *testing.T) {
 		"max_calls": 3,
 		"on_exceed": "pause",
 		"pause_webhook": %q,
-		"pause_timeout": "2s",
+		"pause_timeout": "1h",
 		"pause_timeout_action": "deny",
 		"pause_grace_period": "10m",
 		"refresh_interval": "100ms"
@@ -1137,7 +1140,7 @@ func TestShutdown_DoubleCloseSafe(t *testing.T) {
 	}
 	rec := &closeRecordingStore{Store: newMemStore()}
 	p.store = rec
-	go p.refreshLoop(30 * time.Millisecond)
+	go p.refreshLoop(time.Hour)
 
 	if err := p.Shutdown(context.Background()); err != nil {
 		t.Fatalf("first Shutdown: %v", err)

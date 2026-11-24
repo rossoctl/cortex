@@ -388,6 +388,10 @@ func buildTimelineLayout(tl *timeline.Timeline, from, to time.Time, cells int, f
 // askUserTool's span is the user's time: it waits on their answer.
 const askUserTool = "AskUserQuestion"
 
+// syncSpawnTool is Bob's subagent call. Unlike Claude Code's Agent, it returns only when its
+// subagents do, so its span is the caller waiting on them.
+const syncSpawnTool = "spawn_subagent"
+
 // tlEndOr is a span's end, or now for one still in flight.
 func tlEndOr(end *time.Time, now time.Time) time.Time {
 	if end == nil {
@@ -582,7 +586,7 @@ func tlAgentRows(tl *timeline.Timeline, ax tlAxis, from, to, fetched, now time.T
 		}
 		life[id] = [2]time.Time{tlMinTime(l[0], s), tlMaxTime(l[1], e)}
 	}
-	model, tool, asking := map[string][][2]time.Time{}, map[string][][2]time.Time{}, map[string][][2]time.Time{}
+	model, tool, asking, spawning := map[string][][2]time.Time{}, map[string][][2]time.Time{}, map[string][][2]time.Time{}, map[string][][2]time.Time{}
 	for _, t := range tl.Turns {
 		e := tlEndOr(t.End, now)
 		note(t.Agent, t.Start, e)
@@ -598,6 +602,8 @@ func tlAgentRows(tl *timeline.Timeline, ax tlAxis, from, to, fetched, now time.T
 		case "Agent", "Task":
 		case askUserTool:
 			asking[t.Agent] = append(asking[t.Agent], [2]time.Time{t.Start, e})
+		case syncSpawnTool:
+			spawning[t.Agent] = append(spawning[t.Agent], [2]time.Time{t.Start, e})
 		default:
 			tool[t.Agent] = append(tool[t.Agent], [2]time.Time{t.Start, e})
 		}
@@ -630,6 +636,7 @@ func tlAgentRows(tl *timeline.Timeline, ax tlAxis, from, to, fetched, now time.T
 		jobs := newIvs(js)
 		retry, subs, user := waits(tl, a.ID, children[a.ID], life, now)
 		user = newIvs(append(user, asking[a.ID]...))
+		subs = newIvs(append(subs, spawning[a.ID]...))
 		row := tlAgentRow{agent: a, depth: depth, cells: make([]share, ax.width()), alive: make([]bool, ax.width()),
 			modelTime: m.cover(from, to), toolTime: t.cover(from, to)}
 		// All the agent's turns, not only the window's: the rate is of its newest work.

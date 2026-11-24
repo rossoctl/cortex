@@ -26,14 +26,16 @@ func freeLocalPort() (int, error) {
 	return l.Addr().(*net.TCPAddr).Port, nil
 }
 
+// dialAccept is waitForAccept's dial. A var so a test can see each attempt.
+var dialAccept = (&net.Dialer{Timeout: 250 * time.Millisecond}).DialContext
+
 // waitForAccept blocks until 127.0.0.1:port accepts a TCP connection or
 // the context is cancelled. Used to detect that `kubectl port-forward`
 // has finished setting up its local listener.
 func waitForAccept(ctx context.Context, port int) error {
 	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
-	dialer := net.Dialer{Timeout: 250 * time.Millisecond}
 	for {
-		conn, err := dialer.DialContext(ctx, "tcp", addr)
+		conn, err := dialAccept(ctx, "tcp", addr)
 		if err == nil {
 			conn.Close()
 			return nil

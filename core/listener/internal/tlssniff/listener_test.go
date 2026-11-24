@@ -144,8 +144,10 @@ func TestStrict_RejectsPlain(t *testing.T) {
 	sniff := tlssniff.New(rawListener, cfg, tlssniff.ModeStrict)
 
 	var rejectedCount atomic.Uint64
+	rejected := make(chan struct{}, 1)
 	sniff.SetOnPlainRejected(func(_ net.Conn) {
 		rejectedCount.Add(1)
+		rejected <- struct{}{}
 	})
 
 	// Run the http.Server in the background — it will keep calling
@@ -168,7 +170,6 @@ func TestStrict_RejectsPlain(t *testing.T) {
 	}
 
 	// Read should hit EOF (server closed before responding).
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	buf := make([]byte, 64)
 	n, err := conn.Read(buf)
 	if n != 0 || (err != io.EOF && !isClosedConnErr(err)) {
@@ -176,13 +177,11 @@ func TestStrict_RejectsPlain(t *testing.T) {
 	}
 	conn.Close()
 
-	// Give the listener a moment to record the rejection.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if rejectedCount.Load() == 1 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
+	// The callback runs before the conn is closed, so it has fired by now.
+	select {
+	case <-rejected:
+	default:
+		t.Fatal("rejection callback had not fired when the conn closed")
 	}
 	if got := rejectedCount.Load(); got != 1 {
 		t.Errorf("rejection callback fired %d times, want 1", got)
@@ -193,12 +192,9 @@ func TestStrict_RejectsPlain(t *testing.T) {
 }
 
 // TestPeekTimeoutDoesNotHang — a client that connects but sends
-// nothing must NOT hold a server goroutine indefinitely. The 5s
-// peekTimeout drops the connection.
+// nothing must NOT hold a server goroutine indefinitely. The peek
+// timeout drops the connection; here it expires at once.
 func TestPeekTimeoutDoesNotHang(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping 5s timeout test under -short")
-	}
 	cfg := selfSignedTLSConfig(t)
 	rawListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -206,6 +202,7 @@ func TestPeekTimeoutDoesNotHang(t *testing.T) {
 	}
 	defer rawListener.Close()
 	sniff := tlssniff.New(rawListener, cfg, tlssniff.ModePermissive)
+	tlssniff.SetPeekTimeout(sniff, time.Nanosecond)
 
 	srvDone := make(chan struct{})
 	go func() {
@@ -221,9 +218,8 @@ func TestPeekTimeoutDoesNotHang(t *testing.T) {
 	}
 	defer conn.Close()
 
-	// The listener should drop us within ~peekTimeout. Read with a
-	// generous deadline; we expect EOF / closed.
-	conn.SetReadDeadline(time.Now().Add(7 * time.Second))
+	// The listener drops us once the peek timeout expires; we expect
+	// EOF / closed.
 	buf := make([]byte, 1)
 	_, err = conn.Read(buf)
 	if err == nil {
@@ -255,13 +251,8 @@ func TestClose(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	select {
-	case err := <-acceptDone:
-		if err == nil {
-			t.Error("Accept returned nil error after Close")
-		}
-	case <-time.After(2 * time.Second):
-		t.Error("Accept didn't return after Close")
+	if err := <-acceptDone; err == nil {
+		t.Error("Accept returned nil error after Close")
 	}
 }
 

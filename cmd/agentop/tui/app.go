@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"os"
@@ -38,7 +39,6 @@ const (
 	paneDetail
 	panePipeline
 	panePluginDetail
-	paneCatalog
 	paneUsage
 	// paneAgents shows what each CODING AGENT has spent, and picks which one the views are
 	// scoped to; see agentScope. Not to be confused with paneNamespaces,
@@ -83,19 +83,19 @@ type connStateInfo struct {
 // confirmation) stays in the footer.
 const flashDuration = 3 * time.Second
 
-// defaultLocalEndpoint is where `[l]` connects when nothing better is known:
+// defaultLocalEndpoint is where `[L]` connects when nothing better is known:
 // the session API's in-cluster default port, reached through an existing
 // `kubectl port-forward`. Useful when agentop runs inside the mesh, or when the
 // cluster's pod list isn't visible to their kubeconfig but a tunnel is.
 //
 // A local install listens somewhere else entirely (47601 by default), so
 // RunOptions.LocalEndpoint overrides this with the address read from the
-// machine's own Cortex config. Hardcoding 9094 sent `[l]` to the wrong port on
+// machine's own Cortex config. Hardcoding 9094 sent `[L]` to the wrong port on
 // every laptop.
 const defaultLocalEndpoint = "http://localhost:9094"
 
 // localEndpointOr returns the resolved local endpoint, falling back to the
-// in-cluster default. One accessor so `[l]`, the footer and the help overlay
+// in-cluster default. One accessor so `[L]`, the footer and the help overlay
 // cannot disagree about where the key goes.
 func (m *model) localEndpointOr() string {
 	if m.localEndpoint != "" {
@@ -116,7 +116,7 @@ func (m *model) localEndpointOr() string {
 // Local wins when the endpoint on screen IS the local Cortex. Deliberately a
 // question about the connection rather than about how agentop was started, so
 // `--endpoint http://127.0.0.1:47601` aimed at your own proxy edits it just
-// like a bare `agentop` does, and `[l]` gains the same ability mid-session.
+// like a bare `agentop` does, and `[L]` gains the same ability mid-session.
 // Compared against localEndpoint rather than localEndpointOr(): the fallback
 // is the in-cluster 9094, and matching that would claim a hand-run
 // port-forward to a POD is this machine's config file.
@@ -176,7 +176,7 @@ func isLoopbackHost(h string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// localProbeTimeout bounds the pre-connect reachability check for `[l]`.
+// localProbeTimeout bounds the pre-connect reachability check for `[L]`.
 // Without it, a dead localEndpoint would leave the operator in an empty
 // session view wondering why nothing streams; with it they get a footer
 // error and stay in the picker.
@@ -386,7 +386,7 @@ type model struct {
 
 	endpoint string
 	client   *apiclient.Client
-	// localEndpoint is what `[l]` connects to and what the footer and help
+	// localEndpoint is what `[L]` connects to and what the footer and help
 	// overlay name. Resolved from the local Cortex config when there is one.
 	localEndpoint string
 
@@ -485,6 +485,8 @@ type model struct {
 	serviceInstall bool
 	// updateNote is the update notice after the build on the title bar.
 	updateNote string
+	// updateInk is the color of updateNote.
+	updateInk lipgloss.Style
 	// lastHarvest is when the most recent harvest was STARTED. Read by TWO callers: the sessions
 	// pane's backoff gate, which asks whether untitledBackoff has elapsed since then, and the
 	// timeline pane's gate for unlabeled subagents (timelineLabelHarvestEvery). The picker
@@ -649,16 +651,6 @@ type model struct {
 	detailSearch    *detailSearch
 	detailSearchGen uint64
 	paused          bool
-	// hideInactive toggles whether passthrough / skip-only messages are
-	// hidden from the events table. False (default) shows every message —
-	// the operator asked to see all network traffic, processed or not.
-	// Toggle with `s` to focus on plugin activity (deny/modify/allow/
-	// observe). hiddenInactive is the count from the most recent
-	// rebuildEventsTable, surfaced in the footer so a filtered timeline
-	// doesn't read as data loss.
-	hideInactive   bool
-	hiddenInactive int
-
 	// olderNotFetched is how many events a session holds that its snapshot did not
 	// carry, reported by the server, keyed by session id.
 	//
@@ -666,9 +658,7 @@ type model struct {
 	// whichever session was selected when the fetch started. A single field let a late
 	// snapshot for an abandoned session describe the one on screen, and showed the
 	// previous session's count in the window between selecting a session and its
-	// snapshot arriving. Beside hiddenInactive in spirit — both answer "is this the
-	// whole timeline?" — but that one is a filter the operator chose and this is a
-	// bound they did not.
+	// snapshot arriving.
 	olderNotFetched map[string]int
 
 	// paging holds the backward-paging state of any session the operator has walked off
@@ -714,9 +704,13 @@ type model struct {
 	// cursor's row INDEX, and rather than indexing m.sessions because the rows are scoped and
 	// interleaved with cached-only entries, so position does not map back.
 	sessionRowIDs []string
+
+	// titleScroll scrolls the selected row's TITLE cell; see sessions_title_scroll.go.
+	titleScroll titleScroll
+	// noTitleScroll keeps every TITLE cell static. See WithoutTitleScroll.
+	noTitleScroll bool
 	eventsTbl     table.Model
 	pipelineTbl   table.Model
-	catalogTbl    table.Model
 	detailVp      viewport.Model
 	// detailDoc is detailVp's text, searched — see searchdoc.go. Shared by message detail
 	// and plugin detail, as the viewport is.
@@ -876,6 +870,9 @@ type model struct {
 	agentProjectsErr   error
 	agentsCursorWant   *agentRowDesc
 	agentsCursorWantAt int
+	// agentsSplits is the cost per unit of each row in more than one unit, for one window at a
+	// time (see agentsUnitSplitLoadedMsg). Kept off agentRow, which every poll replaces.
+	agentsSplits map[agentsSplitKey]map[string]int64
 	// agentsFetchedAt is when the last per-agent fetch was issued, so the open pane polls.
 	agentsFetchedAt time.Time
 	// agentsWindowStep is how far `w` has moved the agents pane's window past today; see
@@ -911,7 +908,7 @@ type model struct {
 	// or quit.
 	activePF cluster.PortForward
 
-	// localDirect is true when the session view was entered via `[l]`
+	// localDirect is true when the session view was entered via `[L]`
 	// (direct connection to localEndpoint) rather than by picking a pod.
 	// There is no pod to go back to, so Esc returns to the Namespaces
 	// pane instead of Pods.
@@ -983,6 +980,12 @@ func WithClock(fn func() time.Time) Option {
 	return func(m *model) { m.now = fn }
 }
 
+// WithoutTitleScroll keeps the selected row's TITLE cell static. No production caller: the
+// README demo needs the same frame on each run, and its pump waits for the ticks to stop.
+func WithoutTitleScroll() Option {
+	return func(m *model) { m.noTitleScroll = true }
+}
+
 // clock is the instant event timestamps are measured against. See model.now.
 func (m *model) clock() time.Time {
 	if m.now != nil {
@@ -1024,7 +1027,6 @@ func New(ctx context.Context, c *apiclient.Client, opts ...Option) tea.Model {
 		sessionsTbl:  newSessionsTable(),
 		eventsTbl:    newEventsTable(),
 		pipelineTbl:  newPipelineTable(),
-		catalogTbl:   newCatalogTable(),
 		agentsTbl:    newAgentsTable(),
 		previousPane: paneNone,
 		// paneNone, not the zero value: paneNamespaces is 0, and a return pane
@@ -1070,7 +1072,7 @@ func (m *model) initSessionView() tea.Cmd {
 // ctx / cancel is derived from m.parentCtx so the next session-view
 // entry has a usable context.
 //
-// When the session was entered via `[l]` there is no pod to return to,
+// When the session was entered via `[L]` there is no pod to return to,
 // so the destination is the Namespaces pane instead.
 func (m *model) backToPodsPane() {
 	// Cancel current ctx — stops the SSE goroutine and any in-flight
@@ -1136,7 +1138,6 @@ func (m *model) backToPodsPane() {
 	// different framework instance with potentially different plugin
 	// versions registered. The next `P` press refetches.
 	m.catalog = nil
-	m.catalogTbl.SetRows(nil)
 	// pickerHarvested and pickerShowing are deliberately NOT reset here. They are edge-derived: the
 	// next refresh tick recomputes "is the picker showing", finds it disagrees with the recorded
 	// pickerShowing, and clears the budget on that inequality. Resetting them here would make this
@@ -1204,7 +1205,7 @@ func (m *model) backToPodsPane() {
 	m.ctx, m.cancel = context.WithCancel(m.parentCtx)
 
 	if m.localDirect {
-		// Entered via `[l]`: no pod was ever selected, so the Pods pane
+		// Entered via `[L]`: no pod was ever selected, so the Pods pane
 		// would render an empty table for a namespace the user never
 		// picked. Go back to where they actually were.
 		m.localDirect = false
@@ -1307,9 +1308,8 @@ type catalogLoadedMsg struct {
 	err     error
 }
 
-// loadCatalogCmd fetches /v1/plugins. Called lazily when the user
-// presses `P` to enter the catalog pane; the result is cached on the
-// model and refreshed on demand.
+// loadCatalogCmd fetches /v1/plugins: on each `P`, for the pipeline pane's
+// available rows, and kept on the model for the pipeline editor.
 func (m *model) loadCatalogCmd() tea.Cmd {
 	return func() tea.Msg {
 		cat, err := m.client.GetPluginCatalog(m.ctx)
@@ -1317,12 +1317,17 @@ func (m *model) loadCatalogCmd() tea.Cmd {
 	}
 }
 
+// tick schedules every tick this package arms. It is tea.Tick, as a var so the package's
+// tests can fire a tick at once and read the interval it was given. Nothing in production
+// writes it.
+var tick = tea.Tick
+
 func tickCmd() tea.Cmd {
-	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
+	return tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
 func refreshTickCmd() tea.Cmd {
-	return tea.Tick(refreshInterval, func(t time.Time) tea.Msg { return refreshTickMsg(t) })
+	return tick(refreshInterval, func(t time.Time) tea.Msg { return refreshTickMsg(t) })
 }
 
 // loadSessionsCmd fetches the session list: every session the proxy holds in memory and, where it
@@ -1383,7 +1388,7 @@ func (m *model) snapshotCmd(id string) tea.Cmd {
 // THE REPAINT IS A BACKSTOP, not the fix for #1461: Run turns autowrap off, which is
 // what keeps a row the terminal draws wider than bubbletea measured from scrolling the
 // screen. But bubbletea's renderer skips a row equal to the one it drew there last, and
-// the divider under the spend band is the same on every pane, so any drift that still
+// the box edges are the same on every pane, so any drift that still
 // reaches the screen — a terminal that ignores DECAWM, a write from outside the
 // renderer — would otherwise stay on those rows until a resize. A pane change is the
 // moment the operator is looking at a new screen, so it is when a stale row costs most
@@ -1394,6 +1399,7 @@ func (m *model) snapshotCmd(id string) tea.Cmd {
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	before, reserved := m.pane, m.spendDrawerReservesRows()
 	next, cmd := m.update(msg)
+	cmd = tea.Batch(cmd, m.armTitleScroll())
 	if m.spendDrawerReservesRows() != reserved {
 		// The drawer's rows depend on the pane now, and no other layout() call sees every pane change.
 		m.layout()
@@ -1630,11 +1636,15 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The open rows refetch their projects with the rows: the poll, `w`, `A` and esc all come
 		// here.
 		projects := m.fetchOpenProjectsCmd()
+		var splits tea.Cmd
+		if msg.err == nil {
+			splits = m.fetchAgentRowSplitsCmd()
+		}
 		if m.client != nil && !m.pipelineFetching {
 			m.pipelineFetching = true
-			return m, tea.Batch(m.loadPipelineCmd(), sync, projects)
+			return m, tea.Batch(m.loadPipelineCmd(), sync, projects, splits)
 		}
-		return m, tea.Batch(sync, projects)
+		return m, tea.Batch(sync, projects, splits)
 
 	case agentProjectsLoadedMsg:
 		if msg.window != m.agentsSpanDef().window {
@@ -1648,10 +1658,29 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.agentProjects[msg.agent] = msg.data
 		}
+		var splits tea.Cmd
+		if msg.err == nil {
+			splits = m.fetchProjectSplitsCmd(msg.agent, msg.data)
+		}
 		if m.pane == paneAgents {
 			m.rebuildAgentsTable()
 			// The rebuild can move the cursor onto the scoped sub-row.
-			return m, m.syncSpendScope()
+			return m, tea.Batch(m.syncSpendScope(), splits)
+		}
+		return m, splits
+
+	case agentsUnitSplitLoadedMsg:
+		// A split for another window than the pane's is stale; a failed one changes nothing.
+		if msg.err != nil || msg.key.window != m.agentsSpanDef().window {
+			return m, nil
+		}
+		if m.agentsSplits == nil {
+			m.agentsSplits = map[agentsSplitKey]map[string]int64{}
+		}
+		maps.DeleteFunc(m.agentsSplits, func(k agentsSplitKey, _ map[string]int64) bool { return k.window != msg.key.window })
+		m.agentsSplits[msg.key] = msg.byUnit
+		if m.pane == paneAgents {
+			m.rebuildAgentsTable()
 		}
 		return m, nil
 
@@ -1685,6 +1714,9 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case timelineTickMsg:
 		return m, m.handleTimelineTick(msg)
+
+	case titleScrollMsg:
+		return m, m.handleTitleScroll(msg)
 
 	case usageTickMsg:
 		// Stop when the pane loses focus, and drop ticks from a previous visit:
@@ -1843,7 +1875,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.catalog = msg.catalog
-		m.rebuildCatalogTable()
+		m.rebuildPipelineTable()
 		return m, nil
 
 	case snapshotLoadedMsg:
@@ -2103,12 +2135,12 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		//
 		// The pod fields are CLEARED rather than assumed empty. They are only
 		// empty when no pod was ever visited: backToPodsPane clears ~20 fields
-		// but not these, so "pick a pod → esc → [l]" arrives here with
+		// but not these, so "pick a pod → esc → [L]" arrives here with
 		// selectedNamespace / selectedPod naming the pod and statusURL naming
 		// its closed port-forward. Since pipelineStore falls back to the
 		// ConfigMap branch on exactly those three, leaving them set let `e`
 		// kubectl-apply against a pod the screen was not showing — and poll a
-		// forward this path never established. Harmless while `[l]` sessions
+		// forward this path never established. Harmless while `[L]` sessions
 		// were assumed storeless; a wrong-target write once they were not.
 		m.selectedNamespace = ""
 		m.selectedPod = ""
@@ -2562,66 +2594,59 @@ func (m *model) paneView() string {
 		// hint mid-load); non-nil empty slice → loaded, no agents found.
 		var body string
 		if m.namespaces != nil && len(m.namespaces) == 0 && m.pickerErr == "" {
-			body = styleHint.Render(
-				"No Cortex agents found in this cluster.\n" +
-					"Press [l] to connect to " + m.localEndpointOr() + " (an existing\n" +
-					"port-forward), or use `agentop --endpoint http://...`.")
+			body = m.paneEmptyState(
+				"No Cortex agents found in this cluster.\nTo use another proxy, run agentop --endpoint http://....",
+				"Press ", "L", " to connect to "+m.localEndpointOr()+" (an existing port-forward).")
 		} else {
 			body = m.namespacesTbl.View()
-		}
-		footer := m.helpView()
-		if m.pickerErr != "" {
-			footer = "error: " + m.pickerErr + "    " + footer
 		}
 		if m.searching && m.searchPane != targetHelp {
 			body = m.searchInput.View() + "\n" + body
 		}
-		if st := m.searchStatus(m.pane); st != "" {
-			footer = st + "  " + footer
-		}
-		// Fitted like the session-view footer: an error prefix can push even a
-		// short picker hint past the terminal width, and a wrapped footer costs a
-		// row of the table above it.
-		footer = fitHintLine(footer, m.width)
-		// The divider closes the top block here as on every other pane, which on a picker is
-		// the title alone. layout() reserves its row unconditionally, so a pane that skipped
-		// drawing it would leave a row nobody fills.
-		return lipgloss.JoinVertical(lipgloss.Left,
-			styleTitle.Render(title),
-			styleMuted.Render(renderDivider(m.width)),
-			body,
-			styleHint.Render(footer),
-		)
+		return m.pickerView(title, body, bottomBar(m.helpView(), m.pickerStatus(), m.width))
 	}
 	if m.pane == panePods {
 		title := m.appName() + " · " + m.selectedNamespace + " · pick pod"
 		body := m.podsTbl.View()
-		footer := m.helpView()
-		if m.pickerErr != "" {
-			footer = "error: " + m.pickerErr + "    " + footer
-		}
 		if m.searching && m.searchPane != targetHelp {
 			body = m.searchInput.View() + "\n" + body
 		}
-		if st := m.searchStatus(m.pane); st != "" {
-			footer = st + "  " + footer
-		}
-		// Fitted like the session-view footer: an error prefix can push even a
-		// short picker hint past the terminal width, and a wrapped footer costs a
-		// row of the table above it.
-		footer = fitHintLine(footer, m.width)
-		return lipgloss.JoinVertical(lipgloss.Left,
-			styleTitle.Render(title),
-			styleMuted.Render(renderDivider(m.width)),
-			body,
-			styleHint.Render(footer),
-		)
+		return m.pickerView(title, body, bottomBar(m.helpView(), m.pickerStatus(), m.width))
 	}
 	if m.width == 0 {
 		return "initializing…"
 	}
-	var title string
-	var body string
+	title, body := m.paneContent()
+	return m.framePane(title, body)
+}
+
+// pickerView is a picker pane: the title, the body in the box, and the picker's key bar.
+//
+// The box fills every row the footer does not use. A picker draws no band, so its top edge is
+// plain.
+//
+// A picker is the first screen, so it can render before the first WindowSizeMsg. With no width
+// yet there is no box to draw, and the body shows as it is.
+func (m *model) pickerView(title, body, footer string) string {
+	if m.width == 0 {
+		return lipgloss.JoinVertical(lipgloss.Left, m.titleView(title), body, footer)
+	}
+	frameH := m.bodyHeight
+	if m.searching && m.searchPane != targetHelp {
+		frameH++ // layout() reserved the prompt's row; it is the body's first line, or blank
+	}
+	if m.bodyHeight == 0 {
+		frameH = lipgloss.Height(body) // layout() has not run, so there is no reservation to fill
+	}
+	rows := []string{m.titleView(title), boxTop("", m.width)}
+	rows = append(rows, boxFrame(body, m.width, frameH)...)
+	rows = append(rows, boxBottom(m.width), footer)
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+}
+
+// paneContent is a data pane's title and body, before the box frames the body. The body is
+// sized from m.innerWidth(); TestBox_BodyFitsInsideWithoutCutting holds every pane to it.
+func (m *model) paneContent() (title, body string) {
 	switch m.pane {
 	case paneSessions:
 		// NO SCOPE NOTE. The title used to carry " · lifetime totals", to say that the table's
@@ -2648,7 +2673,15 @@ func (m *model) paneView() string {
 		if (m.sessionsScope() != "" || m.sessionsProjectScope() != "") && len(m.sessionRowIDs) == 0 {
 			rest := strings.TrimPrefix(m.scopeSuffix(m.sessionsScope(), m.sessionsProjectScope()), " · ")
 			rest = strings.TrimPrefix(rest, "agent=")
-			body = styleHint.Render("(no session belongs to " + rest + ")")
+			// The key line names the key the footer offers to leave this list: helpView's order.
+			before, key, after := "Press ", "A", " to pick another agent."
+			switch {
+			case m.sessionsViaAgents:
+				key, after = "esc", " to go back to the agents."
+			case m.parentCtx != nil:
+				key, after = "esc", " to go back to the pods."
+			}
+			body = m.paneEmptyState("No session belongs to "+rest+".", before, key, after)
 		}
 	case paneEvents:
 		// Fitted to the terminal rather than to a fixed 36: a bare UUID is 36 characters, so
@@ -2657,7 +2690,7 @@ func (m *model) paneView() string {
 		// spare. sessionHeader measures the room actually available.
 		title = m.sessionHeader(m.selectedSess, "")
 		body = m.eventsTbl.View()
-		if banner := identityBanner(m.events[m.selectedSess], m.width); banner != "" {
+		if banner := identityBanner(m.events[m.selectedSess], m.innerWidth()); banner != "" {
 			body = banner + "\n" + body
 		}
 	case paneDetail:
@@ -2670,7 +2703,7 @@ func (m *model) paneView() string {
 		// would be indistinguishable from Sessions in a screenshot.
 		title = fmt.Sprintf("%s · %s · pipeline", m.appName(), m.endpoint)
 		if m.pipeline == nil {
-			body = styleHint.Render("(loading pipeline…)")
+			body = m.paneEmptyState("Loading the pipeline…", "Press ", "esc", " to go back.")
 		} else {
 			body = m.pipelineTbl.View()
 		}
@@ -2705,9 +2738,10 @@ func (m *model) paneView() string {
 		case m.agentsErr != nil && !hasRows:
 			// Named, not blank: an unreachable endpoint and a quiet day look identical
 			// otherwise, and only one of them is worth waiting out.
-			body = styleHint.Render("(agent breakdown unavailable: " + m.agentsErr.Error() + ")")
+			// w refetches the rows (cycleAgentsWindow), so it is the retry key too.
+			body = m.paneEmptyState("Agent breakdown unavailable: "+m.agentsErr.Error()+".", "Press ", "w", " to try again with the next window.")
 		case !hasRows:
-			body = styleHint.Render("(no agent traffic in this window)")
+			body = m.paneEmptyState("No agent traffic in this window.", "Press ", "w", " to pick another window.")
 		case m.agentsErr != nil || m.agentProjectsErr != nil:
 			// A failed refresh keeps the rows on screen, one line shorter to fit the hint.
 			err := m.agentsErr
@@ -2718,22 +2752,13 @@ func (m *model) paneView() string {
 			if m.bodyHeight > 1 {
 				tbl.SetHeight(m.bodyHeight - 1)
 			}
-			body = tbl.View() + "\n" + styleHint.Render(clipRow("(refresh failed: "+err.Error()+")", m.width))
+			body = tbl.View() + "\n" + styleHint.Render(clipRow("(refresh failed: "+err.Error()+")", m.innerWidth()))
 		default:
 			body = m.agentsTbl.View()
 		}
 	case paneTimeline:
 		title = m.sessionHeader(m.timeline.session, "timeline")
 		body = m.timelineBody()
-	case paneCatalog:
-		title = fmt.Sprintf("%s · %s · catalog", m.appName(), m.endpoint)
-		if m.catalog == nil {
-			body = styleHint.Render("(loading catalog…)")
-		} else if len(m.catalog.Plugins) == 0 {
-			body = styleHint.Render("(no registered plugins reported by /v1/plugins)")
-		} else {
-			body = m.catalogTbl.View()
-		}
 	}
 
 	// The band above every pane is scoped too, so every pane says so; usage and agents word it
@@ -2741,13 +2766,18 @@ func (m *model) paneView() string {
 	if m.pane != paneUsage && m.pane != paneAgents && m.pane != paneEvents && m.pane != paneDetail && m.pane != paneTimeline {
 		title += m.scopeSuffix(m.agentScope, m.projectScope)
 	}
-	header := styleTitle.Render(title)
 	if m.searching && m.searchPane != targetHelp {
 		body = m.searchPromptView() + "\n" + body
 	}
-	// A row slice rather than a fixed JoinVertical, so the strip's row can be absent
-	// without needing a second call site. It sits directly under the title because that
-	// is the whole requirement: spend read BEFORE the data rather than navigated to.
+	return title, body
+}
+
+// framePane is a data pane's screen: the title, the spend band and its drawer, the body in the
+// box at exactly the rows layout() reserved, and the footer on the last row.
+func (m *model) framePane(title, body string) string {
+	header := m.titleView(title)
+	// The band sits directly under the title because that is the whole requirement: spend
+	// read BEFORE the data rather than navigated to.
 	//
 	// Styled AFTER fitting. renderSpendBand measures DISPLAY COLUMNS (lipgloss.Width, see
 	// bandCell.width), and styleMuted only adds a colour escape so the column count is
@@ -2757,72 +2787,66 @@ func (m *model) paneView() string {
 	// Nothing here touches eventsTbl: the strip holds no cursor, filter or scroll state,
 	// so it cannot perturb the pane it sits above.
 	rows := []string{header}
-	// EXACTLY WHAT layout() RESERVED, blank where there is nothing to say. Both reservations are
-	// height-gated and must stay that way — layout() runs on resizes, drawer toggles and pane
-	// transitions, none of them on a poll's schedule, so a content-gated reservation would go
-	// stale the moment a poll landed, and stale in the direction that overflows. So the render
-	// fills them rather than the reservation tracking the render.
+	// THE BAND IS THE TOP EDGE'S LABEL (#2020), so it costs no row: layout() reserves the edge
+	// on every pane, and the edge is plain when the band does not draw.
 	//
-	// The case that made this necessary: the renderer can return FEWER lines than the reservation,
-	// which left the strip's row and the drawer's five unfilled and the footer six rows above the
-	// bottom of the terminal. The same arithmetic covers a drawer left open on a pane that cannot
-	// host it.
+	// m.width-6 is what boxTop leaves for a label ("╭─ " + label + " ─╮"). spendBandCells drops
+	// whole periods to fit it, so the edge never wraps.
 	//
-	// NOT "blank before the first poll answers", which an earlier version of this said: an
-	// unanswered band draws its four labels over four em dashes — that IS the honest "we have not
-	// looked". Measured, the band comes back blank in one case only: a width so narrow that not
-	// even one cell fits, which is 4 columns or less. So `drew` below tracks "the strip is visible
-	// AND at least one cell fit", and it is not vacuous — it is the gate that keeps the breakdown
-	// off a screen with no figure above it.
-	if m.spendStripReservesRow() {
-		band := make([]string, spendBandLines)
-		drew := false
-		if m.spendStripVisible() {
-			// Styled AFTER fitting, for the reason stated above the row slice: the renderer
-			// measures display columns and an escape sequence is not one.
-			//
-			// THE STYLED FORM COMES FROM THE RENDERER NOW, not from wrapping its output here. The
-			// band used to be two rows and this line muted the whole label row —
-			// `styleMuted.Render(band[0]), band[1]` — which is a hierarchy that exists only while
-			// labels and figures live on separate rows. Folded to one row, wrapping the line would
-			// mute the figures with the labels and flatten the contrast into uniform grey, so the
-			// mute moved to where a cell knows which half is which. See bandCell.renderMuting.
-			//
-			// ONE CALL, because this is bubbletea's per-event render path and spendSummary walks
-			// all four poll chains. `drew` comes back from the renderer rather than being tested
-			// on the string it returns — see renderSpendBandStyled for why the styled form cannot
-			// answer that question.
-			band, drew = renderSpendBandStyled(m.spendSummary(), m.width, m.spendBandNeedsScopeMarker())
-		}
-		for len(band) < spendBandLines {
-			band = append(band, "")
-		}
-		rows = append(rows, band...)
-
-		if m.spendDrawerReservesRows() {
-			var lines []string
-			// The breakdown goes directly under the figure it breaks down, and ONLY when the
-			// strip itself drew — a headless breakdown would be a pane, which is the one thing
-			// this is not.
-			if drew && m.spendDrawerVisible() {
-				// The axis and span come off the SNAPSHOT, not off what was last requested: see
-				// drawerLabels.
-				axis, window := m.drawerLabels()
-				lines = renderSpendDrawerAxes(m.spend.drawer.snap, m.spend.drawer.err, axis, m.spend.drawerAxis, m.spendAxes(), window, m.spend.drawerProject, m.width)
-			}
-			for len(lines) < spendDrawerLinesFor(m.width) {
-				lines = append(lines, "")
-			}
-			for _, line := range lines {
-				rows = append(rows, styleMuted.Render(line))
-			}
+	// `drew` tracks "the strip is visible AND at least one cell fit". It is the gate that keeps
+	// the breakdown off a screen with no figure above it.
+	label, drew := "", false
+	if m.spendStripVisible() { // false below spendStripMinHeight, so the edge is plain there
+		// ONE CALL, because this is bubbletea's per-event render path and spendSummary walks
+		// all four poll chains. `drew` comes back from the renderer rather than being tested
+		// on the string it returns — see renderSpendBandStyled for why the styled form cannot
+		// answer that question.
+		var band []string
+		band, drew = renderSpendBandStyled(m.spendSummary(), m.width-6, m.spendBandNeedsScopeMarker())
+		if drew {
+			label = band[0]
 		}
 	}
-	// The rule that closes the top block, AFTER the band and its drawer so it always sits
-	// between the whole block and the body rather than inside it. Appended unconditionally,
-	// which is what lets layout() reserve it without asking anything — see renderDivider.
-	rows = append(rows, styleMuted.Render(renderDivider(m.width)))
-	rows = append(rows, body, m.footerView())
+	rows = append(rows, boxTop(label, m.width))
+
+	// THE DRAWER IS ITS OWN PANEL, under the band it breaks down: its rows framed, its bottom
+	// edge, then a plain top edge for the table box. EXACTLY WHAT layout() RESERVED, blank where
+	// there is nothing to say: the reservation is height- and pane-gated, never content-gated,
+	// because layout() does not run on a poll's schedule and a content-gated reservation would
+	// go stale in the direction that overflows. That covers a drawer left open on a pane that
+	// cannot host it, too.
+	//
+	// At the inner width, the width layout() reserved for (spendDrawerLinesFor).
+	if m.spendDrawerReservesRows() {
+		var lines []string
+		// ONLY when the strip itself drew — a headless breakdown would be a pane, which is
+		// the one thing this is not.
+		if drew && m.spendDrawerVisible() {
+			// The axis and span come off the SNAPSHOT, not off what was last requested: see
+			// drawerLabels.
+			axis, window := m.drawerLabels()
+			lines = renderSpendDrawerAxes(m.spend.drawer.snap, m.spend.drawer.err, axis, m.spend.drawerAxis, m.spendAxes(), window, m.spend.drawerProject, m.innerWidth())
+		}
+		n := spendDrawerLinesFor(m.innerWidth())
+		rows = append(rows, boxFrame(strings.Join(styleDrawerLines(lines), "\n"), m.width, n)...)
+		rows = append(rows, boxBottom(m.width), boxTop("", m.width))
+	}
+	// The body box: its top edge is above (the band's, or the plain one after the drawer), and
+	// both edges are drawn unconditionally, which is what lets layout() reserve them without
+	// asking anything — see boxTop.
+	//
+	// EXACTLY bodyHeight rows (and the search prompt's row, which layout() reserves while the
+	// prompt is open): boxFrame pads a short body and cuts a tall one, so the footer is always
+	// on the last row. Fixed here once, not in each pane.
+	frameH := m.bodyHeight
+	if m.searching && m.searchPane != targetHelp {
+		frameH++
+	}
+	if m.bodyHeight == 0 {
+		frameH = lipgloss.Height(body) // layout() has not run, so there is no reservation to fill
+	}
+	rows = append(rows, boxFrame(body, m.width, frameH)...)
+	rows = append(rows, boxBottom(m.width), m.footerView())
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }
 
@@ -2864,11 +2888,10 @@ func (m *model) sessionHeader(id, suffix string) string {
 	// The parent is the topmost session above this one, not always the one that started it:
 	// for A → B → C, C shows A. The id comes from a client header, so it is sanitised first.
 	if p := m.parentSessionOf(id); p != "" {
-		p = sanitizeLabel(p)
-		if r := []rune(p); len(r) > 8 {
-			p = string(r[:8])
-		}
-		tail += " · under " + p
+		tail += " · under " + sessionIDCell(sanitizeLabel(p), noLimit)
+	}
+	if m.sessionNoRecord(id) {
+		tail += " · not recorded"
 	}
 	tail += m.scopeSuffix(m.agentScope, m.projectScope)
 	// A floor of 12, so a very narrow terminal shows a stub of the label rather than dropping
@@ -2932,7 +2955,7 @@ type RunOptions struct {
 	Endpoint      string
 	Lister        cluster.Lister
 	PortForwarder cluster.PortForwarder
-	// LocalEndpoint overrides where `[l]` connects. Empty means
+	// LocalEndpoint overrides where `[L]` connects. Empty means
 	// defaultLocalEndpoint.
 	LocalEndpoint string
 	// LocalConfigPath and LocalStatsURL describe the Cortex running on this
@@ -3016,7 +3039,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	// "वि" is one column to x/ansi and two to go-runewidth. A row bubbletea thinks fills
 	// the terminal exactly then wraps, and in the last row that scrolls the alt screen up
 	// by one. bubbletea's renderer skips any row equal to the one it drew there before,
-	// so after a scroll the rows that never change — the divider under the spend band
+	// so after a scroll the rows that never change — the box edges
 	// above all — keep whatever moved onto them, across pane changes, until a full
 	// repaint (#1461). With autowrap off the overflow overwrites the last column instead,
 	// and nothing moves.

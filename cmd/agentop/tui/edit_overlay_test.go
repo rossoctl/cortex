@@ -123,7 +123,7 @@ func TestEditOverlayRender_Diff(t *testing.T) {
 	if !strings.Contains(out, "old line") || !strings.Contains(out, "new line") {
 		t.Fatalf("diff content missing:\n%s", out)
 	}
-	if !strings.Contains(out, "(y/N)") {
+	if !strings.Contains(out, "[y] apply  [n] cancel") {
 		t.Fatalf("confirm prompt missing:\n%s", out)
 	}
 }

@@ -28,14 +28,31 @@ func pendingTitle(pid string) string {
 	return "calls outside any session · pid " + pid
 }
 
-// sessionIDCell is the SESSION cell: the id, or a pending bucket's agent. The agent and not
-// agent·pid, because SESSION is 14 columns and "claude-code·89949" would lose the pid to the
-// cut anyway; the pid is in the title.
+// sessionIDWidth is the SESSION cell of a session id: its last 8 characters (#2019).
+const sessionIDWidth = 8
+
+// sessionIDCell is the SESSION cell: the last sessionIDWidth characters of the id, with no
+// "…", or a pending bucket's agent in full. The tail, not the head: Codex (UUIDv7) and OpenCode
+// (ses_) ids start with a timestamp, so sessions started minutes apart share their head. The agent and not agent·pid: SESSION widens to the
+// agent name (sessionsIDWidth), and the pid is in the title. w cuts only where a narrow
+// terminal fits the column below that.
 func sessionIDCell(id string, w int) string {
 	if agent, _, ok := pendingBucket(id); ok {
 		return trunc(sanitizeLabel(agent), w)
 	}
+	if r := []rune(id); len(r) > sessionIDWidth {
+		id = string(r[len(r)-sessionIDWidth:])
+	}
 	return trunc(id, w)
+}
+
+// sessionIDSearch is what `/` reads for the SESSION cell: the FULL id, or a pending bucket's
+// agent, so the short cell loses nothing for finding a session.
+func sessionIDSearch(id string) string {
+	if agent, _, ok := pendingBucket(id); ok {
+		return sanitizeLabel(agent)
+	}
+	return id
 }
 
 // sessionAgent is the agent a row belongs to: the server's Agent, or — for a pending bucket,

@@ -65,20 +65,28 @@ func dialectFor(path string) dialect {
 // legacy completions, which have no translation protocol.
 const chatCompletionsSuffix = "/chat/completions"
 
-// ProtocolFor names the translation protocol of path, by the same rule as dialectFor,
-// so that the parser and the translator cannot disagree: "anthropic-messages",
-// "chat-completions", "responses", or "" for a path with no protocol (legacy
-// completions included).
+// The protocol names ProtocolFor returns. Exported so a caller that switches on them — such as
+// core/accounting/wire's FormatOf — gets a compile error on a rename here, instead of silently
+// falling through to "no protocol" the way a copied string literal would.
+const (
+	ProtocolAnthropicMessages = "anthropic-messages"
+	ProtocolChatCompletions   = "chat-completions"
+	ProtocolResponses         = "responses"
+)
+
+// ProtocolFor names the translation protocol of path, by the same rule as dialectFor, so that the
+// parser and the translator cannot disagree: ProtocolAnthropicMessages, ProtocolChatCompletions,
+// ProtocolResponses, or "" for a path with no protocol (legacy completions included).
 func ProtocolFor(path string) string {
 	switch dialectFor(path) {
 	case dialectAnthropic:
-		return "anthropic-messages"
+		return ProtocolAnthropicMessages
 	case dialectOpenAI:
 		if strings.HasSuffix(path, chatCompletionsSuffix) {
-			return "chat-completions"
+			return ProtocolChatCompletions
 		}
 	case dialectResponses:
-		return "responses"
+		return ProtocolResponses
 	}
 	return ""
 }

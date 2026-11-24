@@ -462,7 +462,7 @@ func squash(s string) string {
 	}, s)
 }
 
-// The result of a switch that went through is the footer's whole line until the next key, cut
+// The result of a switch that went through is the bar's sticky flash until the next key, cut
 // from the LEFT where it must be, so at 80 columns the part a reader acts on survives: the URL to
 // check after a timeout, the count after a success. A refusal is the panel, whole.
 func TestServerSwitch_TheResultIsReadableAt80Columns(t *testing.T) {
@@ -489,7 +489,7 @@ func TestServerSwitch_TheResultIsReadableAt80Columns(t *testing.T) {
 		{ID: "b", Agent: "claude-code", InferenceHost: "ete.example.com"},
 	}
 	switchTo(t, ok, "claude-code/2.1.270", "glm")
-	if line := strings.SplitN(ok.footerView(), "\n", 2)[0]; !strings.Contains(line, "New claude-code sessions → glm. 2 running sessions stay where they are.") {
+	if line := ok.footerView(); !strings.Contains(line, "2 running sessions stay where they are.") {
 		t.Errorf("after a success the footer at 80 is %q", line)
 	}
 
@@ -497,7 +497,7 @@ func TestServerSwitch_TheResultIsReadableAt80Columns(t *testing.T) {
 	timedOut.width = 80
 	timedOut.applyServerSwitched(serverSwitchedMsg{agent: "claude-code", server: "glm", statsURL: timedOut.localStatsURL,
 		res: edit.WriteResult{Outcome: edit.WriteReloadTimedOut}})
-	if line := strings.SplitN(timedOut.footerView(), "\n", 2)[0]; !strings.Contains(line, timedOut.localStatsURL+"/reload/status") {
+	if line := timedOut.footerView(); !strings.Contains(line, timedOut.localStatsURL+"/reload/status") {
 		t.Errorf("after a timeout the footer at 80 lost the URL to check: %q", line)
 	}
 

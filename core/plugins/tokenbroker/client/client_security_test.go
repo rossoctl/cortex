@@ -161,7 +161,7 @@ func TestClient_AcquireToken_CustomHTTPClient(t *testing.T) {
 	defer srv.Close()
 
 	customClient := &http.Client{
-		Timeout: 5 * time.Second, // Custom timeout
+		Timeout: time.Hour,
 	}
 
 	client := &Client{httpClient: customClient}

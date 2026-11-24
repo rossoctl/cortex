@@ -45,10 +45,24 @@ On Linux, when nothing answers, status asks systemd why, and says which of these
 | `it exited … and systemd is restarting it` | It crashed, and systemd brings it back within 10 seconds | 1 |
 | `systemd stopped restarting it` | It crashed five times in five minutes, so systemd gave up. Fix the cause in the log, then `agentop service restart` | 1 |
 
+On macOS, status asks launchd instead:
+
+| Status says | What happened | Exit |
+|---|---|---|
+| `Cortex is stopped, and stays stopped` | Stopped and disabled, as `agentop service stop` leaves it. It stays stopped across logins and reboots until `agentop service start` | 0 |
+| `Cortex is stopped, but not disabled` | Taken out of launchd some other way, such as `launchctl bootout`; it starts again at the next login | 1 |
+| `launchd has its job loaded but not running` | launchd is holding its start back, as it does for a while after every login, or waiting out its 10 seconds between restarts. `agentop service restart` starts it now | 1 |
+| `you are not logged in to this Mac's desktop` | Cortex runs only in your desktop session, and you have none: nobody is at the screen, or someone else is. It starts at your next login there, or at boot with automatic login, unless `agentop service stop` stopped it, which status cannot check without the session. An SSH login does not start it | 1 |
+
 A stopped Cortex exits 0, like a healthy one, because a stop is not a failure. So in a
 script, the exit code alone does not say Cortex is serving: check for
 `Cortex is healthy according to` in the output as well. Before, a stopped Cortex
-exited 1. On macOS it still does.
+exited 1.
+
+On macOS, `service stop` and `service uninstall` return only once launchd has taken
+Cortex down, so nothing still holds its ports when they say it is stopped. (`agentop
+uninstall` already waited.) If launchd takes longer than 30 seconds, they say it is still
+shutting down, and exit 1.
 
 `service start`, `service restart` and `service install` clear systemd's record of the
 crashes first, so they can start a unit systemd had given up on without waiting out
@@ -321,19 +335,20 @@ To restart deliberately: `agentop service restart`.
 
 A service install (launchd or systemd) updates itself:
 
-- The proxy starts the updater unit at most once every 6 hours (`update.check_every`).
+- The proxy starts the updater unit at most once every 3 hours (`update.check_every`).
   The first start is 10 minutes after the proxy starts. The unit is
   `io.rossoctl.cortex.update` on macOS and `cortex-update.service` on Linux.
 - The updater runs `agentop update --yes --auto`.
 - It installs the release that GitHub marks Latest, but only when that release was
-  published at least 24 hours ago (`update.wait`). The publication time is the upload
+  published at least 6 hours ago (`update.wait`). The publication time is the upload
   time of the release's `checksums.txt`.
 - Then it restarts the proxy. Attached sessions lose the request in flight and retry it.
 
 A release-candidate install (`vX.Y.Z-rc.N`) moves only forward. It installs Latest
 when Latest is a later version, for example `v0.10.0` over `v0.10.0-rc.1`, after the
-same wait. It never moves back to an older Latest. A plain release follows Latest in
-both directions, so the maintainers can withdraw a bad release.
+same wait. It never moves back to an older Latest. `agentop update` by hand follows
+the same rule: to move back, give the release, for example `--ref=v0.9.5`. A plain
+release follows Latest in both directions, so the maintainers can withdraw a bad release.
 
 It does not change a `dev` or `main-<sha>` install. That build has no version order
 against Latest, and is often ahead of it. `agentop doctor` says so, and the title bar
@@ -357,17 +372,17 @@ To change the timing, set one or both of these. The values here are the defaults
 
 ```yaml
 update:
-  wait: 24h          # how long after its publication a release installs; "0" installs at once
-  check_every: 6h    # how often the proxy starts the updater; from 1h to 24h
+  wait: 6h           # how long after its publication a release installs; "0" installs at once
+  check_every: 3h    # how often the proxy starts the updater; from 1h to 24h
 ```
 
 | Field | Default | Range | Who reads it | When a change applies |
 |---|---|---|---|---|
-| `wait` | `24h` | `0` or more | `agentop update --auto` | at the next check |
-| `check_every` | `6h` | `1h` to `24h` | the proxy, at boot | after `agentop service restart`. A hot reload refuses the change |
+| `wait` | `6h` | `0` or more | `agentop update --auto` | at the next check |
+| `check_every` | `3h` | `1h` to `24h` | the proxy, at boot | after `agentop service restart`. A hot reload refuses the change |
 
 The values are Go durations, for example `90m` or `12h`. With the defaults, a laptop
-that is on installs a new release from 24 to about 30 hours after it is published. The
+that is on installs a new release from 6 to about 9 hours after it is published. The
 proxy refuses to start when a value is not valid, and `agentop doctor` names it on the
 `updates` row.
 
@@ -687,6 +702,11 @@ curl -X DELETE http://localhost:47601/v1/sessions/<id>
 # {"sessions":1,"archivedSessions":1,"bytes":18234567}, or a 404 when this Cortex holds no such session
 ```
 
+Neither erases the savings accountant's own per-session state: ids, content hashes and the
+billing mode, no content, in memory and in `~/.cortex/accountant-state.json`. It stays until
+newer sessions push it out (at most 10,000 threads are kept), and a state file older than 1 hour
+is not read at startup (see [session-api.md](session-api.md#delete-v1sessions)).
+
 Either is refused — a 403 saying why — unless the request names a loopback host
 (`localhost`, `127.0.0.1` or `[::1]`), carries no `Origin` header, and reaches a proxy bound to
 loopback only, as a local install is. Those are the checks that keep a web page you visit from
@@ -737,6 +757,35 @@ CPU for the memory), and if the sessions genuinely need more than the limit the
 process keeps allocating and growing exactly as it would without one — nothing
 fails, nothing crashes. Setting it too low costs speed, not availability. Set
 it explicitly to change the default; `agentop service restart` applies it.
+
+### The `accounting:` configuration
+
+The accountant prices what the context operators (`context-guru`, `tool-prune`) saved. Its
+figures land in the cost records' `avoided[]` and `spends[]`
+(see [pricing.md](pricing.md#cost-records)). The block is the same on a laptop and in a cluster.
+
+```yaml
+accounting:
+  enabled: auto          # auto | true | false
+  subscription_weights:  # optional; the defaults are shown
+    input: 1
+    cache_write_5m: 1.25
+    cache_write_1h: 2
+    cache_read: 0.1
+    output: 5
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `enabled` | `auto` | `auto` runs the accountant when the outbound pipeline has a context operator. `true` runs it without one, for the cache figures alone. `false` turns it off. |
+| `subscription_weights` | the API rate ratios | How much of a subscription's usage limit one token of each tier uses. A saving on a subscription login is valued in these units (`units`, `penaltyUnits`), never in dollars. A key you leave out keeps its default; an explicit `0` stays `0`; a negative weight is refused. |
+
+On a local install the accountant keeps its state in `~/.cortex/accountant-state.json`, so
+a restart does not forget which prefix the provider has cached. Both fields are read once at
+startup. A reload that changes a weight is refused, and so is a reload that turns accounting
+on (as resolved) when the proxy started with it off; `agentop service restart` applies either.
+A reload that turns it off is accepted: the accountant stays idle until a later reload turns
+it back on.
 
 ### The `tls_bridge:` configuration
 

@@ -202,11 +202,16 @@ func WriteTitles(home string, f Fixture) error {
 // FIVE SECONDS PAST THE MINUTE, not on it. The newest turn sits on the current minute
 // boundary, so an anchor on the boundary put it under a second old for the first frames,
 // and "just now" is the one age the masking does not rewrite.
-var demoAnchor = time.Date(2026, time.September, 15, 12, 0, 5, 0, time.Local)
+var demoAnchor = time.Date(2026, time.September, 15, 12, 0, 5, 0, demoZone)
+
+// demoZone is the one zone every run renders in. agentop shows times in time.Local, and a
+// UTC runner's "Z" is shorter than "-04:00", so the detail pane's border moved on CI.
+var demoZone = time.FixedZone("EDT", -4*60*60)
 
 // NewCapturer builds the synthetic stack, replays the fixture into it, and
 // attaches a TUI model sized to cols x rows.
 func NewCapturer(f Fixture, cols, rows int, ledgerDir string, start time.Duration) (*Capturer, error) {
+	time.Local = demoZone
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	lipgloss.SetHasDarkBackground(true)
 
@@ -275,7 +280,7 @@ func NewCapturer(f Fixture, cols, rows int, ledgerDir string, start time.Duratio
 
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancel = cancel
-	c.m = tui.New(ctx, apiclient.New(c.ts.URL), tui.WithClock(c.now))
+	c.m = tui.New(ctx, apiclient.New(c.ts.URL), tui.WithClock(c.now), tui.WithoutTitleScroll())
 	c.pump(c.m.Init())
 	c.resize()
 
@@ -662,6 +667,30 @@ var eventRate = regexp.MustCompile(`\d+\.\d events/sec`)
 
 const canonicalRate = "12.4 events/sec"
 
+// barGap is the padding bottomBar puts before the right-aligned status.
+var barGap = regexp.MustCompile(` {3,}`)
+
+// fixRate rewrites the events/sec and keeps the status in its column. The status is
+// right-aligned, so a real rate one digit wider moved it one cell left, and which
+// frame got the wide rate changed between runs. The gap before it takes the difference.
+func fixRate(view string) string {
+	lines := strings.Split(view, "\n")
+	for i, line := range lines {
+		loc := eventRate.FindStringIndex(line)
+		if loc == nil {
+			continue
+		}
+		head := line[:loc[0]]
+		if gaps := barGap.FindAllStringIndex(head, -1); len(gaps) > 0 {
+			g := gaps[len(gaps)-1]
+			n := max(g[1]-g[0]-(len(canonicalRate)-(loc[1]-loc[0])), 1)
+			head = head[:g[0]] + strings.Repeat(" ", n) + head[g[1]:]
+		}
+		lines[i] = head + canonicalRate + line[loc[1]:]
+	}
+	return strings.Join(lines, "\n")
+}
+
 func fixAge(match string) string {
 	if len(match) < len(canonicalAge) {
 		return fixClock(match)
@@ -698,7 +727,7 @@ func (c *Capturer) Screen() string {
 	}
 	view = isoTimestamp.ReplaceAllString(view, canonicalISO)
 	view = agePattern.ReplaceAllStringFunc(view, fixAge)
-	view = eventRate.ReplaceAllString(view, canonicalRate)
+	view = fixRate(view)
 	for _, re := range clockPatterns {
 		view = re.ReplaceAllStringFunc(view, fixClock)
 	}

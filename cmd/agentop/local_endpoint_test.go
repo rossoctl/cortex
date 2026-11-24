@@ -8,8 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 )
 
 const endpointCfg = `mode: proxy-sidecar
@@ -38,7 +41,7 @@ func withCortexConfig(t *testing.T, addr string) {
 			t.Fatal(err)
 		}
 	}
-	t.Setenv("HOME", dir)
+	testhome.Set(t, dir)
 }
 
 // TestLocalSessionEndpoint_ReadsTheConfiguredPort: the in-cluster default is 9094
@@ -197,25 +200,53 @@ func TestLocalFallbackNamesABrokenConfig(t *testing.T) {
 // Cortex that is starting: worth waiting for, where a 400ms answer deadline sent agentop
 // to the cluster picker on every launch that met a restart.
 func TestLocalSessionAPIUp_WaitsForAProxyStillStarting(t *testing.T) {
+	saved := localStartupWait
+	localStartupWait = time.Hour
+	t.Cleanup(func() { localStartupWait = saved })
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer ln.Close()
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"sessions":[]}`))
 	})}
 	defer srv.Close()
-	time.AfterFunc(time.Second, func() { _ = srv.Serve(ln) })
+	// The server starts past the dial bound after the client has connected, and serves
+	// that connection first. Outlasting that bound is the behaviour under test.
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		time.Sleep(localProbeTimeout + 100*time.Millisecond) // timing: outlasts a real dial bound
+		_ = srv.Serve(&acceptedFirst{Listener: ln, first: c})
+	}()
 
 	if !localSessionAPIUp("http://" + ln.Addr().String()) {
-		t.Error("a proxy that started serving 1s after the connection was reported down")
+		t.Error("a proxy that started serving after the connection was reported down")
 	}
+}
+
+// acceptedFirst is a listener whose first Accept returns a connection already
+// accepted from it.
+type acceptedFirst struct {
+	net.Listener
+	first net.Conn
+}
+
+func (l *acceptedFirst) Accept() (net.Conn, error) {
+	if c := l.first; c != nil {
+		l.first = nil
+		return c, nil
+	}
+	return l.Listener.Accept()
 }
 
 // The wait is bounded: something that accepts and never answers is given up on.
 func TestLocalSessionAPIUp_GivesUpOnOneThatNeverAnswers(t *testing.T) {
 	saved := localStartupWait
-	localStartupWait = time.Second
+	localStartupWait = time.Nanosecond
 	t.Cleanup(func() { localStartupWait = saved })
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -223,18 +254,17 @@ func TestLocalSessionAPIUp_GivesUpOnOneThatNeverAnswers(t *testing.T) {
 	}
 	defer ln.Close()
 
-	start := time.Now()
 	if localSessionAPIUp("http://" + ln.Addr().String()) {
 		t.Error("a socket nothing serves was reported up")
-	}
-	if took := time.Since(start); took > 2*time.Second {
-		t.Errorf("took %s, want it bounded by localStartupWait", took)
 	}
 }
 
 // Nothing listening is answered at the connect, so the startup wait never applies to it:
 // a machine whose Cortex is stopped still reaches the picker at once.
 func TestLocalSessionAPIUp_RefusedIsImmediate(t *testing.T) {
+	saved := localStartupWait
+	localStartupWait = time.Hour
+	t.Cleanup(func() { localStartupWait = saved })
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -242,17 +272,30 @@ func TestLocalSessionAPIUp_RefusedIsImmediate(t *testing.T) {
 	dead := "http://" + ln.Addr().String()
 	_ = ln.Close()
 
-	start := time.Now()
 	if localSessionAPIUp(dead) {
 		t.Error("a closed port was reported up")
 	}
-	if took := time.Since(start); took > localProbeTimeout+500*time.Millisecond {
-		t.Errorf("took %s on a refused connection, want about one connect", took)
-	}
+}
+
+// writeHook is a writer that runs fn at its first write.
+type writeHook struct {
+	strings.Builder
+	once sync.Once
+	fn   func()
+}
+
+func (w *writeHook) Write(p []byte) (int, error) {
+	n, err := w.Builder.Write(p)
+	w.once.Do(w.fn)
+	return n, err
 }
 
 // The wait is said out loud once it is noticeable, before the TUI takes the screen.
+// The proxy here starts serving once the notice is out.
 func TestWaitForLocalSessionAPI_SaysWhyItIsWaiting(t *testing.T) {
+	notice, wait := localStartingNotice, localStartupWait
+	localStartupWait = time.Hour
+	t.Cleanup(func() { localStartingNotice, localStartupWait = notice, wait })
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -261,23 +304,24 @@ func TestWaitForLocalSessionAPI_SaysWhyItIsWaiting(t *testing.T) {
 		_, _ = w.Write([]byte(`{"sessions":[]}`))
 	})}
 	defer srv.Close()
-	time.AfterFunc(time.Second, func() { _ = srv.Serve(ln) })
 	endpoint := "http://" + ln.Addr().String()
 
-	var out strings.Builder
-	if !waitForLocalSessionAPI(endpoint, &out) {
+	localStartingNotice = 0
+	out := &writeHook{fn: func() { go func() { _ = srv.Serve(ln) }() }}
+	if !waitForLocalSessionAPI(endpoint, out) {
 		t.Fatal("reported down")
 	}
 	if !strings.Contains(out.String(), endpoint) || !strings.Contains(out.String(), "starting") {
 		t.Errorf("no waiting notice naming %s: %q", endpoint, out.String())
 	}
 
-	out.Reset()
-	if !waitForLocalSessionAPI(endpoint, &out) {
+	localStartingNotice = time.Hour
+	var prompt strings.Builder
+	if !waitForLocalSessionAPI(endpoint, &prompt) {
 		t.Fatal("reported down once serving")
 	}
-	if out.Len() != 0 {
-		t.Errorf("a prompt answer still printed %q", out.String())
+	if prompt.Len() != 0 {
+		t.Errorf("a prompt answer still printed %q", prompt.String())
 	}
 }
 

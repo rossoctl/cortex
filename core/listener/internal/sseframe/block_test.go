@@ -6,7 +6,6 @@ import (
 	"io"
 	"strings"
 	"testing"
-	"time"
 )
 
 // readAllBlocks drains r, copying each block because the Reader reuses its buffers.
@@ -85,13 +84,9 @@ func TestReadBlock_HeartbeatReturnedAtItsBlankLine(t *testing.T) {
 		}
 		got <- Block{Raw: append([]byte(nil), b.Raw...), HasData: b.HasData}
 	}()
-	select {
-	case b := <-got:
-		if string(b.Raw) != ": ping\n\n" || b.HasData {
-			t.Errorf("block = {Raw:%q HasData:%v}, want {Raw:\": ping\\n\\n\" HasData:false}", b.Raw, b.HasData)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("heartbeat block not returned while the upstream stayed open")
+	b := <-got
+	if string(b.Raw) != ": ping\n\n" || b.HasData {
+		t.Errorf("block = {Raw:%q HasData:%v}, want {Raw:\": ping\\n\\n\" HasData:false}", b.Raw, b.HasData)
 	}
 }
 

@@ -66,6 +66,14 @@ func (a *Archive) writeSession(id string, events []model.SessionEvent, replace b
 	a.mu.Lock()
 	old := a.lastSeq[id]
 	switch {
+	case s != nil && s.meta.Summary.NoRecord(), a.failClosed.Load():
+		// The session asked not to be recorded (#1923), or the archive failed closed and no
+		// longer knows which sessions asked. A kept opt-out needs no check here: this op is
+		// queued after its place, so the writer has applied it. The marker is the user's own
+		// choice, so no import adds to it or replaces it, also one whose events were imported
+		// first.
+		a.mu.Unlock()
+		return ErrLive
 	case s == nil && old > 0:
 		a.mu.Unlock()
 		return ErrLive

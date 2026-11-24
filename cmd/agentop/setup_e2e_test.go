@@ -13,14 +13,15 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/rossoctl/cortex/cmd/agentop/checklist"
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 )
 
 type setupScene struct {
@@ -38,7 +39,7 @@ func newSetupScene(t *testing.T, healthz http.HandlerFunc) setupScene {
 	srv := httptest.NewServer(healthz)
 	t.Cleanup(srv.Close)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testhome.Set(t, home)
 	t.Setenv("SHELL", "/bin/zsh")
 	stubTerminal(t, true, "y\n")
 	return setupScene{home: home, stage: stageDir(t, cortexStub(strings.TrimPrefix(srv.URL, "http://"))), loaded: loaded}
@@ -517,10 +518,7 @@ func TestSetupASignalBeforeApplyChangesNothing(t *testing.T) {
 			}
 			sigs <- os.Interrupt
 			// A yes after the Ctrl-C, too late: setup has stopped waiting by then.
-			select {
-			case <-release:
-			case <-time.After(2 * time.Second):
-			}
+			<-release
 			return true
 		}
 		t.Cleanup(func() { setupConfirm = saved })
@@ -729,25 +727,75 @@ func TestSetupDrawsNoLogoUnlessARunWorked(t *testing.T) {
 }
 
 // ready in counts the time the changes took, from the answer at the prompt: not the
-// time spent reading the list of them before it. So ready in is at most the run's wall
-// time less the 2.5s at the prompt. A fixed bound flaked: under shard load the apply
-// alone can take more than 2.5s.
+// time spent reading the list of them before it. The clock moves 1s at each read
+// and an hour at the prompt, so ready in is 1.0s, and 3601.0s with the prompt in it.
 func TestSetupReadyInLeavesOutThePrompt(t *testing.T) {
-	const atThePrompt = 2500 * time.Millisecond
 	sc := newSetupScene(t, ok200)
 	animated(t)
-	saved := setupConfirm
-	setupConfirm = func(io.Writer) bool { time.Sleep(atThePrompt); return true }
-	t.Cleanup(func() { setupConfirm = saved })
-	start := time.Now()
+	var mu sync.Mutex
+	clock := time.Unix(1000, 0)
+	savedNow, savedConfirm := setupNow, setupConfirm
+	setupNow = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		now := clock
+		clock = clock.Add(time.Second)
+		return now
+	}
+	setupConfirm = func(io.Writer) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		clock = clock.Add(time.Hour)
+		return true
+	}
+	t.Cleanup(func() { setupNow, setupConfirm = savedNow, savedConfirm })
 	code, out := sc.run(t, "--from", sc.stage)
-	wall := time.Since(start)
 	m := regexp.MustCompile(`\n    v9\.9\.9 ready in (\d+\.\d)s\n`).FindStringSubmatch(onScreen(out))
 	if code != 0 || m == nil {
 		t.Fatalf("exit %d, no ready in:\n%s", code, onScreen(out))
 	}
-	// 0.05s is the rounding of ready in to one decimal.
-	if took, _ := strconv.ParseFloat(m[1], 64); took > (wall-atThePrompt).Seconds()+0.05 {
-		t.Errorf("ready in %ss counts the %v at the prompt (run took %v)", m[1], atThePrompt, wall)
+	if m[1] != "1.0" {
+		t.Errorf("ready in %ss, want 1.0s: the hour at the prompt is counted", m[1])
+	}
+}
+
+// With CORTEX_SETUP_STARTED, ready in counts from when the caller started, so a build or
+// a download is in it, and the prompt is still left out. The caller started at 940 and
+// the clock reads 1000 first, so ready in is 60s plus the two 1s steps outside the prompt. A
+// time in the future is ignored. Setup removes the variable, so a process it starts
+// cannot take it.
+func TestSetupReadyInCountsFromTheCaller(t *testing.T) {
+	for _, c := range []struct{ started, want string }{{"940", "62.0"}, {"99999999999", "1.0"}} {
+		sc := newSetupScene(t, ok200)
+		animated(t)
+		var mu sync.Mutex
+		clock := time.Unix(1000, 0)
+		savedNow, savedConfirm := setupNow, setupConfirm
+		setupNow = func() time.Time {
+			mu.Lock()
+			defer mu.Unlock()
+			now := clock
+			clock = clock.Add(time.Second)
+			return now
+		}
+		setupConfirm = func(io.Writer) bool {
+			mu.Lock()
+			defer mu.Unlock()
+			clock = clock.Add(time.Hour)
+			return true
+		}
+		t.Cleanup(func() { setupNow, setupConfirm = savedNow, savedConfirm })
+		t.Setenv(callerStartedEnv, c.started)
+		code, out := sc.run(t, "--from", sc.stage)
+		m := regexp.MustCompile(`\n    v9\.9\.9 ready in (\d+\.\d)s\n`).FindStringSubmatch(onScreen(out))
+		if code != 0 || m == nil {
+			t.Fatalf("started %s: exit %d, no ready in:\n%s", c.started, code, onScreen(out))
+		}
+		if m[1] != c.want {
+			t.Errorf("started %s: ready in %ss, want %ss", c.started, m[1], c.want)
+		}
+		if _, set := os.LookupEnv(callerStartedEnv); set {
+			t.Errorf("started %s: %s is still set", c.started, callerStartedEnv)
+		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 	"github.com/rossoctl/cortex/cmd/agentop/tui/table"
 
@@ -285,8 +286,8 @@ func TestTimelineAxisLabels_NameTheGap(t *testing.T) {
 	lateEnd := late.Add(5 * time.Minute)
 	tl.Turns = append(tl.Turns, timeline.Turn{Agent: timeline.MainAgent, Start: late, End: &lateEnd, Finish: "end_turn", Seq: 50})
 	tl.End = lateEnd
-	lay := buildTimelineLayout(tl, time.Time{}, time.Time{}, 80, time.Time{}, lateEnd)
-	if labels := axisLabels(lay); !strings.Contains(labels, "26.0h") {
+	lay := buildTimelineLayout(tl, time.Time{}, time.Time{}, 200, time.Time{}, lateEnd)
+	if labels := ansi.Strip(renderAxisLine(axisLabels(lay), lay.axis.width())); !strings.Contains(labels, "26.0h") {
 		t.Errorf("axis does not label the gap: %q", labels)
 	}
 }
@@ -379,7 +380,7 @@ func TestTimelineWindows_OfferedBySessionLength(t *testing.T) {
 	if m.timeline.windowIdx != 2 {
 		t.Errorf("drawing the fallback overwrote the saved choice")
 	}
-	if got := stripANSI(m.renderTimeline()); !strings.Contains(got, "window 5m [all]") {
+	if got := stripANSI(m.renderTimeline()); !strings.Contains(got, "window  5m [all]") {
 		t.Errorf("tabs are not the offered windows: %q", strings.SplitN(got, "\n", 2)[0])
 	}
 }
@@ -481,7 +482,7 @@ func TestTimelineLoaded_NotFound(t *testing.T) {
 	m.timeline.tl = nil
 	m.timeline.reqSeq = 3
 	m.handleTimelineLoaded(timelineLoadedMsg{req: 3, err: apiclient.ErrNotFound})
-	if !errors.Is(m.timeline.err, errTimelineUnsupported) || !strings.Contains(stripANSI(m.renderTimeline()), "upgrade cortex") {
+	if !errors.Is(m.timeline.err, errTimelineUnsupported) || !strings.Contains(stripANSI(m.renderTimeline()), "Upgrade Cortex") {
 		t.Errorf("old proxy: err %v", m.timeline.err)
 	}
 
@@ -957,25 +958,6 @@ func TestTimelineEnter_RevealSkipsALinkedBucketsEventOfTheSameSeq(t *testing.T) 
 	}
 }
 
-// [↑↓] is advertised only when some agent rows do not fit.
-func TestTimelineFooter_ScrollHintOnlyWhenRowsAreHidden(t *testing.T) {
-	m := timelineModel(t, 140, 46)
-	m.timeline.windowIdx = 3
-	m.layout()
-	if strings.Contains(m.helpView(), "[↑↓]") {
-		t.Errorf("every agent fits, yet the footer offers [↑↓]: %q", m.helpView())
-	}
-	many := sampleTimeline()
-	for i := 0; i < 20; i++ {
-		id := string(rune('b' + i))
-		many.Agents = append(many.Agents, timeline.Agent{ID: id, Parent: timeline.MainAgent, Label: "subagent " + id})
-	}
-	m.timeline.tl, m.timeline.layoutKey = many, tlLayoutKey{}
-	if !strings.Contains(m.helpView(), "[↑↓] rows") {
-		t.Errorf("rows are hidden, yet the footer does not offer [↑↓]: %q", m.helpView())
-	}
-}
-
 // laterSession is sampleTimeline plus a turn a day after it, so "all" collapses the stretch
 // between them into a gap.
 func laterSession(after timeline.Turn) *timeline.Timeline {
@@ -1156,7 +1138,7 @@ func TestTimelineRefresh_FailedFetchIsRetriedOnABackoff(t *testing.T) {
 	m.timeline.tl = nil
 	m.timeline.tickGen, m.timeline.reqSeq = 1, 3
 	m.handleTimelineLoaded(timelineLoadedMsg{req: 3, err: errors.New("context deadline exceeded")})
-	if out := stripANSI(m.renderTimeline()); !strings.Contains(out, "retrying in 1s") {
+	if out := stripANSI(m.renderTimeline()); !strings.Contains(out, "Retrying in 1s") {
 		t.Errorf("after a failed first fetch: %q, want it shown as retrying", out)
 	}
 	m.handleTimelineTick(timelineTickMsg{gen: 1})
@@ -1345,8 +1327,11 @@ func TestTimelineAll_LongLiveWaitIsCapped(t *testing.T) {
 		if !tc.capped && (tailCells > timelineTailCells || lay.axis.tail != 0) {
 			t.Errorf("%v on: a short wait took %d cells (tail %d), want it drawn to scale", tc.after, tailCells, lay.axis.tail)
 		}
-		if label := axisLabels(lay); tc.capped != strings.Contains(label, "+"+tlDuration(tc.after)) {
+		if label := ansi.Strip(renderAxisLine(axisLabels(lay), lay.axis.width())); tc.capped != strings.Contains(label, "+"+tlDuration(tc.after)) {
 			t.Errorf("%v on: axis %q, want the squeezed wait labelled only when squeezed", tc.after, label)
+		}
+		if label := ansi.Strip(renderAxisLine(axisLabels(lay), lay.axis.width())); !strings.HasSuffix(strings.TrimRight(label, " "), live.Local().Format("15:04")+"╷") {
+			t.Errorf("%v on: axis %q, want it to finish at now, %s", tc.after, label, live.Local().Format("15:04"))
 		}
 	}
 }
@@ -1387,6 +1372,21 @@ func TestTimelineWaits_AskUserQuestionIsWaitingOnYou(t *testing.T) {
 	open.Tools = append(open.Tools, timeline.Tool{Agent: timeline.MainAgent, ID: "q1", Name: "AskUserQuestion", Start: tlAt(1800), Seq: 45})
 	if ax := buildTimelineLayout(open, time.Time{}, tlAt(1800+7*3600), 180, time.Time{}, tlAt(1800+7*3600)).axis; ax.tail != timelineTailCells {
 		t.Errorf("an open question's wait has tail %d, want the capped %d", ax.tail, timelineTailCells)
+	}
+}
+
+// Bob's spawn_subagent returns only when its subagents do, so its span is the caller waiting on
+// them, not tool time. The span alone says so: here no child row covers the wait.
+func TestTimelineWaits_SyncSpawnIsWaitingOnSubagents(t *testing.T) {
+	tl := sampleTimeline() // main finishes a reply at 1200s; the next turn starts at 1500s
+	tl.Tools = append(tl.Tools, timeline.Tool{Agent: timeline.MainAgent, ID: "s1", Name: "spawn_subagent", Start: tlAt(1200), End: tlPtr(1500), Seq: 35})
+	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 180, time.Time{}, tlAt(3600))
+	if c := lay.agents[0].cells[cellOf(t, lay, 1300)]; !near(c.subs, 1) || c.tool != 0 {
+		t.Errorf("while the spawn ran: %+v, want waiting on subagents", c)
+	}
+	without := buildTimelineLayout(sampleTimeline(), tlAt(0), tlAt(1800), 180, time.Time{}, tlAt(3600))
+	if got, want := lay.agents[0].toolTime, without.agents[0].toolTime; got != want {
+		t.Errorf("tool time = %s, want %s: the spawn is not tool time", got, want)
 	}
 }
 
@@ -1628,22 +1628,289 @@ func TestTimelineRender_TokPerSecColumn(t *testing.T) {
 	}
 }
 
-// The tok/s note is the only text that explains the column, so the user must see it. The body
-// cuts every line at the pane's width, so the note needs its own legend line to survive at the
-// widths people use.
-func TestTimelineRender_TokPerSecNoteReachesTheUser(t *testing.T) {
-	const note = "tok/s output per second of model time, last 60 s"
-	for _, w := range []int{140, 120} {
+const fullTimelineLegend = "█ tools  █ model  █ retrying  █ waiting on subagents  █ waiting on you  ┆ time cut from the axis   ▁…█ requests in flight"
+
+// The legend is one line, and it no longer explains tok/s or says "in its colour".
+func TestTimelineLegend_OneLine(t *testing.T) {
+	m := timelineModel(t, 200, 46)
+	plainWidth := lipgloss.Width(m.legend())
+	restore := lipgloss.ColorProfile()
+	t.Cleanup(func() { lipgloss.SetColorProfile(restore) })
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	l := m.legend()
+	got := ansi.Strip(l)
+	if !strings.Contains(l, lipgloss.NewStyle().Foreground(colorTLTool).Render("█")) {
+		t.Errorf("tools swatch lost its color: %q", l)
+	}
+	if lipgloss.Width(l) != plainWidth {
+		t.Errorf("width %d under TrueColor, %d under Ascii", lipgloss.Width(l), plainWidth)
+	}
+	if got != fullTimelineLegend {
+		t.Errorf("legend = %q, want %q", got, fullTimelineLegend)
+	}
+	if strings.Contains(got, "\n") || strings.Contains(got, "tok/s") || strings.Contains(got, "in its colour") {
+		t.Errorf("legend = %q", got)
+	}
+}
+
+// A legend too wide for the terminal drops whole items from the right and never wraps.
+func TestTimelineLegend_DropsFromTheRight(t *testing.T) {
+	full := lipgloss.Width(fullTimelineLegend)
+	m := timelineModel(t, full-1, 46)
+	got := ansi.Strip(m.legend())
+	if want := "█ tools  █ model  █ retrying  █ waiting on subagents  █ waiting on you  ┆ time cut from the axis"; got != want {
+		t.Errorf("at %d columns legend = %q, want %q", full-1, got, want)
+	}
+	m = timelineModel(t, full-30, 46)
+	if got, want := ansi.Strip(m.legend()), "█ tools  █ model  █ retrying  █ waiting on subagents  █ waiting on you"; got != want {
+		t.Errorf("at %d columns legend = %q, want %q", full-30, got, want)
+	}
+	for w := 1; w <= full+2; w++ {
+		m := timelineModel(t, w, 46)
+		l := m.legend()
+		if strings.Contains(l, "\n") || lipgloss.Width(l) > w {
+			t.Fatalf("at %d columns legend = %q (%d wide)", w, ansi.Strip(l), lipgloss.Width(l))
+		}
+		if !strings.HasPrefix(fullTimelineLegend, ansi.Strip(l)) {
+			t.Fatalf("at %d columns legend %q is not a cut of the full text from the right", w, ansi.Strip(l))
+		}
+	}
+}
+
+// With no moment picked the cursor row stays, blank, so ← does not move the chart.
+func TestCursorStrip_IdleRowIsBlank(t *testing.T) {
+	m := timelineModel(t, 140, 46)
+	m.timeline.windowIdx = 3
+	lay, _ := m.timelineLayoutNow()
+	if s := m.cursorStrip(lay); s != "" {
+		t.Errorf("idle cursor strip = %q, want blank", ansi.Strip(s))
+	}
+	firstRow := func() int {
+		for i, l := range strings.Split(stripANSI(m.renderTimeline()), "\n") {
+			if strings.Contains(l, "main agent") {
+				return i
+			}
+		}
+		t.Fatal("no main agent row")
+		return -1
+	}
+	before := stripANSI(m.renderTimeline())
+	at := firstRow()
+	lines := strings.Split(before, "\n")
+	if last := lines[len(lines)-1]; strings.TrimSpace(last) != "" {
+		t.Errorf("idle body ends with %q, want the blank cursor row", last)
+	}
+	// Fixed lines (5, one of them the legend) plus two per shown row, and nothing else.
+	agents := m.timelineAgentRows(lay)
+	if want := timelineFixedLines + tlEmptyLines(lay) + 2*agents + 2*m.timelineHostRows(lay, agents); len(lines) != want {
+		t.Errorf("idle body is %d lines, want %d:\n%s", len(lines), want, before)
+	}
+	m.handleKey(tea.KeyMsg{Type: tea.KeyLeft})
+	if got := firstRow(); got != at {
+		t.Errorf("← moved the chart from line %d to %d", at, got)
+	}
+	if n, k := len(lines), len(strings.Split(stripANSI(m.renderTimeline()), "\n")); n != k {
+		t.Errorf("← changed the body from %d to %d lines", n, k)
+	}
+}
+
+// Color changes no text and no width on the timeline.
+func TestTimeline_PlainInvariant(t *testing.T) {
+	for _, w := range []int{80, 100, 140} {
+		m := timelineModel(t, w, 46)
+		assertPlainInvariant(t, m.renderTimeline, 0, -1) // line 0: the window tabs draw [5m] as a chip
+	}
+	restore := lipgloss.ColorProfile()
+	t.Cleanup(func() { lipgloss.SetColorProfile(restore) })
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	out := timelineModel(t, 140, 46).renderTimeline()
+	for _, want := range []string{styleDim.Render("│")} {
+		if !strings.Contains(out, want) {
+			t.Errorf("timeline lacks %q", want)
+		}
+	}
+}
+
+// axisAt is a linear layout of w cells, step apart, from the local time from.
+func axisAt(from time.Time, step time.Duration, w int) tlLayout {
+	to := from.Add(step * time.Duration(w))
+	return tlLayout{axis: tlLinearAxis(from, to, w), from: from, to: to}
+}
+
+func localAt(month time.Month, day, hour, min int) time.Time {
+	return time.Date(2026, month, day, hour, min, 0, 0, time.Local)
+}
+
+// axisTexts is each label's cell and text, in placement order sorted by cell.
+func axisTexts(labels []tlAxisLabel) map[int]string {
+	out := map[int]string{}
+	for _, l := range labels {
+		out[l.cell] = l.text
+	}
+	return out
+}
+
+func assertAxis(t *testing.T, name string, lay tlLayout, want map[int]string) {
+	t.Helper()
+	got := axisTexts(axisLabels(lay))
+	if len(got) != len(want) {
+		t.Errorf("%s: labels %v, want %v", name, got, want)
+		return
+	}
+	for c, s := range want {
+		if got[c] != s {
+			t.Errorf("%s: label at cell %d = %q, want %q (all %v)", name, c, got[c], s, got)
+		}
+	}
+	line := renderAxisLine(axisLabels(lay), lay.axis.width())
+	if lipgloss.Width(line) != lay.axis.width() {
+		t.Errorf("%s: axis line is %d wide, want %d", name, lipgloss.Width(line), lay.axis.width())
+	}
+}
+
+func TestAxisLabels_SameDay(t *testing.T) {
+	lay := axisAt(localAt(11, 19, 23, 30), 30*time.Second, 60)
+	assertAxis(t, "same day", lay, map[int]string{
+		0: "╷11-19 23:30", 16: "╷23:38", 32: "╷23:46", 48: "11-20 00:00╷",
+	})
+}
+
+func TestAxisLabels_AcrossMidnight(t *testing.T) {
+	lay := axisAt(localAt(11, 19, 23, 45), 30*time.Second, 60)
+	assertAxis(t, "across midnight", lay, map[int]string{
+		0: "╷11-19 23:45", 16: "╷23:53", 32: "╷11-20 00:01", 48: "11-20 00:15╷",
+	})
+}
+
+func TestAxisLabels_ThreeDays(t *testing.T) {
+	lay := axisAt(localAt(11, 18, 0, 0), 45*time.Minute, 96)
+	assertAxis(t, "three days", lay, map[int]string{
+		0: "╷11-18 00:00", 16: "╷12:00", 32: "╷11-19 00:00", 48: "╷12:00", 64: "╷11-20 00:00", 84: "11-21 00:00╷",
+	})
+}
+
+// A middle label that would touch the finish is dropped whole; no label is ever cut.
+func TestAxisLabels_DropsOverlap(t *testing.T) {
+	lay := axisAt(localAt(11, 19, 23, 30), 30*time.Second, 46)
+	assertAxis(t, "overlap", lay, map[int]string{0: "╷11-19 23:30", 16: "╷23:38", 34: "11-19 23:53╷"})
+}
+
+// Under 25 cells the dated ends do not fit with a blank between, so they lose their dates; under
+// 13 only the start shows, and under 6 nothing does.
+func TestAxisLabels_NarrowUndated(t *testing.T) {
+	assertAxis(t, "21 cells", axisAt(localAt(11, 19, 23, 30), 3*time.Minute, 21), map[int]string{0: "╷23:30", 15: "00:33╷"})
+	assertAxis(t, "25 cells", axisAt(localAt(11, 19, 23, 30), 3*time.Minute, 25), map[int]string{0: "╷11-19 23:30", 13: "11-20 00:45╷"})
+	assertAxis(t, "12 cells", axisAt(localAt(11, 19, 23, 30), 3*time.Minute, 12), map[int]string{0: "╷23:30"})
+	assertAxis(t, "5 cells", axisAt(localAt(11, 19, 23, 30), 3*time.Minute, 5), map[int]string{})
+}
+
+// Each tick sits on the cell whose start is the label's time, seconds included in a short window;
+// the finish ticks the last cell and names its end.
+func TestAxisLabels_TickOnNamedCell(t *testing.T) {
+	for _, tc := range []struct {
+		lay    tlLayout
+		format string
+	}{
+		{axisAt(localAt(11, 18, 0, 0), 45*time.Minute, 96), "15:04"},
+		{axisAt(localAt(11, 19, 23, 58), 5*time.Second, 60), "15:04:05"},
+	} {
+		for _, l := range axisLabels(tc.lay) {
+			rs := []rune(l.text)
+			tick, text := l.cell, string(rs[1:])
+			if rs[len(rs)-1] == '╷' {
+				tick, text = l.cell+len(rs)-1, string(rs[:len(rs)-1])
+			}
+			named := tc.lay.axis.cells[tick].from.Local()
+			if tick == tc.lay.axis.width()-1 {
+				named = tc.lay.axis.cells[tick].to.Local()
+			}
+			if !strings.HasSuffix(text, named.Format(tc.format)) || (l.date > 0 && !strings.HasPrefix(text, named.Format("01-02 "))) {
+				t.Errorf("label %q ticks cell %d, which starts at %s", l.text, tick, named.Format("01-02 15:04:05"))
+			}
+		}
+	}
+}
+
+// The header is one line: the window selector, the axis and the gutter heads.
+func TestTimelineHeader_OneLine(t *testing.T) {
+	header := func(p termenv.Profile) (string, tlLayout) {
+		withProfile(t, p)
+		m := timelineModel(t, 140, 46)
+		m.timeline.tl = laterSession(timeline.Turn{})
+		end := m.timeline.tl.End.Add(2 * time.Hour)
+		m.now = func() time.Time { return end }
+		m.timeline.windowIdx = 1
+		lay, _ := m.timelineLayoutNow()
+		return strings.SplitN(m.renderTimeline(), "\n", 2)[0], lay
+	}
+	line, lay := header(termenv.TrueColor)
+	axis := ansi.Strip(renderAxisLine(axisLabels(lay), lay.axis.width()))
+	if want := padRight("window  5m  1h  24h  all ", timelineLabelWidth) + axis + "   model  tools  tok/s"; ansi.Strip(line) != want {
+		t.Errorf("header = %q\nwant     %q", ansi.Strip(line), want)
+	}
+	if !strings.Contains(line, styleSeg.Render(" 1h ")) {
+		t.Errorf("the current window is not filled: %q", line)
+	}
+	if strings.Contains(ansi.Strip(line), "→") {
+		t.Errorf("the range text is still drawn: %q", ansi.Strip(line))
+	}
+	plain, _ := header(termenv.Ascii)
+	if !strings.HasPrefix(plain, "window  5m [1h] 24h  all ") {
+		t.Errorf("Ascii header = %q, want the current window in brackets", plain)
+	}
+	if lipgloss.Width(plain) != lipgloss.Width(line) {
+		t.Errorf("header is %d wide under Ascii, %d under TrueColor", lipgloss.Width(plain), lipgloss.Width(line))
+	}
+}
+
+// The notes the header used to carry show on the cursor row while no moment is picked.
+func TestTimelineStatus_OnIdleCursorRow(t *testing.T) {
+	m := timelineModel(t, 140, 46)
+	m.timeline.windowIdx = 3
+	m.timeline.tl.Truncated = true
+	last := func() string {
+		lines := strings.Split(stripANSI(m.renderTimeline()), "\n")
+		return lines[len(lines)-1]
+	}
+	if got := last(); got != "oldest events not shown" {
+		t.Errorf("idle cursor row = %q, want the note", got)
+	}
+	m.timeline.err = errors.New("down")
+	if got := last(); got != "oldest events not shown · refresh failed: down" {
+		t.Errorf("idle cursor row = %q, want both notes", got)
+	}
+	lay, _ := m.timelineLayoutNow()
+	m.timeline.cursor = cellOf(t, lay, 210)
+	if got := last(); !strings.HasPrefix(got, "▸ ") || strings.Contains(got, "oldest events") {
+		t.Errorf("cursor row with a moment picked = %q, want that moment", got)
+	}
+}
+
+// With a moment picked, a failed refresh is a short marker after the moment's time: the chart
+// under the cursor is old. A real error is long (the URL, then the dial error), and the full
+// text is on the idle row, so here it would push the moment off the row.
+func TestTimelineStatus_FailedRefreshOnPickedRow(t *testing.T) {
+	const long = `Get "http://127.0.0.1:47601/v1/sessions/ecb7387f-bffd-4172-adc4-8da23e992e9a/timeline": ` +
+		`dial tcp 127.0.0.1:47601: connect: connection refused`
+	for _, w := range []int{80, 140} {
 		m := timelineModel(t, w, 46)
 		m.timeline.windowIdx = 3
-		body := stripANSI(m.timelineBody())
-		if !strings.Contains(body, note) {
-			t.Errorf("at %d columns the body does not explain tok/s:\n%s", w, body)
+		lay, _ := m.timelineLayoutNow()
+		m.timeline.cursor = cellOf(t, lay, 210)
+		lines := strings.Split(stripANSI(m.renderTimeline()), "\n")
+		clean := lines[len(lines)-1]
+		m.timeline.err = errors.New(long)
+		lines = strings.Split(stripANSI(m.renderTimeline()), "\n")
+		got := lines[len(lines)-1]
+		head := clean[:len("▸ 00:00:00  ")]
+		if want := head + "refresh failed · "; !strings.HasPrefix(got, want) {
+			t.Errorf("width %d: row = %q, want it to start %q", w, got, want)
 		}
-		for _, l := range strings.Split(stripANSI(m.legend()), "\n") {
-			if strings.Contains(l, note) && lipgloss.Width(l) > w {
-				t.Errorf("at %d columns the note's legend line is %d wide: %q", w, lipgloss.Width(l), l)
-			}
+		if strings.Contains(got, "dial tcp") {
+			t.Errorf("width %d: row = %q carries the full error", w, got)
+		}
+		if !strings.Contains(got, "Bash") {
+			t.Errorf("width %d: row = %q lost the moment's tool", w, got)
 		}
 	}
 }

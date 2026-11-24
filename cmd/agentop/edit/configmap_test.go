@@ -264,15 +264,17 @@ func TestApply_PassesManifest(t *testing.T) {
 		return []byte("configmap/foo applied\n"), nil
 	}
 	manifest := []byte("apiVersion: v1\nkind: ConfigMap\n")
+	before := time.Now()
 	at, err := Apply(context.Background(), stub, manifest)
+	after := time.Now()
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 	if at.IsZero() {
 		t.Fatal("apply time should be set")
 	}
-	if time.Since(at) > 5*time.Second {
-		t.Fatalf("apply time too far in past: %v", at)
+	if at.Before(before) || at.After(after) {
+		t.Fatalf("apply time %v is outside the Apply call [%v, %v]", at, before, after)
 	}
 	if string(captured) != string(manifest) {
 		t.Fatalf("manifest captured by stub differs from input")

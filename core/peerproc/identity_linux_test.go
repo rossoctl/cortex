@@ -2,7 +2,11 @@
 
 package peerproc
 
-import "testing"
+import (
+	"testing"
+
+	"golang.org/x/sys/unix"
+)
 
 // The command name is parenthesised and may itself contain spaces and parentheses.
 func TestParseStatIdentity(t *testing.T) {
@@ -16,5 +20,15 @@ func TestParseStatIdentity(t *testing.T) {
 	}
 	if _, _, err := parseStatIdentity([]byte("1 (x) S 1")); err == nil {
 		t.Error("a short line parsed")
+	}
+}
+
+// notifyChildExit returns a wait for the child pid to exit, leaving it unreaped.
+func notifyChildExit(t *testing.T) func(pid int32) {
+	return func(pid int32) {
+		var info unix.Siginfo
+		if err := unix.Waitid(unix.P_PID, int(pid), &info, unix.WEXITED|unix.WNOWAIT, nil); err != nil {
+			t.Fatalf("waitid %d: %v", pid, err)
+		}
 	}
 }

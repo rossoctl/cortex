@@ -11,12 +11,11 @@ import (
 //
 // It carries FACTS ONLY — what was removed and how big the body was. No rates, no dollars.
 //
-// It used to carry rates so a consumer could do the arithmetic, because the dollar amount
-// depends on which prompt-cache tier the saving came out of and that is only known from the
-// response. The conclusion was right and the remedy was backwards: the money step belongs
-// where both halves are in hand, which is the cost owner on the response side. It publishes
-// the priced saving in event.Event.Avoided, attributed to this plugin, so no consumer
-// needs rates and none of them can disagree about the figure.
+// The money is not here. The accountant prices the saving from the ops this plugin reports
+// (pctx.ReportOps) and the response's usage, and inference-parser publishes it in
+// event.Event.Avoided, attributed to this plugin, so no consumer needs rates and none of them can
+// disagree about the figure. These facts stay on the session timeline for a reader of one
+// request; nothing prices them.
 //
 // No body content: the session store is unauthenticated, so this holds counts,
 // tool names the operator themselves configured, and rates.
@@ -25,15 +24,7 @@ type pruneEvent struct {
 	BytesRemoved int      `json:"bytesRemoved"`
 	// BodyBytesAfter is the size of the body as this plugin left it, which is
 	// not the pruned size under on_error: observe — there SetBody is a no-op and
-	// the body it was handed goes on. A consumer divides the response's
-	// prompt-token count by the bytes sent to get tokens-per-byte, so using the
-	// pruned size while the larger body was billed would inflate that ratio and
-	// overstate the saving.
-	//
-	// It is the bytes sent only when no later writer changes them. Request
-	// writers chain, so cost/settle calibrates on the body sent —
-	// len(pctx.Body) once pctx.BodyMutated() — and falls back to this when
-	// nothing was rewritten.
+	// the body it was handed goes on. A fact for a reader; nothing prices it.
 	BodyBytesAfter int `json:"bodyBytesAfter"`
 	// Projected marks a saving that was measured but NOT applied — observe mode.
 	// The bytes were not actually removed from the request, so a consumer must

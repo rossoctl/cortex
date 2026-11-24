@@ -31,10 +31,19 @@ func UsageFromInference(inf *model.InferenceExtension) Usage {
 		return Usage{}
 	}
 	u := Usage{
-		Input:      inf.InputTokens,
-		CacheWrite: inf.CacheWriteTokens,
-		CacheRead:  inf.CacheReadTokens,
-		Output:     inf.OutputTokens,
+		Input:        inf.InputTokens,
+		CacheWrite:   inf.CacheWriteTokens,
+		CacheWrite1h: inf.CacheWrite1hTokens,
+		CacheRead:    inf.CacheReadTokens,
+		Output:       inf.OutputTokens,
+	}
+	// The 1h count is a SUBSET of the cache writes, so a negative count or more 1h
+	// writes than writes is not a real breakdown. Drop the subset, the same way the
+	// parser drops an off-shape cache_creation: the request prices at the 5m rate
+	// and keeps every other counter. Refusing it (PlausibleUsage) would lose the
+	// whole figure over an optional breakdown.
+	if u.CacheWrite1h < 0 || u.CacheWrite1h > u.CacheWrite {
+		u.CacheWrite1h = 0
 	}
 	if u.PromptTotal() == 0 && inf.PromptTokens > 0 {
 		u.Input = inf.PromptTokens
@@ -103,6 +112,20 @@ const (
 	// short-reported prompt produces identical arithmetic, and a wrong tier in the label sends
 	// an operator to the wrong side of the request.
 	ReasonCountersBelowTotal = "counters-below-total"
+
+	// ReasonCacheWrite1hRateEstimated: the figure prices some cache-write tokens at a
+	// GUESSED 1-hour rate rather than a known one — the generic fallback
+	// Rates.CacheWrite1hRate takes for a provider with no documented premium (Anthropic's is: 2x input, which is NOT
+	// this reason, since that derivation is a documented fact rather than a guess).
+	//
+	// Unlike the three reasons above, this is not about the PARSER's counters — it
+	// is decided by CostWith1h's estimated1h return, keyed on which rate the 1h
+	// subset priced at. Reused on the
+	// same Settled/event fields (Incomplete/IncompleteReason,
+	// ModelledIncomplete/ModelledIncompleteReason) rather than a parallel field,
+	// because the claim is the same shape: the figure stands, and it is not an exact
+	// total. It names a LOW figure, so event.Event.Trust reads it as TrustFloor.
+	ReasonCacheWrite1hRateEstimated = "cache-write-1h-rate-estimated"
 )
 
 // NO PREDICATE IN THIS FILE READS model.InferenceExtension.PresentKinds, and none should: it

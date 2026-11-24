@@ -3,7 +3,6 @@ package archive
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -163,11 +162,10 @@ func TestPrior_ARenameLeftUnderTheOldIdIsNotCountedTwice(t *testing.T) {
 			st.Rekey("X", "Y")
 		}},
 		{"the rename is lost to a full queue", func(t *testing.T, a *Archive, st *session.Store) {
+			a.held = make(chan struct{}, 1)
 			a.gate = make(chan struct{})
-			a.Rekeyed("filler", "filler2") // the writer takes it and waits at the gate
-			for len(a.ops) > 0 {
-				runtime.Gosched()
-			}
+			a.Rekeyed("filler", "filler2")
+			<-a.held // the writer has taken it and waits at the gate
 			for len(a.ops) < cap(a.ops) {
 				a.Rekeyed("filler", "filler2")
 			}

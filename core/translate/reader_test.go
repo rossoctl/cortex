@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 	"testing/iotest"
-	"time"
 
 	"github.com/rossoctl/cortex/core/translate/anthropic"
 	"github.com/rossoctl/cortex/core/translate/chat"
@@ -59,19 +58,10 @@ func TestReplyReader_Incremental(t *testing.T) {
 		_, _ = pw.Write([]byte(`data: {"id":"chatcmpl-1","model":"m","choices":[{"index":0,"delta":{"role":"assistant"}}]}` + "\n\n"))
 	}()
 	r := newReader(pr, 200, true, true)
-	got := make(chan string, 1)
-	go func() {
-		buf := make([]byte, 4096)
-		n, _ := r.Read(buf)
-		got <- string(buf[:n])
-	}()
-	select {
-	case s := <-got:
-		if !strings.HasPrefix(s, "event: message_start\n") {
-			t.Errorf("first Read = %q, want the message_start frame", s)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Read waited for more of the stream")
+	buf := make([]byte, 4096)
+	n, _ := r.Read(buf)
+	if s := string(buf[:n]); !strings.HasPrefix(s, "event: message_start\n") {
+		t.Errorf("first Read = %q, want the message_start frame", s)
 	}
 }
 

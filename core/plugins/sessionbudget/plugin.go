@@ -685,15 +685,19 @@ func (p *SessionBudget) accumulate(sessionID string, delta tokenDelta) {
 }
 
 func (p *SessionBudget) refreshLoop(interval time.Duration) {
-	defer close(p.stopped)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	p.refreshOn(ticker.C)
+}
 
+// refreshOn refreshes the cache at each tick until Shutdown.
+func (p *SessionBudget) refreshOn(ticks <-chan time.Time) {
+	defer close(p.stopped)
 	for {
 		select {
 		case <-p.stopCh:
 			return
-		case <-ticker.C:
+		case <-ticks:
 			p.refreshCache()
 		}
 	}

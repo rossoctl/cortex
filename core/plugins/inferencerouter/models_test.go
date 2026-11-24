@@ -322,20 +322,34 @@ type fakeStore struct {
 	mu   sync.Mutex
 	vals map[string]string
 	ttls map[string]time.Duration
+	// onSet, when set, sees every write after it lands.
+	onSet func(k, v string)
+	// now, when set, expires each write its TTL after it was made.
+	now     func() time.Time
+	expires map[string]time.Time
 }
 
 func (f *fakeStore) Get(_ context.Context, k string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if exp, ok := f.expires[k]; ok && !f.now().Before(exp) {
+		return "", nil
+	}
 	return f.vals[k], nil
 }
 func (f *fakeStore) Set(_ context.Context, k, v string, ttl time.Duration) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.vals == nil {
-		f.vals, f.ttls = map[string]string{}, map[string]time.Duration{}
+		f.vals, f.ttls, f.expires = map[string]string{}, map[string]time.Duration{}, map[string]time.Time{}
 	}
 	f.vals[k], f.ttls[k] = v, ttl
+	if f.now != nil && ttl > 0 {
+		f.expires[k] = f.now().Add(ttl)
+	}
+	if f.onSet != nil {
+		f.onSet(k, v)
+	}
 	return nil
 }
 func (f *fakeStore) Incr(context.Context, string, int64) (int64, error)             { return 0, nil }
@@ -371,6 +385,96 @@ func TestRouter_KeepsRefusalsAndSubstitutesInTheDurableStore(t *testing.T) {
 	}
 }
 
+// clockedShared is a process store whose entries expire on now.
+type clockedShared struct {
+	now   func() time.Time
+	vals  map[string]any
+	until map[string]time.Time
+}
+
+func (c *clockedShared) Put(k string, v any, ttl time.Duration) {
+	c.vals[k], c.until[k] = v, c.now().Add(ttl)
+}
+func (c *clockedShared) Get(k string) (any, bool) {
+	if !c.now().Before(c.until[k]) {
+		return nil, false
+	}
+	v, ok := c.vals[k]
+	return v, ok
+}
+func (c *clockedShared) Delete(k string) { delete(c.vals, k) }
+
+// A substitute lasts as long as its session's pin: a session that keeps sending
+// keeps the model it was given past pinTTL from its first request.
+func TestRouter_ASubstituteIsRenewedWithItsPin(t *testing.T) {
+	for _, durable := range []bool{true, false} {
+		t.Run(map[bool]string{true: "durable store", false: "process store"}[durable], func(t *testing.T) {
+			start := time.Date(2026, 10, 8, 17, 0, 0, 0, time.UTC)
+			now := start
+			clock := func() time.Time { return now }
+			r := New()
+			r.now = clock
+			if durable {
+				r.SetStore(&fakeStore{now: clock})
+			}
+			if err := r.Configure(json.RawMessage(wordConfig(`"opencode": "glm"`))); err != nil {
+				t.Fatal(err)
+			}
+			r.catalogs.set("glm", glmModels)
+			p, _ := pipeline.New([]pipeline.Plugin{r})
+			shared := &clockedShared{now: clock, vals: map[string]any{}, until: map[string]time.Time{}}
+			send := func() *pipeline.Context {
+				pctx := chat(nil, "opencode.ai", "/zen/v1/chat/completions", opencodeUA, "s1", "exo-free", true)
+				pctx.Shared = shared
+				run(t, p, pctx)
+				return pctx
+			}
+
+			resend(p, send(), http.StatusForbidden, refusal)
+			for range 2 {
+				now = now.Add(pinTTL * 2 / 3)
+				if got := sentModel(t, send()); got != glmMain {
+					t.Fatalf("%v after the first request the session sends %q, want %s", now.Sub(start), got, glmMain)
+				}
+			}
+		})
+	}
+}
+
+// A session moved back to a server keeps the substitute it had there: the pin the
+// move saves renews it, as a pin's renewal does.
+func TestRouter_ASessionMovedBackKeepsItsSubstitute(t *testing.T) {
+	start := time.Date(2026, 10, 8, 17, 0, 0, 0, time.UTC)
+	now := start
+	clock := func() time.Time { return now }
+	store := &fakeStore{now: clock}
+	r := New()
+	r.now = clock
+	r.SetStore(store)
+	cfg := strings.Replace(wordConfig(`"opencode": "ete"`), `"agents"`, `"sessions": {"s1": "glm"}, "agents"`, 1)
+	if err := r.Configure(json.RawMessage(cfg)); err != nil {
+		t.Fatal(err)
+	}
+	r.catalogs.set("glm", glmModels)
+	p, _ := pipeline.New([]pipeline.Plugin{r})
+	request := func() *pipeline.Context {
+		return chat(nil, "opencode.ai", "/zen/v1/chat/completions", opencodeUA, "s1", "exo-free", true)
+	}
+
+	// The session kept glm's substitute, then ran on ete.
+	r.keepSubstitute(request(), "glm", "exo-free", glmMain)
+	storedPins{st: store, now: clock}.save(pinPrefix+"s1", pin{agent: "opencode", server: "ete"})
+	now = now.Add(pinTTL - time.Hour)
+	for range 2 {
+		pctx := request()
+		run(t, p, pctx)
+		if got := sentModel(t, pctx); got != glmMain {
+			t.Fatalf("%v after the substitute was kept the session sends %q, want %s", now.Sub(start), got, glmMain)
+		}
+		now = now.Add(2 * time.Hour)
+	}
+}
+
 // The real outbound chain parses an OpenCode Zen request and the router captures it.
 func TestRouter_TheParserAndTheRouterCaptureAZenRequest(t *testing.T) {
 	p, err := plugins.BuildWithDeps(entries(wordConfig(`"opencode": "glm"`)),
@@ -403,6 +507,13 @@ func TestInit_FetchesEachServersModelsAndKeepsThem(t *testing.T) {
 
 	st := &fakeStore{}
 	_ = st.Set(context.Background(), catalogPrefix+"glm", `["rits/zai-org/glm-5-3"]`, 0)
+	fetched := make(chan struct{})
+	var once sync.Once
+	st.onSet = func(k, v string) {
+		if k == catalogPrefix+"glm" && strings.Contains(v, "glm-6") {
+			once.Do(func() { close(fetched) })
+		}
+	}
 	r := New()
 	r.SetStore(st)
 	r.client = srv.Client()
@@ -417,17 +528,7 @@ func TestInit_FetchesEachServersModelsAndKeepsThem(t *testing.T) {
 
 	// Wait for the durable copy: the fetch writes it after the in-memory one, so
 	// seeing it in the store means both are done.
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		v, _ := st.Get(context.Background(), catalogPrefix+"glm")
-		if strings.Contains(v, "glm-6") {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("stored list = %s, want the fetched one kept", v)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	<-fetched
 	if got := routerconfig.Resolve("glm", r.catalogs.get("glm")); got != "rits/zai-org/glm-6" {
 		t.Errorf("list = %v, want the fetched one", r.catalogs.get("glm"))
 	}
@@ -1042,11 +1143,13 @@ func TestResend_ARefusedSubstituteEndsThere(t *testing.T) {
 // A session's kept substitute need not be what the server's list resolves now: the
 // word changed, the list moved, or the model was deleted from the server. Refused, it
 // still reaches the agent, because a request is resent for its model once at most,
-// whatever a second substitute would be.
+// whatever a second substitute would be. The session drops it, so its next request
+// goes with the model the agent asked for.
 func TestResend_AKeptSubstituteRefusedIsNotResentAgain(t *testing.T) {
 	const stale = "rits/zai-org/glm-4-6"
 	r, p := buildRouter(t, wordConfig(`"opencode": "glm"`))
-	pctx := chat(newStore(t), "opencode.ai", "/zen/v1/chat/completions", opencodeUA, "s1", "exo-free", true)
+	store := newStore(t)
+	pctx := chat(store, "opencode.ai", "/zen/v1/chat/completions", opencodeUA, "s1", "exo-free", true)
 	r.keepSubstitute(pctx, "glm", "exo-free", stale)
 	run(t, p, pctx)
 	if got := sentModel(t, pctx); got != stale {
@@ -1054,6 +1157,32 @@ func TestResend_AKeptSubstituteRefusedIsNotResentAgain(t *testing.T) {
 	}
 	if resend(p, pctx, http.StatusNotFound, `{"error":{"message":"model '`+stale+`' not found","type":"not_found_error","param":null,"code":null}}`) {
 		t.Error("Resend = true for a kept substitute the server refused: a second model for one request")
+	}
+	next := chat(store, "opencode.ai", "/zen/v1/chat/completions", opencodeUA, "s1", "exo-free", true)
+	run(t, p, next)
+	if got := sentModel(t, next); got != "exo-free" {
+		t.Errorf("next model = %q, want exo-free: the refused substitute is dropped", got)
+	}
+}
+
+// A refused substitute is dropped only while the session still keeps it, and only for
+// its kind: a late refusal leaves a substitute kept since, and the other kind's.
+func TestRouter_ForgetSubstituteDropsOnlyTheRefusedOne(t *testing.T) {
+	r, _ := buildRouter(t, wordConfig(`"opencode": "glm"`))
+	store := newStore(t)
+	main := chat(store, "opencode.ai", "/zen/v1/chat/completions", opencodeUA, "s1", "exo-free", true)
+	helper := chat(store, "opencode.ai", "/zen/v1/chat/completions", opencodeUA, "s1", "exo-free", false)
+	r.keepSubstitute(main, "glm", "exo-free", "a")
+	r.keepSubstitute(main, "glm", "exo-free", "b")
+	r.keepSubstitute(helper, "glm", "exo-free", "h")
+
+	r.forgetSubstitute(main, "glm", "exo-free", "a")
+	if got := r.sessionSubstitute(main, "glm", "exo-free"); got != "b" {
+		t.Errorf("main = %q after a late refusal of a, want b", got)
+	}
+	r.forgetSubstitute(helper, "glm", "exo-free", "h")
+	if got := r.sessionSubstitute(main, "glm", "exo-free"); got != "b" {
+		t.Errorf("main = %q after the helper's refusal, want b", got)
 	}
 }
 

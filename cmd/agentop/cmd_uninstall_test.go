@@ -359,7 +359,7 @@ func TestUninstallStopsABackgroundCortex(t *testing.T) {
 	stopProcessOnCleanup(t, &pid)
 	sc.setUp(t, "--no-service")
 	pidFile := filepath.Join(sc.home, ".cortex", "proxy.pid")
-	if pid = readPIDFile(pidFile); !alive(pid) {
+	if pid = readPIDFile(pidFile); !processAlive(pid) {
 		t.Fatal("fixture: setup --no-service left no live proxy")
 	}
 	// ps names the stub's sleep as cortex, as it names the real background proxy.
@@ -369,7 +369,7 @@ func TestUninstallStopsABackgroundCortex(t *testing.T) {
 	if row := consentRow(out, "stop and remove"); !strings.Contains(row, " the background Cortex ") || !strings.HasSuffix(row, " ~/.cortex/proxy.pid") {
 		t.Errorf("the consent row is %q, want the background Cortex and its pidfile", row)
 	}
-	if alive(pid) {
+	if processAlive(pid) {
 		t.Errorf("the background Cortex (pid %d) is still running", pid)
 	}
 	if _, err := os.Stat(pidFile); !os.IsNotExist(err) {
@@ -1173,17 +1173,19 @@ func TestUninstallRowsRunUnderASpinnerOnATerminal(t *testing.T) {
 	var w lockedWriter
 	ui := checklist.New(&w, true)
 	applyRemovals(&setupEnv{home: "/h"}, ui, []removal{{label: "stopped", run: func(*checklist.Running) (string, []string, error) {
-		time.Sleep(250 * time.Millisecond)
 		return "background Cortex stopped", nil, nil
 	}}}, nil)
 	ui.Close()
 	out := w.String()
-	// The row's time ends at column 78: 42 columns of row, then the 4 of "0.Ns".
-	row := "\r\x1b[K  ✓ stopped      background Cortex stopped" + strings.Repeat(" ", 78-42-4) + "0."
-	for _, want := range []string{"\x1b[?25l", " stopped      \r", row, "\x1b[?25h"} {
+	for _, want := range []string{"\x1b[?25l", " stopped      \r", "\x1b[?25h"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("animated output lacks %q: %q", want, out)
 		}
+	}
+	// The row's time ends at column 78: 42 columns of row, then the 4 of "N.Ns".
+	row := regexp.QuoteMeta("\r\x1b[K  ✓ stopped      background Cortex stopped"+strings.Repeat(" ", 78-42-4)) + `\d\.\ds`
+	if !regexp.MustCompile(row).MatchString(out) {
+		t.Errorf("animated output lacks the row with its time: %q", out)
 	}
 }
 
@@ -1265,19 +1267,12 @@ func TestUninstallASignalAtThePromptChangesNothing(t *testing.T) {
 		}
 		sigs <- os.Interrupt
 		// A yes after the Ctrl-C, too late: uninstall has stopped waiting by then.
-		select {
-		case <-release:
-		case <-time.After(10 * time.Second):
-		}
+		<-release
 		return true
 	}
 	t.Cleanup(func() { uninstallConfirm = saved })
 	before := homeFiles(t, sc.home)
-	start := time.Now()
 	code, out := sc.uninstall(t)
-	if took := time.Since(start); took > 5*time.Second {
-		t.Errorf("uninstall took %s, waiting for the answer after the signal", took)
-	}
 	wantLines(t, code, exitDeclined, out, "  Continue? [y/N] \n  Not changed.\n")
 	if strings.Contains(out, "✓") {
 		t.Errorf("a removal ran after the signal:\n%s", out)
@@ -1297,17 +1292,28 @@ const uninstallSigintChild = "AGENTOP_TEST_UNINSTALL_SIGINT_CHILD"
 func TestUninstallARealSigintStillShowsTheCursor(t *testing.T) {
 	if os.Getenv(uninstallSigintChild) == "1" {
 		sc := newUninstallScene(t)
-		saved, savedAnimate := uninstallRemovalsHook, uninstallAnimate
-		t.Cleanup(func() { uninstallRemovalsHook, uninstallAnimate = saved, savedAnimate })
+		saved, savedAnimate, savedSignals := uninstallRemovalsHook, uninstallAnimate, uninstallSignals
+		t.Cleanup(func() { uninstallRemovalsHook, uninstallAnimate, uninstallSignals = saved, savedAnimate, savedSignals })
 		uninstallAnimate = func(io.Writer) bool { return true }
+		// The real subscription, relayed so the removal knows when its signal is in.
+		arrived := make(chan struct{})
+		uninstallSignals = func() (<-chan os.Signal, func()) {
+			c, stop := savedSignals()
+			relayed := make(chan os.Signal, 1)
+			go func() {
+				relayed <- <-c
+				close(arrived)
+			}()
+			return relayed, stop
+		}
 		uninstallRemovalsHook = func([]removal) []removal {
 			step := func(label string, fn func()) removal {
 				return removal{label: label, item: checklist.Item{Verb: "remove", What: "the " + label},
 					run: func(*checklist.Running) (string, []string, error) { fn(); return "done", nil, nil }}
 			}
 			return []removal{step("first", func() {}), step("second", func() {
-				_ = syscall.Kill(os.Getpid(), syscall.SIGINT)
-				time.Sleep(300 * time.Millisecond) // for it to arrive while this removal runs
+				_ = killPID(os.Getpid(), syscall.SIGINT)
+				<-arrived
 			}), step("third", func() {})}
 		}
 		code, out := sc.uninstall(t, "--yes")

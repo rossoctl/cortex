@@ -219,7 +219,7 @@ func (m *model) applyOlderPage(msg olderPageLoadedMsg) {
 	// Refused here rather than by teaching ViewPage to reject high cursors, because the store
 	// cannot tell a re-created session from a trimmed one, and this check does not need to.
 	if own := ownOldest(held, msg.id); own != nil && msg.events[len(msg.events)-1].At.After(own.At) {
-		m.setFlash("session restarted — [t] for the tail")
+		m.setFlash("session restarted — [G] for the tail")
 		m.abandonIfTentative(msg.id, st)
 		return
 	}

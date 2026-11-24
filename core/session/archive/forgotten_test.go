@@ -60,7 +60,7 @@ func TestForgotten_DeleteWritesRecord(t *testing.T) {
 		t.Fatalf("Lookup = %+v, %v; want a session with a request", sum, ok)
 	}
 	a.Deleted("s1")
-	if _, err := a.AwaitDelete("s1", 5*time.Second); err != nil {
+	if _, err := a.AwaitDelete("s1", time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	recs := readForgotten(t, root)
@@ -84,7 +84,7 @@ func TestForgotten_ClearWritesOnePerSession(t *testing.T) {
 	}
 	settle(a)
 	a.Cleared()
-	if _, err := a.AwaitClear(5 * time.Second); err != nil {
+	if _, err := a.AwaitClear(time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	ids := map[string]bool{}
@@ -150,7 +150,7 @@ func TestForgotten_NoInferenceWritesNone(t *testing.T) {
 		Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "example.com", At: clk.now()})
 	settle(a)
 	a.Deleted("s1")
-	if _, err := a.AwaitDelete("s1", 5*time.Second); err != nil {
+	if _, err := a.AwaitDelete("s1", time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	if recs := readForgotten(t, root); len(recs) != 0 {
@@ -217,11 +217,11 @@ func TestForgotten_LedgerOffWritesNone(t *testing.T) {
 	r.record("b", synthSession(21, 1, 256)...)
 	settle(a)
 	a.Deleted("a")
-	if _, err := a.AwaitDelete("a", 5*time.Second); err != nil {
+	if _, err := a.AwaitDelete("a", time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	a.Cleared()
-	if _, err := a.AwaitClear(5 * time.Second); err != nil {
+	if _, err := a.AwaitClear(time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(root, forgetFile)); !os.IsNotExist(err) {
@@ -256,7 +256,7 @@ func TestForgotten_CorruptLineSkipped(t *testing.T) {
 	newRecorder(a).record("s1", synthSession(4, 1, 256)...)
 	settle(a)
 	a.Deleted("s1")
-	if _, err := a.AwaitDelete("s1", 5*time.Second); err != nil {
+	if _, err := a.AwaitDelete("s1", time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(filepath.Join(root, forgetFile))
@@ -298,7 +298,7 @@ func TestForgotten_SurvivesReopen(t *testing.T) {
 	newRecorder(a).record("s1", synthSession(5, 1, 256)...)
 	settle(a)
 	a.Deleted("s1")
-	if _, err := a.AwaitDelete("s1", 5*time.Second); err != nil {
+	if _, err := a.AwaitDelete("s1", time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.Close(); err != nil {

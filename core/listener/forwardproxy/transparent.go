@@ -336,7 +336,16 @@ func (s *Server) appendTunnelOpen(pctx *pipeline.Context, ev pipeline.SessionEve
 	if s.ClientAffinity || s.processesOn() || pctx.SessionSource == pipeline.SessionSourceConnection {
 		pinned = pctx.OutboundSessionID
 	}
-	return s.Sessions.AppendBucket(attribution.FiledSession(pinned, s.Sessions.ActiveSession), ev)
+	sid := attribution.FiledSession(pinned, s.Sessions.ActiveSession)
+	// A CONNECT that names its own session and asks not to be recorded withholds that session
+	// (#1923), but only when its row files under the session it named: by these rules the row can
+	// go to the active session instead, and a flag there would stop another session's recording.
+	// The named id is the one pinned before the gate plugins ran (NamedSession), not a re-read
+	// of pctx.Headers, which a plugin can rewrite.
+	if pctx.WithholdsSession() && sid == pctx.NamedSession() {
+		ev.NoRecord = true
+	}
+	return s.Sessions.AppendBucket(sid, ev)
 }
 
 // recordTunnelClosed emits the SessionResponse row for a tunnel that ended, or that

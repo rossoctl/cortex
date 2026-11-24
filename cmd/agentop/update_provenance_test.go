@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/sigstore/sigstore-go/pkg/root"
+
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 )
 
 const provenanceFixtureName = "agentop_v0.9.5_darwin_arm64.tar.gz"
@@ -227,20 +229,17 @@ func TestProvenanceTrustedMaterialTimesOut(t *testing.T) {
 	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-release }))
 	t.Cleanup(func() { close(release); srv.Close() })
-	t.Setenv("HOME", t.TempDir()) // an empty TUF cache, so the client must fetch
+	testhome.Set(t, t.TempDir()) // an empty TUF cache, so the client must fetch
 	oldMirror, oldTimeout := tufMirror, tufFetchTimeout
 	t.Cleanup(func() { tufMirror, tufFetchTimeout = oldMirror, oldTimeout })
-	tufMirror, tufFetchTimeout = srv.URL, 200*time.Millisecond
+	tufMirror, tufFetchTimeout = srv.URL, time.Nanosecond
 
-	done := make(chan error, 1)
-	go func() { _, err := provenanceTrustedMaterial(); done <- err }()
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("trusted root loaded from a server that never answers")
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("trusted root fetch did not time out")
+	_, err := provenanceTrustedMaterial()
+	if err == nil {
+		t.Fatal("trusted root loaded from a server that never answers")
+	}
+	if !strings.Contains(err.Error(), "Client.Timeout exceeded") {
+		t.Errorf("err = %v, want the fetch's timeout", err)
 	}
 }
 

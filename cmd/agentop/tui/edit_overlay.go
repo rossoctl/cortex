@@ -40,7 +40,7 @@ type editState struct {
 	// /reload/status confirms it landed. Captured together when the cycle
 	// begins, and read from here rather than off the model for the rest of it,
 	// so one transaction always targets one proxy — an operator who switches
-	// pods or presses [l] mid-edit cannot have the apply land somewhere the
+	// pods or presses [L] mid-edit cannot have the apply land somewhere the
 	// fetch never came from.
 	store     edit.Store
 	statusURL string
@@ -128,9 +128,9 @@ func renderEditOverlay(s editState, width, height int) string {
 		b.WriteString(s.diff)
 		b.WriteString("\n")
 		if len(s.validationErrs) > 0 {
-			b.WriteString(styleHint.Render("apply anyway? (y/N)"))
+			b.WriteString(renderHints("apply anyway?  [y] apply  [n] cancel"))
 		} else {
-			b.WriteString(styleHint.Render("apply this change? (y/N)"))
+			b.WriteString(renderHints("apply this change?  [y] apply  [n] cancel"))
 		}
 	case editPhaseApplying:
 		b.WriteString(styleTitle.Render("Edit pipeline"))
@@ -151,7 +151,7 @@ func renderEditOverlay(s editState, width, height int) string {
 		b.WriteString("\n\n")
 		b.WriteString(s.err)
 		b.WriteString("\n\n")
-		b.WriteString(styleHint.Render("[r] re-edit  [Esc] back to Pipeline"))
+		b.WriteString(renderHints("[r] re-edit  [Esc] back to Pipeline"))
 	}
 	return box.Render(b.String())
 }

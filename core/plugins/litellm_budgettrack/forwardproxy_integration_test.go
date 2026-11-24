@@ -75,7 +75,11 @@ func TestForwardProxyStreamedSSEUpdatesLedger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	proxy := httptest.NewServer(srv.Handler())
+	handled := make(chan struct{})
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		srv.Handler().ServeHTTP(w, r)
+		close(handled)
+	}))
 	t.Cleanup(proxy.Close)
 
 	pu, _ := url.Parse(proxy.URL)
@@ -98,19 +102,16 @@ func TestForwardProxyStreamedSSEUpdatesLedger(t *testing.T) {
 	}
 
 	// The terminal last=true dispatch runs in the handler's defer after the
-	// stream is forwarded, so poll briefly for the ledger to settle.
+	// stream is forwarded, so wait for the handler to return.
+	<-handled
 	want := 100*1e-6 + 40*5e-6 // 0.0003
-	for i := 0; i < 200; i++ {
-		p.mu.Lock()
-		got, calls := p.ledger.TotalSpend, p.ledger.TotalCalls
-		p.mu.Unlock()
-		if calls > 0 {
-			if got < want-1e-12 || got > want+1e-12 {
-				t.Fatalf("ledger TotalSpend = %v, want %v", got, want)
-			}
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	p.mu.Lock()
+	got, calls := p.ledger.TotalSpend, p.ledger.TotalCalls
+	p.mu.Unlock()
+	if calls == 0 {
+		t.Fatal("ledger never updated from a streamed SSE response — the forward proxy did not dispatch frames to the plugin")
 	}
-	t.Fatal("ledger never updated from a streamed SSE response — the forward proxy did not dispatch frames to the plugin")
+	if got < want-1e-12 || got > want+1e-12 {
+		t.Fatalf("ledger TotalSpend = %v, want %v", got, want)
+	}
 }

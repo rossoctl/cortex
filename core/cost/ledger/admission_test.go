@@ -110,7 +110,7 @@ func TestRecord_ASavingWithNoInferenceExtensionIsStillARow(t *testing.T) {
 	rec, err := json.Marshal(event.Event{
 		Source: event.SourceUsageFallback, Provenance: "bundled",
 		Avoided: []event.Saving{{
-			Component: "tool-prune", TokensAvoided: 1000, USD: 0.10, Provenance: "bundled", Tier: "input",
+			Basis: event.BasisUSD, Component: "tool-prune", TokensAvoided: 1000, USD: 0.10, Provenance: "bundled", Tier: "input",
 		}},
 	})
 	if err != nil {
@@ -208,7 +208,7 @@ func TestRecord_APromptOnlyOrAvoidedOnlyRecordIsARowWithNoDollars(t *testing.T) 
 		}},
 		{name: "avoided-only", rec: event.Event{
 			Source: event.SourceUsageFallback, Provenance: "bundled",
-			Avoided: []event.Saving{{Component: "tool-prune", TokensAvoided: 1000, USD: 0.10, Provenance: "bundled", Tier: "input"}},
+			Avoided: []event.Saving{{Basis: event.BasisUSD, Component: "tool-prune", TokensAvoided: 1000, USD: 0.10, Provenance: "bundled", Tier: "input"}},
 		}, wantAvoided: 100_000},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

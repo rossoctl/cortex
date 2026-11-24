@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"testing"
 )
@@ -50,5 +51,24 @@ func TestSearchSession_TellsTheTwo404sApart(t *testing.T) {
 		if !errors.Is(err, tc.want) {
 			t.Errorf("body %q: err %v, want %v", tc.body, err, tc.want)
 		}
+	}
+}
+
+func TestSearchSession_ADeadlinelessCallerIsBoundedMidBody(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(stallMidBody(`{"seqs":[`)))
+	defer ts.Close()
+
+	c := New(ts.URL)
+	given := expireStreamDeadlineOnHeaders(t, c)
+	_, err := c.SearchSession(context.Background(), "s", "q")
+	if err == nil {
+		t.Fatal("SearchSession returned no error against a server that stalled mid-body")
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) || !errors.Is(err, context.Canceled) {
+		t.Errorf("failed with %v, want a canceled body read: the call ended before the body", err)
+	}
+	if *given != streamDefaultTimeout {
+		t.Errorf("the call was bounded by %v, want streamDefaultTimeout (%v)", *given, streamDefaultTimeout)
 	}
 }

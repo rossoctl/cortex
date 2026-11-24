@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 )
 
 // codexFixture writes a Cortex config under its own temp dir and returns the
@@ -486,7 +488,7 @@ func TestCodexDeclining(t *testing.T) {
 // the real ~/.codex/.env out of reach. HOME is pointed at a temp dir anyway, so a case
 // added later that does reach the dispatch cannot touch the real file either.
 func TestCodex_Usage(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	testhome.Set(t, t.TempDir())
 	for _, tc := range []struct {
 		name     string
 		args     []string
@@ -672,7 +674,7 @@ func TestCodexEnable_RecordsAnAbsolutePath(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			home := t.TempDir()
-			t.Setenv("HOME", home)
+			testhome.Set(t, home)
 			t.Setenv(codexHomeEnv, "")
 			cfg := filepath.Join(home, cortexCfgRel)
 			if err := os.MkdirAll(filepath.Dir(cfg), 0o700); err != nil {

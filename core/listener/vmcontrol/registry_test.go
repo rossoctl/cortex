@@ -79,12 +79,13 @@ func (s *captureSink) Emit(e Event) {
 	s.emitted = make(chan struct{})
 }
 
-// awaitEvent blocks until vm has an event with decision, and returns it.
+// awaitEvent blocks until vm has an event with decision, and returns it. An
+// empty decision matches any.
 func (s *captureSink) awaitEvent(vm, decision string) Event {
 	for {
 		s.mu.Lock()
 		for _, e := range s.events {
-			if e.VMID == vm && e.Decision == decision {
+			if e.VMID == vm && (decision == "" || e.Decision == decision) {
 				s.mu.Unlock()
 				return e
 			}
@@ -355,13 +356,7 @@ func TestRegistryTunnelAudit(t *testing.T) {
 	}
 	_ = conn.Close()
 
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if evs := sink.forVM("vm-b"); len(evs) > 0 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	sink.awaitEvent("vm-b", "")
 	events := sink.forVM("vm-b")
 	if len(events) != 1 {
 		t.Fatalf("audit events = %+v, want exactly one tunnel line", events)
@@ -421,11 +416,7 @@ func TestRegistryUnregisterAbortsInflight(t *testing.T) {
 			_ = resp.Body.Close()
 		}
 	}()
-	select {
-	case <-arrived:
-	case <-time.After(5 * time.Second):
-		t.Fatal("slow request never reached the backend")
-	}
+	<-arrived
 
 	// A live tunnel on vm-b, which must survive vm-a's Unregister.
 	tunnelB := guest(t, vmB)
@@ -593,6 +584,19 @@ func rowsIn(store *session.Store, sid string) int {
 	return 0
 }
 
+// awaitRows blocks until sid holds at least n rows, re-checking on every event
+// the store publishes. Subscribing before the first check means no append slips
+// between the two.
+func awaitRows(store *session.Store, sid string, n int) {
+	sub, cancel := store.Subscribe()
+	defer cancel()
+	for rowsIn(store, sid) < n {
+		if _, ok := <-sub.Events(); !ok {
+			return
+		}
+	}
+}
+
 // TestRegistry_EgressDeniedRowLandsInTheVMSession: a VM request refused by the
 // egress allow list is refused BEFORE hydration, so nothing on that path used to
 // consult TrustedSessionID — the denied row went to ActiveSession() (possibly
@@ -702,14 +706,8 @@ func TestRegistry_OpaqueTunnelRowsLandInTheVMSession(t *testing.T) {
 	}
 	_ = c.Close()
 
-	// The close row is recorded after the tunnel ends; poll for both rows.
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if rowsIn(store, "sid-b") >= 2 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	// The close row is recorded after the tunnel ends; wait for both rows.
+	awaitRows(store, "sid-b", 2)
 	if got := rowsIn(store, "sid-b"); got != 2 {
 		t.Errorf("the VM's session holds %d tunnel row(s), want the open and the close", got)
 	}

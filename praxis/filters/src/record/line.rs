@@ -46,6 +46,8 @@ pub const NOT_SET_IN_PRAXIS_MODE: &[&str] = &[
     "parentProject",
     // An import sets it; every gateway row is live.
     "source",
+    // Cortex marks the session before the hop (Store.MarkNoRecord), so the gateway never sets it.
+    "noRecord",
 ];
 
 fn is_zero(v: &i64) -> bool {

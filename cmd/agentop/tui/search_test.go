@@ -41,12 +41,31 @@ func rowLook(tbl table.Model, tok string) string {
 		switch {
 		case strings.Contains(l, sel):
 			return "selected"
-		case strings.Contains(l, esc(st.Match)), strings.Contains(l, esc(st.Marked)):
+		case strings.Contains(l, esc(st.Match)), lastSGRBefore(l, tok) == esc(st.Marked):
 			return "marked"
 		}
 		return "plain"
 	}
 	return "absent"
+}
+
+// lastSGRBefore is the last escape sequence in l before tok. A marked row draws tok in the
+// Marked ink; a column ink elsewhere in the row may be the same color (colorOutbound and
+// colorWarn are one ink in the dark theme), so the row's other cells cannot tell.
+func lastSGRBefore(l, tok string) string {
+	i := strings.Index(l, tok)
+	if i < 0 {
+		return ""
+	}
+	j := strings.LastIndex(l[:i], "\x1b[")
+	if j < 0 {
+		return ""
+	}
+	k := strings.IndexByte(l[j:i], 'm')
+	if k < 0 {
+		return ""
+	}
+	return l[j : j+k+1]
 }
 
 func checkLooks(t *testing.T, what string, tbl table.Model, want map[string]string) {
@@ -270,12 +289,12 @@ func TestSearch_IsPerPane(t *testing.T) {
 	if m.pane != paneEvents {
 		t.Fatalf("Enter on a session left pane %v, want events", m.pane)
 	}
-	if st := stripANSI(statusRow(m.footerView())); strings.Contains(st, "[/x") {
+	if st := stripANSI(m.footerView()); strings.Contains(st, "[/x") {
 		t.Errorf("the sessions search followed into the events pane: %q", st)
 	}
 	typeKeys(m, "/zeta")
 	press(m, tea.KeyEnter)
-	if st := stripANSI(statusRow(m.footerView())); !strings.Contains(st, "[/zeta 1/1]") {
+	if st := stripANSI(m.footerView()); !strings.Contains(st, "[/zeta 1/1]") {
 		t.Errorf("events status row = %q, want [/zeta 1/1]", st)
 	}
 
@@ -283,7 +302,7 @@ func TestSearch_IsPerPane(t *testing.T) {
 	if m.pane != paneSessions {
 		t.Fatalf("Esc on events left pane %v, want sessions", m.pane)
 	}
-	if st := stripANSI(statusRow(m.footerView())); !strings.Contains(st, "[/x 1/2]") || strings.Contains(st, "zeta") {
+	if st := stripANSI(m.footerView()); !strings.Contains(st, "[/x 1/2]") || strings.Contains(st, "zeta") {
 		t.Errorf("sessions status row = %q, want its own [/x 1/2] and nothing of the events search", st)
 	}
 }
@@ -340,7 +359,7 @@ func TestSearch_EventsSearchStaysWithItsSession(t *testing.T) {
 	m := newSearchSessionsModel(t, searchIDs...)
 	m.events["x-alpha"] = hostEvents("r0.test", "r1-zeta.test")
 	m.events["y-beta"] = hostEvents("q0-zeta.test")
-	status := func() string { return stripANSI(statusRow(m.footerView())) }
+	status := func() string { return stripANSI(m.footerView()) }
 
 	press(m, tea.KeyEnter) // x-alpha
 	typeKeys(m, "/zeta")
@@ -454,7 +473,7 @@ func TestSearch_IsNeverSaved(t *testing.T) {
 // on none, or that there are none — while typing as well as after Enter.
 func TestFooter_SearchStatus(t *testing.T) {
 	m := newSearchSessionsModel(t, searchIDs...)
-	status := func() string { return stripANSI(statusRow(m.footerView())) }
+	status := func() string { return stripANSI(m.footerView()) }
 	hints := func() string { return stripANSI(m.helpView()) }
 
 	if strings.Contains(hints(), "[n/N]") {
@@ -483,7 +502,7 @@ func TestFooter_SearchStatus(t *testing.T) {
 	// An empty search, committed, is how a search is cleared.
 	m.Update(keyRune('/'))
 	press(m, tea.KeyEnter)
-	if st := status(); strings.Contains(st, "[/") {
+	if st := status(); strings.Contains(st, "[/nothing") {
 		t.Errorf("a cleared search still shows: %q", st)
 	}
 }
@@ -611,7 +630,7 @@ func TestSearch_StreamedEventsUnderAnOpenPrompt(t *testing.T) {
 	if got := m.eventsTbl.Matches(); !slices.Equal(got, []int{0, 2}) {
 		t.Fatalf("Matches = %v, want [0 2]", got)
 	}
-	if st := stripANSI(statusRow(m.footerView())); !strings.Contains(st, "[/zeta") {
+	if st := stripANSI(m.footerView()); !strings.Contains(st, "[/zeta") {
 		t.Errorf("status row = %q, want the live search", st)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -43,15 +44,18 @@ func fakeWorker(mode string) {
 	case "no-handshake":
 		fmt.Fprintln(out, "hello, I am not a handshake")
 		out.Flush()
-		time.Sleep(time.Hour)
+		block()
 	case "wrong-protocol":
 		send(map[string]any{"cortex": 99})
-		time.Sleep(time.Hour)
+		block()
 	case "exit-at-start":
 		os.Exit(3)
 	}
-	if d, err := time.ParseDuration(os.Getenv("FAKE_START_DELAY")); err == nil {
-		time.Sleep(d)
+	if path := os.Getenv("FAKE_STARTED"); path != "" {
+		signal(path)
+	}
+	if path := os.Getenv("FAKE_START_GATE"); path != "" {
+		await(path)
 	}
 	if mode == "stderr-flood-start" {
 		os.Stderr.WriteString(strings.Repeat("x", 2<<20) + "\n")
@@ -59,13 +63,19 @@ func fakeWorker(mode string) {
 	fmt.Fprintln(out, "starting up") // stray output before the handshake is skipped
 	send(Handshake{Cortex: Protocol, Hooks: []string{"request"}, Enforce: mode == "enforce"})
 	if mode == "deaf" {
-		time.Sleep(time.Hour) // handshakes, then never reads stdin
+		block() // handshakes, then never reads stdin
 	}
 	if mode == "spawn-child" || mode == "spawn-child-then-crash" {
-		// A grandchild in the same process group; the test checks a timeout kills it.
+		// A grandchild in the same process group, holding the test's FIFO open for
+		// as long as it lives; the test checks a timeout or an exit kills it.
+		hold, _ := os.OpenFile(os.Getenv("FAKE_HOLD"), os.O_WRONLY, 0)
 		child := exec.Command("sleep", "3600")
-		_ = child.Start()
-		os.WriteFile(os.Getenv("FAKE_PIDFILE"), []byte(strconv.Itoa(child.Process.Pid)), 0o600)
+		child.Stdout = hold
+		if err := child.Start(); err != nil {
+			os.Exit(1) // the FIFO closes unsignalled, so the test reports no grandchild
+		}
+		hold.Write([]byte{1})
+		hold.Close()
 	}
 	in := bufio.NewScanner(os.Stdin)
 	in.Buffer(make([]byte, 1<<20), 64<<20)
@@ -76,13 +86,13 @@ func fakeWorker(mode string) {
 		count++
 		switch mode {
 		case "hang", "spawn-child":
-			time.Sleep(time.Hour)
+			block()
 		case "stderr-flood-call":
 			os.Stderr.WriteString(strings.Repeat("x", 2<<20) + "\n")
 		case "stderr-flood-unterminated":
 			os.Stderr.WriteString(strings.Repeat("x", 2<<20))
 		case "slow":
-			time.Sleep(300 * time.Millisecond)
+			await(os.Getenv("FAKE_GATE"))
 		case "spawn-child-then-crash":
 			os.Exit(2)
 		case "crash-after-one":
@@ -95,14 +105,14 @@ func fakeWorker(mode string) {
 			// Asks for every held-back part and for one the call does not hold, then
 			// replies with what it got.
 			if mode == "fetch-late" {
-				time.Sleep(300 * time.Millisecond)
+				await(os.Getenv("FAKE_GATE"))
 			}
 			fetched := map[string]any{}
 			names, _ := msg["more"].([]any)
 			for _, n := range append(names, "absent") {
 				send(map[string]any{"id": msg["id"], "fetch": n})
 				if mode == "fetch-deaf" {
-					time.Sleep(time.Hour)
+					block()
 				}
 				in.Scan()
 				var answer map[string]any
@@ -121,6 +131,172 @@ func fakeWorker(mode string) {
 	}
 }
 
+// block never returns: it reads a pipe nothing writes to.
+func block() {
+	r, w, _ := os.Pipe()
+	r.Read(make([]byte, 1))
+	runtime.KeepAlive(w)
+}
+
+// await reads one byte from the FIFO at path: the fake script's step waits for the
+// test to release it.
+func await(path string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	f.Read(make([]byte, 1))
+}
+
+// signal writes one byte to the FIFO at path, telling the test a step was reached.
+func signal(path string) {
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	f.Write([]byte{1})
+}
+
+// fifo makes a FIFO the test holds open read-write, so neither side's open blocks
+// and the fake script never reads EOF from it while the test runs.
+func fifo(t *testing.T) (string, *os.File) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "fifo")
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.Close() })
+	return path, f
+}
+
+// gate returns the FAKE_GATE setting and a release that lets the fake script take
+// n more of the steps it holds.
+func gate(t *testing.T) (string, func(n int)) {
+	t.Helper()
+	path, f := fifo(t)
+	return "FAKE_GATE=" + path, func(n int) {
+		if _, err := f.Write(bytes.Repeat([]byte{1}, n)); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// grandchild opens the FIFO at path that the fake script's grandchild holds, once
+// the grandchild runs. Reading it to EOF waits for the grandchild to die.
+func grandchild(t *testing.T, path string) *os.File {
+	t.Helper()
+	f, err := os.Open(path) // returns once the script opens it to write
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.Close() })
+	if _, err := io.ReadFull(f, make([]byte, 1)); err != nil {
+		t.Fatalf("the grandchild never started: %v", err)
+	}
+	return f
+}
+
+// holdFIFO makes the FIFO a fake script's grandchild holds, and its FAKE_HOLD setting.
+func holdFIFO(t *testing.T) (path, env string) {
+	t.Helper()
+	path = filepath.Join(t.TempDir(), "hold")
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path, "FAKE_HOLD=" + path
+}
+
+// expiring is a context whose cancellation by context.DeadlineExceeded reads as its
+// deadline passing.
+type expiring struct{ context.Context }
+
+func (e expiring) Err() error {
+	if err := e.Context.Err(); err != nil && context.Cause(e.Context) == context.DeadlineExceeded {
+		return context.DeadlineExceeded
+	}
+	return e.Context.Err()
+}
+
+// newExpiring returns a context whose deadline passes when expire is called.
+func newExpiring(parent context.Context) (ctx context.Context, expire, cancel func()) {
+	c, cancelCause := context.WithCancelCause(parent)
+	return expiring{c}, func() { cancelCause(context.DeadlineExceeded) }, func() { cancelCause(context.Canceled) }
+}
+
+// deadline is one call timeout a worker set.
+type deadline struct {
+	d      time.Duration
+	expire func()
+}
+
+// clock stands in for a worker's call timeouts. Each one passes only when the test
+// expires it, and is sent on made as it is set: a call's wait for the script first,
+// then, once it holds the script, its exchange.
+type clock struct {
+	made chan deadline
+	// passed makes every timeout pass as it is set.
+	passed atomic.Bool
+	mu     sync.Mutex
+	set    []func()
+}
+
+// useClock gives w's calls c's timeouts. Call it after registering w's Stop: every
+// timeout passes at cleanup, before the stop, so a call a failed test leaves
+// holding the script lets the stop through.
+func useClock(t *testing.T, w *Worker) *clock {
+	c := &clock{made: make(chan deadline, 256)}
+	w.withTimeout = c.withTimeout
+	t.Cleanup(func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		for _, expire := range c.set {
+			expire()
+		}
+	})
+	return c
+}
+
+func (c *clock) withTimeout(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	ctx, expire, cancel := newExpiring(parent)
+	if c.passed.Load() {
+		expire()
+	}
+	c.mu.Lock()
+	c.set = append(c.set, expire)
+	c.mu.Unlock()
+	c.made <- deadline{d, expire}
+	return ctx, cancel
+}
+
+// exchange returns the timeout of the exchange the call that done reports on
+// begins once it holds the script, and fails if the call ends first.
+func exchange(t *testing.T, c *clock, done <-chan error) deadline {
+	t.Helper()
+	select {
+	case d := <-c.made:
+		return d
+	case err := <-done:
+		t.Fatalf("the call ended before it held the script: %v", err)
+		return deadline{}
+	}
+}
+
+// callAsync runs one call and returns its error when it ends.
+func callAsync(ctx context.Context, w *Worker, more map[string]any) <-chan error {
+	done := make(chan error, 1)
+	go func() {
+		_, err := w.Call(ctx, map[string]any{}, more)
+		done <- err
+	}()
+	return done
+}
+
 func fake(t *testing.T, mode string, extraEnv ...string) Config {
 	t.Helper()
 	exe, err := os.Executable()
@@ -128,10 +304,11 @@ func fake(t *testing.T, mode string, extraEnv ...string) Config {
 		t.Fatal(err)
 	}
 	return Config{
-		Path:         exe,
-		Env:          append(append(os.Environ(), "FAKE_WORKER="+mode), extraEnv...),
-		StartTimeout: 5 * time.Second,
-		CallTimeout:  2 * time.Second,
+		Path: exe,
+		// A race-built fake exits at once rather than after the race runtime's exit pause.
+		Env:          append(append(os.Environ(), "FAKE_WORKER="+mode, "GORACE=atexit_sleep_ms=0"), extraEnv...),
+		StartTimeout: time.Hour,
+		CallTimeout:  time.Hour,
 	}
 }
 
@@ -182,32 +359,41 @@ func TestWorker_CallStartsTheProcessInTheBackground(t *testing.T) {
 	if _, err := w.Call(context.Background(), map[string]any{}, nil); !errors.Is(err, ErrStarting) {
 		t.Fatalf("first Call = %v, want ErrStarting", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, err := w.Call(context.Background(), map[string]any{}, nil); err == nil {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the background start never finished")
-		}
-		time.Sleep(20 * time.Millisecond)
+	// The call began a start; once it is done, calls are answered.
+	w.sem <- struct{}{}
+	s, running := w.start, w.proc != nil
+	w.unlock()
+	if s == nil && !running {
+		t.Fatal("the call started nothing")
+	}
+	if s != nil {
+		<-s.done
+	}
+	if _, err := w.Call(context.Background(), map[string]any{}, nil); err != nil {
+		t.Fatalf("Call after the background start = %v", err)
 	}
 }
 
 func TestWorker_HandshakeFailures(t *testing.T) {
-	for mode, want := range map[string]string{
-		"no-handshake":   "no handshake",
-		"wrong-protocol": "protocol 99",
-		"exit-at-start":  "no handshake",
+	for mode, tc := range map[string]struct {
+		want  string
+		start time.Duration
+	}{
+		// It never sends a handshake, so its start ends when the start timeout does.
+		"no-handshake":   {"no handshake", time.Nanosecond},
+		"wrong-protocol": {"protocol 99", 0},
+		"exit-at-start":  {"no handshake", 0},
 	} {
 		t.Run(mode, func(t *testing.T) {
 			cfg := fake(t, mode)
-			cfg.StartTimeout = 300 * time.Millisecond
+			if tc.start > 0 {
+				cfg.StartTimeout = tc.start
+			}
 			w := New(cfg)
 			t.Cleanup(w.Stop)
 			_, err := w.Start(context.Background())
-			if err == nil || !strings.Contains(err.Error(), want) {
-				t.Fatalf("Start error = %v, want one mentioning %q", err, want)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Start error = %v, want one mentioning %q", err, tc.want)
 			}
 		})
 	}
@@ -228,20 +414,17 @@ func TestWorker_IgnoresARepliesWithAnotherID(t *testing.T) {
 }
 
 func TestWorker_TimeoutKillsAndRestarts(t *testing.T) {
-	cfg := fake(t, "hang")
-	cfg.CallTimeout = 200 * time.Millisecond
-	w := New(cfg)
+	w := New(fake(t, "hang"))
 	t.Cleanup(w.Stop)
+	c := useClock(t, w)
 	if _, err := w.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	start := time.Now()
-	_, err := w.Call(context.Background(), map[string]any{}, nil)
-	if !errors.Is(err, context.DeadlineExceeded) {
+	done := callAsync(context.Background(), w, nil)
+	<-c.made                      // the wait for the script
+	exchange(t, c, done).expire() // the exchange, which the script never answers
+	if err := <-done; !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Call error = %v", err)
-	}
-	if d := time.Since(start); d > 2*time.Second {
-		t.Errorf("timed-out call took %v", d)
 	}
 	// Backing off: refused immediately rather than started again.
 	if _, err := w.Call(context.Background(), map[string]any{}, nil); !errors.Is(err, ErrBackoff) {
@@ -254,9 +437,10 @@ func TestWorker_TimeoutKillsAndRestarts(t *testing.T) {
 func TestWorker_CallsDuringAStartFailAtOnce(t *testing.T) {
 	for _, by := range []string{"call", "Start"} {
 		t.Run("started by "+by, func(t *testing.T) {
-			cfg := fake(t, "plain", "FAKE_START_DELAY=1500ms")
-			cfg.CallTimeout = 500 * time.Millisecond
-			w := New(cfg)
+			// The script signals once it runs, then handshakes only when released.
+			startedPath, startedFIFO := fifo(t)
+			startGate, startGateFIFO := fifo(t)
+			w := New(fake(t, "plain", "FAKE_STARTED="+startedPath, "FAKE_START_GATE="+startGate))
 			t.Cleanup(w.Stop)
 			started := make(chan error, 1)
 			if by == "call" {
@@ -266,21 +450,20 @@ func TestWorker_CallsDuringAStartFailAtOnce(t *testing.T) {
 			} else {
 				go func() { _, err := w.Start(context.Background()); started <- err }()
 			}
-			time.Sleep(100 * time.Millisecond)
+			if _, err := startedFIFO.Read(make([]byte, 1)); err != nil {
+				t.Fatal(err)
+			}
 			for i := range 3 {
-				t0 := time.Now()
 				_, err := w.Call(context.Background(), map[string]any{}, nil)
 				if !errors.Is(err, ErrStarting) {
 					t.Fatalf("call %d during the start = %v, want ErrStarting", i, err)
 				}
-				if d := time.Since(t0); d > 100*time.Millisecond {
-					t.Fatalf("call %d during the start took %v", i, d)
-				}
 			}
-			t0 := time.Now()
-			w.Handshake()
-			if d := time.Since(t0); d > 100*time.Millisecond {
-				t.Errorf("Handshake during the start took %v", d)
+			if hs := w.Handshake(); hs.Cortex != 0 {
+				t.Errorf("Handshake during the first start = %+v, want none yet", hs)
+			}
+			if _, err := startGateFIFO.Write([]byte{1}); err != nil {
+				t.Fatal(err)
 			}
 			// Start joins the start in progress rather than running a second child.
 			hs, err := w.Start(context.Background())
@@ -300,61 +483,83 @@ func TestWorker_CallsDuringAStartFailAtOnce(t *testing.T) {
 }
 
 // Calls queued behind a slow script may give up waiting, but a script that answers
-// each call within the call timeout is not killed for it: its state survives.
+// each call within the call timeout is not killed for it: its state survives. A
+// call's time in the queue does not count against its exchange.
 func TestWorker_AQueueThatOutlastsACallerKeepsTheScript(t *testing.T) {
-	cfg := fake(t, "slow")
-	cfg.CallTimeout = time.Second
-	w := New(cfg)
+	gateEnv, release := gate(t)
+	w := New(fake(t, "slow", gateEnv))
 	t.Cleanup(w.Stop)
+	c := useClock(t, w)
 	if _, err := w.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	var wg sync.WaitGroup
-	for range 6 { // 6 x 300ms queues past a 1s timeout; no one call comes near it
-		wg.Add(1)
-		go func() { defer wg.Done(); w.Call(context.Background(), map[string]any{}, nil) }()
+	first := callAsync(context.Background(), w, nil)
+	<-c.made
+	exchange(t, c, first) // first holds the script, which has not answered it
+	second := callAsync(context.Background(), w, nil)
+	secondQueued := <-c.made
+	gaveUp := callAsync(context.Background(), w, nil)
+	(<-c.made).expire()
+	if err := <-gaveUp; err == nil {
+		t.Fatal("a call whose time ran out in the queue succeeded")
 	}
-	wg.Wait()
-	got := callKept(t, w)
-	if got["count"].(float64) < 2 {
-		t.Errorf("reply %v: the script was restarted", got)
+	release(1)
+	if err := <-first; err != nil {
+		t.Fatalf("first call = %v", err)
+	}
+	exchange(t, c, second) // second holds the script now
+	secondQueued.expire()
+	release(1)
+	if err := <-second; err != nil {
+		t.Fatalf("second call = %v: its wait in the queue cut its exchange short", err)
+	}
+	release(1)
+	if got := callKept(t, w); got["count"] != float64(3) {
+		t.Errorf("reply %v, want the third the script answered", got)
 	}
 }
 
 // Under a queue longer than the call timeout, a message the script is sent is one its
-// caller still waits for: the script answers no call nobody reads, so calls keep
-// succeeding at the rate it can answer them.
+// caller still waits for: the script answers no call nobody reads.
 func TestWorker_AnOverloadedScriptAnswersOnlyCallersStillWaiting(t *testing.T) {
-	cfg := fake(t, "slow") // 300ms a call
-	cfg.CallTimeout = time.Second
-	w := New(cfg)
+	gateEnv, release := gate(t)
+	w := New(fake(t, "slow", gateEnv))
 	t.Cleanup(w.Stop)
+	c := useClock(t, w)
 	if _, err := w.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	var ok atomic.Int64
-	var wg sync.WaitGroup
-	end := time.Now().Add(3 * time.Second)
+	first := callAsync(context.Background(), w, nil)
+	<-c.made
+	exchange(t, c, first) // first holds the script, which has not answered it
+	// Callers queued behind it run out of time while they wait.
+	var queued []<-chan error
 	for range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for time.Now().Before(end) {
-				if _, err := w.Call(context.Background(), map[string]any{}, nil); err == nil {
-					ok.Add(1)
-				}
-			}
-		}()
+		queued = append(queued, callAsync(context.Background(), w, nil))
 	}
-	wg.Wait()
-	got := callKept(t, w)
-	answered := int64(got["count"].(float64)) - 1 // the script's count includes callKept's call
-	if answered != ok.Load() {
-		t.Errorf("the script answered %d calls and %d callers got a reply: %d answers went unread",
-			answered, ok.Load(), answered-ok.Load())
+	for range queued {
+		(<-c.made).expire()
 	}
-	if ok.Load() == 0 {
-		t.Error("no call succeeded")
+	for i, q := range queued {
+		if err := <-q; err == nil {
+			t.Fatalf("queued call %d succeeded after its time ran out", i)
+		}
+	}
+	release(1)
+	if err := <-first; err != nil {
+		t.Fatalf("first call = %v", err)
+	}
+	// Callers whose time has run out by the time the script is free send nothing.
+	c.passed.Store(true)
+	for i := range 20 {
+		if _, err := w.Call(context.Background(), map[string]any{}, nil); err == nil {
+			t.Fatalf("call %d succeeded after its time ran out", i)
+		}
+	}
+	c.passed.Store(false)
+	release(1)
+	if got := callKept(t, w); got["count"] != float64(2) {
+		t.Errorf("reply %v: the script was sent calls whose callers had stopped waiting", got)
 	}
 }
 
@@ -420,24 +625,16 @@ func (l lockedWriter) Write(p []byte) (int, error) {
 
 // A script that exits takes the processes it started with it.
 func TestWorker_AnExitKillsTheWholeProcessGroup(t *testing.T) {
-	pidfile := filepath.Join(t.TempDir(), "pid")
-	w := New(fake(t, "spawn-child-then-crash", "FAKE_PIDFILE="+pidfile))
+	hold, holdEnv := holdFIFO(t)
+	w := New(fake(t, "spawn-child-then-crash", holdEnv))
 	t.Cleanup(w.Stop)
 	if _, err := w.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	g := grandchild(t, hold)
 	w.Call(context.Background(), map[string]any{}, nil) // the script exits on it
-	b, err := os.ReadFile(pidfile)
-	if err != nil {
+	if _, err := io.ReadAll(g); err != nil {
 		t.Fatal(err)
-	}
-	pid, _ := strconv.Atoi(string(b))
-	deadline := time.Now().Add(2 * time.Second)
-	for syscall.Kill(pid, 0) == nil {
-		if time.Now().After(deadline) {
-			t.Fatalf("grandchild %d survived the script's exit", pid)
-		}
-		time.Sleep(20 * time.Millisecond)
 	}
 }
 
@@ -467,39 +664,58 @@ func TestWorker_AReapedChildIsNotSignalledLater(t *testing.T) {
 
 // A caller that goes away mid-call stops waiting without killing the script.
 func TestWorker_ACallerThatGivesUpKeepsTheScript(t *testing.T) {
-	for name, mk := range map[string]func() (context.Context, context.CancelFunc){
-		"cancelled mid-call": func() (context.Context, context.CancelFunc) {
+	// Each returns the caller's context, what makes it give up, and its cancel.
+	for name, tc := range map[string]struct {
+		mk     func() (ctx context.Context, giveUp, cancel func())
+		before bool
+	}{
+		"cancelled mid-call": {mk: func() (context.Context, func(), func()) {
 			ctx, c := context.WithCancel(context.Background())
-			time.AfterFunc(50*time.Millisecond, c)
-			return ctx, c
-		},
-		"its own deadline": func() (context.Context, context.CancelFunc) {
-			return context.WithTimeout(context.Background(), 50*time.Millisecond)
-		},
-		"cancelled before it": func() (context.Context, context.CancelFunc) {
+			return ctx, c, c
+		}},
+		"its own deadline": {mk: func() (context.Context, func(), func()) {
+			return newExpiring(context.Background())
+		}},
+		"cancelled before it": {before: true, mk: func() (context.Context, func(), func()) {
 			ctx, c := context.WithCancel(context.Background())
 			c()
-			return ctx, c
-		},
+			return ctx, c, c
+		}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			w := New(fake(t, "slow"))
+			gateEnv, release := gate(t)
+			w := New(fake(t, "slow", gateEnv))
 			t.Cleanup(w.Stop)
+			c := useClock(t, w)
 			if _, err := w.Start(context.Background()); err != nil {
 				t.Fatal(err)
 			}
 			for range 5 {
-				ctx, cancel := mk()
-				t0 := time.Now()
-				_, err := w.Call(ctx, map[string]any{}, nil)
+				ctx, giveUp, cancel := tc.mk()
+				done := callAsync(ctx, w, nil)
+				<-c.made // the wait for the script
+				if !tc.before {
+					exchange(t, c, done) // the call holds the script, which has not answered it
+					giveUp()
+				}
+				err := <-done
 				cancel()
 				if err == nil {
 					t.Fatal("a call whose caller gave up succeeded")
 				}
-				if d := time.Since(t0); d > 250*time.Millisecond {
-					t.Fatalf("the call outlived its caller by %v", d)
+				if !tc.before {
+					release(1) // the script answers the call nobody waits for
+					continue
+				}
+				// The call has let go of the script.
+				select {
+				case w.sem <- struct{}{}:
+					w.unlock()
+				default:
+					t.Fatal("a call whose caller had already gone holds the script")
 				}
 			}
+			release(1)
 			callKept(t, w)
 		})
 	}
@@ -521,28 +737,22 @@ func callKept(t *testing.T, w *Worker) map[string]any {
 }
 
 func TestWorker_TimeoutKillsTheWholeProcessGroup(t *testing.T) {
-	pidfile := filepath.Join(t.TempDir(), "pid")
-	cfg := fake(t, "spawn-child", "FAKE_PIDFILE="+pidfile)
-	cfg.CallTimeout = 200 * time.Millisecond
-	w := New(cfg)
+	hold, holdEnv := holdFIFO(t)
+	w := New(fake(t, "spawn-child", holdEnv))
 	t.Cleanup(w.Stop)
+	c := useClock(t, w)
 	if _, err := w.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := w.Call(context.Background(), map[string]any{}, nil); err == nil {
+	g := grandchild(t, hold)
+	done := callAsync(context.Background(), w, nil)
+	<-c.made
+	exchange(t, c, done).expire()
+	if err := <-done; err == nil {
 		t.Fatal("call to a hanging script succeeded")
 	}
-	b, err := os.ReadFile(pidfile)
-	if err != nil {
+	if _, err := io.ReadAll(g); err != nil {
 		t.Fatal(err)
-	}
-	pid, _ := strconv.Atoi(string(b))
-	deadline := time.Now().Add(2 * time.Second)
-	for syscall.Kill(pid, 0) == nil {
-		if time.Now().After(deadline) {
-			t.Fatalf("grandchild %d survived the timeout", pid)
-		}
-		time.Sleep(20 * time.Millisecond)
 	}
 }
 
@@ -568,21 +778,9 @@ func TestWorker_CrashThenRestartAfterBackoff(t *testing.T) {
 		t.Fatalf("call after backoff = %v, want ErrStarting", err)
 	}
 	// A new process: its count starts over, which is the state loss a crash costs.
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		r, err := w.Call(context.Background(), map[string]any{"echo": "again"}, nil)
-		if err == nil {
-			var got map[string]any
-			json.Unmarshal(r.Line, &got)
-			if got["count"] != float64(1) {
-				t.Errorf("after restart, reply %v", got)
-			}
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("never restarted: %v", err)
-		}
-		time.Sleep(20 * time.Millisecond)
+	// Start waits for the restart that call began.
+	if got, _ := call(t, w, "again"); got["count"] != float64(1) {
+		t.Errorf("after restart, reply %v", got)
 	}
 }
 
@@ -624,7 +822,7 @@ func TestLoginPath_ProfileThatPrints(t *testing.T) {
 	loginPathMu.Lock()
 	loginPathVal, loginPathTried = "", time.Time{}
 	old := loginPathTimeout
-	loginPathTimeout = 30 * time.Second
+	loginPathTimeout = time.Hour
 	loginPathMu.Unlock()
 	t.Cleanup(func() { loginPathVal, loginPathTried, loginPathTimeout = "", time.Now(), old })
 	if got := loginPath(); got != "/from/login" {
@@ -716,19 +914,25 @@ func TestLoginPath_BackgroundChildHoldingStdout(t *testing.T) {
 	}
 }
 
-// waitStopped waits for w to refuse calls; a released worker stops in the background.
-func waitStopped(t *testing.T, w *Worker, what string) {
+// exitOf returns a channel closed when w's running child exits.
+func exitOf(t *testing.T, w *Worker) <-chan struct{} {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		_, err := w.Call(context.Background(), map[string]any{}, nil)
-		if err != nil && strings.Contains(err.Error(), "stopped") {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s still answers", what)
-		}
-		time.Sleep(20 * time.Millisecond)
+	w.sem <- struct{}{}
+	defer w.unlock()
+	if w.proc == nil {
+		t.Fatal("no child is running")
+	}
+	return w.proc.done
+}
+
+// waitStopped waits for w to refuse calls; a released worker stops in the
+// background. exited is w's child's exit, which a stop brings about while it holds
+// the worker, so the next call sees the stop.
+func waitStopped(t *testing.T, w *Worker, exited <-chan struct{}, what string) {
+	t.Helper()
+	<-exited
+	if _, err := w.Call(context.Background(), map[string]any{}, nil); !errors.Is(err, errStopped) {
+		t.Fatalf("%s still answers: %v", what, err)
 	}
 }
 
@@ -750,59 +954,66 @@ func TestPool_ReusesAnUnchangedScript(t *testing.T) {
 	if got, _ := call(t, a, "y"); got["count"] != float64(2) {
 		t.Errorf("state lost across builds: %v", got)
 	}
+	exited := exitOf(t, a)
 	p.Release(two)
-	waitStopped(t, a, "a worker no build holds")
+	waitStopped(t, a, exited, "a worker no build holds")
+}
+
+// callBoundBy makes one call on w and fails unless both its timeouts, the wait for
+// the script and the exchange, are want.
+func callBoundBy(t *testing.T, c *clock, w *Worker, want time.Duration, what string) {
+	t.Helper()
+	if _, err := w.Call(context.Background(), map[string]any{}, nil); err != nil {
+		t.Fatalf("%s: call = %v", what, err)
+	}
+	for range 2 {
+		if d := (<-c.made).d; d != want {
+			t.Errorf("%s: the call was bounded by %v, want %v", what, d, want)
+		}
+	}
 }
 
 // A reused worker takes the call timeout of the build that acquired it, so an edited
 // timeout applies to the running script without restarting it.
 func TestPool_AReusedWorkerTakesTheNewCallTimeout(t *testing.T) {
 	p := NewPool()
-	cfg := fake(t, "hang")
-	cfg.CallTimeout = 10 * time.Second
+	cfg := fake(t, "plain")
+	cfg.CallTimeout = 10 * time.Second // timing: the fake clock records it
 	a := p.Acquire(p.NewHolder(), cfg, "h1")
 	t.Cleanup(a.Stop)
+	c := useClock(t, a)
 	if _, err := a.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	cfg.CallTimeout = 200 * time.Millisecond
+	cfg.CallTimeout = 200 * time.Millisecond // timing: the fake clock records it
 	b := p.Acquire(p.NewHolder(), cfg, "h1")
 	if !sameChild(a, b) {
 		t.Fatal("a changed timeout restarted the script")
 	}
-	t0 := time.Now()
-	if _, err := b.Call(context.Background(), map[string]any{}, nil); err == nil {
-		t.Fatal("call to a hanging script succeeded")
-	}
-	if d := time.Since(t0); d > 2*time.Second {
-		t.Errorf("call took %v: the new 200ms timeout was not applied", d)
-	}
+	callBoundBy(t, c, b, 200*time.Millisecond, "the new build")
 }
 
 // A build's timeout governs that build's calls only: one configured and then refused,
 // or one still draining beside a newer one, leaves the other's calls as they were.
 func TestPool_ABuildsCallTimeoutStaysWithThatBuild(t *testing.T) {
 	p := NewPool()
-	cfg := fake(t, "slow") // answers in 300ms
+	cfg := fake(t, "plain")
 	running := p.NewHolder()
 	a := p.Acquire(running, cfg, "h1")
 	t.Cleanup(a.Stop)
+	c := useClock(t, a)
 	if _, err := a.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	p.Activate(running)
-	cfg.CallTimeout = 50 * time.Millisecond
+	cfg.CallTimeout = 50 * time.Millisecond // timing: the fake clock records it
 	refused := p.NewHolder()
 	p.Acquire(refused, cfg, "h1") // configured, never started
-	if _, err := a.Call(context.Background(), map[string]any{}, nil); err != nil {
-		t.Fatalf("the running build's call = %v: it took the refused build's timeout", err)
-	}
+	callBoundBy(t, c, a, time.Hour, "the running build beside a refused one")
 	next := p.NewHolder()
 	p.Acquire(next, cfg, "h1")
 	p.Activate(next) // the old build drains beside it
-	if _, err := a.Call(context.Background(), map[string]any{}, nil); err != nil {
-		t.Fatalf("the draining build's call = %v: it took the newer build's timeout", err)
-	}
+	callBoundBy(t, c, a, time.Hour, "the draining build")
 }
 
 // The environment is fixed for a process's life, so a changed one gets a new worker.
@@ -838,8 +1049,9 @@ func TestPool_AnEditedScriptKeepsItsOldWorkerUntilTheOldBuildIsReleased(t *testi
 	call(t, old, "still serving") // the running pipeline still works
 	p.Activate(two)
 	call(t, old, "draining")
+	exited := exitOf(t, old)
 	p.Release(one)
-	waitStopped(t, old, "the old version")
+	waitStopped(t, old, exited, "the old version")
 	call(t, edited, "new")
 }
 
@@ -856,11 +1068,12 @@ func TestPool_AnAbandonedBuildIsSweptWhenALaterOneStarts(t *testing.T) {
 	refused := p.NewHolder()
 	orphan := p.Acquire(refused, cfg, "h2") // never activated, never released
 	call(t, orphan, "x")
+	exited := exitOf(t, orphan)
 
 	next := p.NewHolder()
 	p.Acquire(next, cfg, "h1")
 	p.Activate(next)
-	waitStopped(t, orphan, "a refused build's worker")
+	waitStopped(t, orphan, exited, "a refused build's worker")
 	call(t, kept, "the running build's worker")
 }
 
@@ -868,10 +1081,9 @@ func TestPool_AnAbandonedBuildIsSweptWhenALaterOneStarts(t *testing.T) {
 // stops reading fills the pipe; a body larger than the pipe buffer — which every
 // inference request is — must still time out rather than block the request.
 func TestWorker_TimeoutCoversTheWrite(t *testing.T) {
-	cfg := fake(t, "deaf")
-	cfg.CallTimeout = 200 * time.Millisecond
-	w := New(cfg)
+	w := New(fake(t, "deaf"))
 	t.Cleanup(w.Stop)
+	c := useClock(t, w)
 	if _, err := w.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -880,28 +1092,16 @@ func TestWorker_TimeoutCoversTheWrite(t *testing.T) {
 		_, err := w.Call(context.Background(), map[string]any{"body": strings.Repeat("x", 2<<20)}, nil)
 		done <- err
 	}()
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("a call to a script that does not read succeeded")
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("the call blocked past its 200ms deadline")
+	<-c.made
+	exchange(t, c, done).expire() // the exchange, whose write the script never reads
+	if err := <-done; err == nil {
+		t.Fatal("a call to a script that does not read succeeded")
 	}
-	start := time.Now()
+	// Neither the next call nor Stop waits behind the stuck write.
 	if _, err := w.Call(context.Background(), map[string]any{}, nil); !errors.Is(err, ErrBackoff) {
 		t.Errorf("next call = %v, want ErrBackoff", err)
 	}
-	if d := time.Since(start); d > time.Second {
-		t.Errorf("the next call waited %v behind the stuck one", d)
-	}
-	stopped := make(chan struct{})
-	go func() { w.Stop(); close(stopped) }()
-	select {
-	case <-stopped:
-	case <-time.After(3 * time.Second):
-		t.Fatal("Stop blocked behind the stuck call")
-	}
+	w.Stop()
 }
 
 // A held-back part reaches the child only when it asks, named in "more" and
@@ -949,17 +1149,23 @@ func (c encodeCount) MarshalJSON() ([]byte, error) {
 // change once the caller stops waiting. So a fetch that comes after Call has
 // returned gets null, and the part is never encoded.
 func TestWorker_FetchAfterTheCallerGaveUpGetsNull(t *testing.T) {
-	w := New(fake(t, "fetch-late")) // fetches 300ms after each message
+	gateEnv, release := gate(t)
+	w := New(fake(t, "fetch-late", gateEnv)) // fetches only when released
 	t.Cleanup(w.Stop)
+	c := useClock(t, w)
 	if _, err := w.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	var encoded atomic.Int32
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	if _, err := w.Call(ctx, map[string]any{}, map[string]any{"body": encodeCount{&encoded}}); err == nil {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := callAsync(ctx, w, map[string]any{"body": encodeCount{&encoded}})
+	<-c.made
+	exchange(t, c, done) // the call holds the script, which has not fetched yet
+	cancel()
+	if err := <-done; err == nil {
 		t.Fatal("a call whose caller gave up succeeded")
 	}
+	release(2) // the late fetch, then the next call
 	// This call waits for the child to reply to the first, so the late fetch is done.
 	if _, err := w.Call(context.Background(), map[string]any{}, nil); err != nil {
 		t.Fatal(err)
@@ -972,24 +1178,30 @@ func TestWorker_FetchAfterTheCallerGaveUpGetsNull(t *testing.T) {
 // The call deadline covers the answer to a fetch: a script that asks for a part
 // larger than the pipe buffer and then stops reading must not block the request.
 func TestWorker_TimeoutCoversAFetch(t *testing.T) {
-	cfg := fake(t, "fetch-deaf")
-	cfg.CallTimeout = 200 * time.Millisecond
-	w := New(cfg)
+	w := New(fake(t, "fetch-deaf"))
 	t.Cleanup(w.Stop)
+	c := useClock(t, w)
 	if _, err := w.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan error, 1)
-	go func() {
-		_, err := w.Call(context.Background(), map[string]any{}, map[string]any{"body": strings.Repeat("x", 2<<20)})
-		done <- err
-	}()
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("a call to a script that stopped reading succeeded")
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("the fetch answer blocked past the 200ms deadline")
+	part := askedFor{asked: make(chan struct{}), value: strings.Repeat("x", 2<<20)}
+	done := callAsync(context.Background(), w, map[string]any{"body": part})
+	<-c.made
+	ex := exchange(t, c, done)
+	<-part.asked // the script asked for the part and reads nothing more
+	ex.expire()
+	if err := <-done; err == nil {
+		t.Fatal("a call to a script that stopped reading succeeded")
 	}
+}
+
+// askedFor is a held-back part that reports when it is fetched.
+type askedFor struct {
+	asked chan struct{}
+	value string
+}
+
+func (a askedFor) MarshalJSON() ([]byte, error) {
+	close(a.asked)
+	return json.Marshal(a.value)
 }

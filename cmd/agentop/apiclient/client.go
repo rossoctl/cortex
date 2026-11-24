@@ -37,6 +37,9 @@ type Client struct {
 	endpoint   string
 	http       *http.Client
 	httpStream *http.Client
+	// reconnectAfter waits out a stream's reconnect backoff. It is time.After, as a field so a
+	// test can reconnect at once.
+	reconnectAfter func(time.Duration) <-chan time.Time
 }
 
 // restDefaultTimeout bounds a REST call whose caller supplied NO deadline, so a dead
@@ -104,6 +107,9 @@ var responseHeaderTimeout = HeaderTimeout
 // A var so a test can shorten it.
 var streamDefaultTimeout = 60 * time.Second
 
+// streamDeadline applies streamDefaultTimeout; tests replace it to end the call at a chosen point.
+var streamDeadline = context.WithTimeout
+
 // New returns a Client pointed at endpoint (e.g. "http://localhost:9094").
 // Trailing slash is tolerated.
 func New(endpoint string) *Client {
@@ -146,6 +152,7 @@ func New(endpoint string) *Client {
 		httpStream: &http.Client{
 			Transport: transport,
 		},
+		reconnectAfter: time.After,
 	}
 }
 
@@ -202,7 +209,20 @@ func (c *Client) ListSessionsArchived(ctx context.Context) (SessionList, error) 
 // caller's read fails instead of returning io.EOF (an older proxy predating that ends
 // the body cleanly, and a truncated export there is indistinguishable from a whole one).
 // Every complete line already read stays valid NDJSON either way.
-func (c *Client) Export(ctx context.Context, sessions []string, since string) (io.ReadCloser, error) {
+// withToolCalls ADDS the paired tool-call records to the stream (`?include=toolCalls`).
+//
+// A PROXY PREDATING THE PARAMETER IGNORES IT AND ANSWERS 200 WITH THE PLAIN STREAM. net/url
+// puts unknown keys in the query like any other, and that handler never looked at `include`,
+// so there is no refusal to rely on: the caller asked for tool calls and silently received an
+// export without them. An earlier version of this comment claimed a 400, which was true only
+// of a server that already has the feature — exactly the case where it does not matter.
+//
+// So detection is the CALLER's job, and ExportSkewError is what it gets. Do not infer support
+// from the presence of toolCall records: an archive with no tool calls legitimately produces
+// none, so their absence cannot distinguish an old proxy from a quiet one. The signal is
+// `kind` on the EVENT records, which a current server stamps on every line whenever the
+// opt-in applies (spec T28) and an old one never writes at all.
+func (c *Client) Export(ctx context.Context, sessions []string, since string, withToolCalls bool) (io.ReadCloser, error) {
 	q := url.Values{}
 	for _, id := range sessions {
 		if id != "" {
@@ -211,6 +231,9 @@ func (c *Client) Export(ctx context.Context, sessions []string, since string) (i
 	}
 	if since != "" {
 		q.Set("since", since)
+	}
+	if withToolCalls {
+		q.Set("include", "toolCalls")
 	}
 	path := "/v1/export"
 	if len(q) > 0 {
@@ -406,7 +429,7 @@ func (c *Client) GetPluginCatalog(ctx context.Context) (*PluginCatalog, error) {
 func (c *Client) getBody(ctx context.Context, path string) (body io.ReadCloser, err error) {
 	cancel := context.CancelFunc(func() {})
 	if _, ok := ctx.Deadline(); !ok {
-		ctx, cancel = context.WithTimeout(ctx, streamDefaultTimeout)
+		ctx, cancel = streamDeadline(ctx, streamDefaultTimeout)
 	}
 	defer func() {
 		if err != nil {
@@ -588,9 +611,19 @@ func (c *Client) GetUsageWindow(ctx context.Context, window string, resolution t
 // GetUsageWindowForAgent is GetUsageWindow narrowed to one agent's traffic by the server. A server
 // that predates agent= ignores it; Snapshot.Agent is empty then, and the caller must narrow itself.
 func (c *Client) GetUsageWindowForAgent(ctx context.Context, window string, resolution time.Duration, sessionID, agent string, group usage.Group) (*usage.Snapshot, error) {
+	return c.GetUsageWindowScoped(ctx, window, resolution, sessionID, agent, "", group)
+}
+
+// GetUsageWindowScoped is GetUsageWindowForAgent narrowed also to one project by the server. A
+// server that predates project= ignores it; Snapshot.Project is empty then, and the caller must
+// narrow itself.
+func (c *Client) GetUsageWindowScoped(ctx context.Context, window string, resolution time.Duration, sessionID, agent, project string, group usage.Group) (*usage.Snapshot, error) {
 	q := url.Values{}
 	if agent != "" {
 		q.Set("agent", agent)
+	}
+	if project != "" {
+		q.Set("project", project)
 	}
 	q.Set("window", window)
 	if resolution > 0 {

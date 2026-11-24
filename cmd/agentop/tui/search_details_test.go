@@ -491,11 +491,7 @@ func TestDetailSearch_EscEndsTheRequest(t *testing.T) {
 	go func() { done <- cmd() }()
 	<-f.started
 	press(m, tea.KeyEsc)
-	select {
-	case <-f.ended:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the proxy's request went on after Esc")
-	}
+	<-f.ended
 	<-done
 }
 
@@ -579,11 +575,7 @@ func TestDetailSearch_LeavingThePaneEndsTheRequest(t *testing.T) {
 			if m.pane == paneEvents {
 				t.Fatalf("%s did not leave the events pane", k)
 			}
-			select {
-			case <-f.ended:
-			case <-time.After(5 * time.Second):
-				t.Fatalf("the proxy's request went on after %s left the pane", k)
-			}
+			<-f.ended
 			<-done
 		})
 	}
@@ -728,22 +720,17 @@ func TestDetailSearch_OpeningARowShowsADeepMatch(t *testing.T) {
 	})
 }
 
-// A row hidden when the search ran is outside its answer. Shown again, n searches again and
+// A row missing when the search ran is outside its answer. Shown again, n searches again and
 // reaches it.
 func TestDetailSearch_ARowShownAgainSearchesAgain(t *testing.T) {
 	f := &fakeSearch{answer: map[string][]uint64{"s": {3}}}
 	m := searchModel(t, 5, f)
-	for i := range m.events["s"] {
-		if i != 2 {
-			m.events["s"][i].Invocations = &pipeline.Invocations{Outbound: []pipeline.Invocation{
-				{Plugin: "p", Action: pipeline.ActionObserve}}}
-		}
-	}
-	m.hideInactive = true
+	all := m.events["s"]
+	m.events["s"] = slices.Delete(slices.Clone(all), 2, 3)
 	m.rebuildEventsTable()
 	detailsQuery(m, "needle")
 	runAll(m, enter(m))
-	m.hideInactive = false
+	m.events["s"] = all
 	m.rebuildEventsTable()
 	key(m, 'n')
 	if s, _ := f.counts(); s != 2 {

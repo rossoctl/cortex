@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/rossoctl/cortex/core/listener/forwardproxy"
@@ -30,7 +31,9 @@ func newE2EPlugin(t *testing.T, maxTokens int64, store *memStore) *SessionBudget
 		t.Fatalf("Configure: %v", err)
 	}
 	p.store = store
-	go p.refreshLoop(30 * time.Millisecond)
+	// The loop runs for its shutdown path; an hour-long interval keeps ticks
+	// out of the test, and a test that needs a refresh calls p.refreshCache.
+	go p.refreshLoop(time.Hour)
 	t.Cleanup(func() { close(p.stopCh); <-p.stopped })
 	return p
 }
@@ -46,7 +49,7 @@ func newE2EPluginPause(t *testing.T, maxTokens int64, store *memStore, webhookUR
 		MaxTokens:          maxTokens,
 		OnExceed:           "pause",
 		PauseWebhook:       webhookURL,
-		PauseTimeout:       "2s",
+		PauseTimeout:       "1h",
 		PauseTimeoutAction: "deny",
 		PauseGracePeriod:   "0s",
 		RefreshInterval:    "30ms",
@@ -57,7 +60,7 @@ func newE2EPluginPause(t *testing.T, maxTokens int64, store *memStore, webhookUR
 	}
 	p.store = store
 	p.httpClient = &http.Client{Timeout: 0}
-	go p.refreshLoop(30 * time.Millisecond)
+	go p.refreshLoop(time.Hour)
 	t.Cleanup(func() { close(p.stopCh); <-p.stopped })
 	return p
 }
@@ -163,7 +166,8 @@ func TestE2E_MultiSession(t *testing.T) {
 // TestE2E_LocalCacheEnforcesDuringOutage confirms that a populated
 // cache enforces even when the backing store is unreachable.
 func TestE2E_LocalCacheEnforcesDuringOutage(t *testing.T) {
-	// Build without starting refreshLoop so we can swap store safely.
+	// The store is down for the whole test, and the loop's hour-long interval
+	// keeps ticks out of it.
 	p := New()
 	cfg, _ := json.Marshal(config{
 		RedisURL:         "mem://test",
@@ -176,7 +180,7 @@ func TestE2E_LocalCacheEnforcesDuringOutage(t *testing.T) {
 		t.Fatalf("Configure: %v", err)
 	}
 	p.store = &failingStore{}
-	go p.refreshLoop(30 * time.Millisecond)
+	go p.refreshLoop(time.Hour)
 	t.Cleanup(func() { close(p.stopCh); <-p.stopped })
 
 	p.mu.Lock()
@@ -236,6 +240,37 @@ func TestE2E_RefreshRecovery(t *testing.T) {
 	}
 }
 
+// TestE2E_RefreshLoopRefreshesAtEachTick: each tick of the refresh loop brings
+// the cache up to the store's counters.
+func TestE2E_RefreshLoopRefreshesAtEachTick(t *testing.T) {
+	store := newMemStore()
+	p := New()
+	cfg, _ := json.Marshal(config{
+		RedisURL:         "mem://test",
+		MaxTokens:        200,
+		OnExceed:         "deny",
+		RedisUnavailable: "fail_open",
+	})
+	if err := p.Configure(cfg); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	p.store = store
+	store.HashIncr(context.Background(), "session-budget:s", "tokens", 180)
+	p.mu.Lock()
+	p.cache["s"] = &counters{tokens: 50}
+	p.mu.Unlock()
+
+	ticks := make(chan time.Time)
+	go p.refreshOn(ticks)
+	ticks <- time.Now()
+	close(p.stopCh) // the loop finishes the tick's refresh before it stops
+	<-p.stopped
+
+	if got := p.cache["s"].tokens; got != 180 {
+		t.Errorf("after a tick: tokens = %d, want 180", got)
+	}
+}
+
 // TestE2E_PodRestart verifies that a fresh plugin with an empty cache
 // hydrates from Redis on the first request in pause mode — no cold-cache
 // overshoot for sessions already over-budget on Redis. Only pause mode
@@ -270,11 +305,7 @@ func TestE2E_PodRestart(t *testing.T) {
 // (deny/observe intentionally skip cold-cache to keep Redis off the hot path).
 func TestE2E_HydrateSingleflight(t *testing.T) {
 	inner := newMemStore()
-	cs := &controllableStore{inner: inner, hashGetDelay: 50 * time.Millisecond}
-	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"action":"deny"}`))
-	}))
-	defer webhook.Close()
+	cs := &controllableStore{inner: inner}
 	// Build without starting refreshLoop so background HashGet calls don't
 	// pollute the singleflight counter we're asserting on.
 	p := New()
@@ -282,8 +313,8 @@ func TestE2E_HydrateSingleflight(t *testing.T) {
 		RedisURL:           "mem://test",
 		MaxTokens:          200,
 		OnExceed:           "pause",
-		PauseWebhook:       webhook.URL,
-		PauseTimeout:       "2s",
+		PauseWebhook:       "http://127.0.0.1:1/unused",
+		PauseTimeout:       "1h",
 		PauseTimeoutAction: "deny",
 		PauseGracePeriod:   "0s",
 		RefreshInterval:    "30ms",
@@ -293,52 +324,56 @@ func TestE2E_HydrateSingleflight(t *testing.T) {
 		t.Fatalf("Configure: %v", err)
 	}
 	p.store = cs
-	p.httpClient = &http.Client{Timeout: 0}
 
+	// Under the limit, so the requests hydrate and continue without a webhook.
 	ctx := context.Background()
-	inner.HashIncr(ctx, "session-budget:s", "tokens", 210)
+	inner.HashIncr(ctx, "session-budget:s", "tokens", 100)
 	inner.HashIncr(ctx, "session-budget:s", "calls", 8)
 	inner.HashSetNX(ctx, "session-budget:s", "started_at", "1700000000")
 
-	// This test asserts singleflight dedup on hydrate — it counts HashGet
-	// calls, not per-request outcomes. Pause-mode concurrent breaches
-	// piggyback on pendingApproval (one leader gets Reject, others continue
-	// via pause_pending_approval), so we don't assert per-request Reject.
-	const N = 20
-	var wg sync.WaitGroup
-	wg.Add(N)
-	for i := 0; i < N; i++ {
-		go func() {
-			defer wg.Done()
-			_ = request(p, "s")
-		}()
-	}
-	wg.Wait()
-
-	// Without singleflight all N calls would hit HashGet. With it, only the
-	// first flight does — later arrivals see the populated cache and skip hydrate.
-	// Allow a small slack for goroutines that raced past the cache-check before
-	// the first flight populated it.
-	got := cs.hashGetCalls()
-	if got > 3 {
-		t.Errorf("HashGet called %d times for %d concurrent cold-cache requests; expected ≤3 (singleflight dedup)", got, N)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		gate := make(chan struct{})
+		cs.setHashGetGate(gate)
+		const N = 20
+		var wg sync.WaitGroup
+		wg.Add(N)
+		for i := 0; i < N; i++ {
+			go func() {
+				defer wg.Done()
+				if a := request(p, "s"); a.Type != pipeline.Continue {
+					t.Errorf("under-budget request: expected Continue, got %v", a.Type)
+				}
+			}()
+		}
+		// Every request is now waiting on the one lookup the gate holds.
+		synctest.Wait()
+		if got := cs.hashGetCalls(); got != 1 {
+			t.Errorf("HashGet called %d times for %d concurrent cold-cache requests, want 1", got, N)
+		}
+		close(gate)
+		wg.Wait()
+	})
 }
 
 // controllableStore delegates to inner memStore but can be toggled to fail,
-// counts HashGet calls, and optionally injects latency into HashGet.
+// counts HashGet calls, and can hold HashGet until a gate closes.
 type controllableStore struct {
-	inner        *memStore
-	failing      bool
-	hashGetDelay time.Duration
-	mu           sync.Mutex
-	hashGets     int
+	inner       *memStore
+	failing     bool
+	hashGetGate chan struct{}
+	mu          sync.Mutex
+	hashGets    int
 }
 
 func (c *controllableStore) setFailing(v bool) { c.mu.Lock(); c.failing = v; c.mu.Unlock() }
 func (c *controllableStore) isFailing() bool   { c.mu.Lock(); defer c.mu.Unlock(); return c.failing }
 func (c *controllableStore) hashGetCalls() int { c.mu.Lock(); defer c.mu.Unlock(); return c.hashGets }
 func (c *controllableStore) err() error        { return context.DeadlineExceeded }
+func (c *controllableStore) setHashGetGate(g chan struct{}) {
+	c.mu.Lock()
+	c.hashGetGate = g
+	c.mu.Unlock()
+}
 
 func (c *controllableStore) Get(ctx context.Context, key string) (string, error) {
 	if c.isFailing() {
@@ -367,11 +402,11 @@ func (c *controllableStore) HashIncr(ctx context.Context, key, field string, del
 func (c *controllableStore) HashGet(ctx context.Context, key string) (map[string]string, error) {
 	c.mu.Lock()
 	c.hashGets++
-	delay := c.hashGetDelay
+	gate := c.hashGetGate
 	failing := c.failing
 	c.mu.Unlock()
-	if delay > 0 {
-		time.Sleep(delay)
+	if gate != nil {
+		<-gate
 	}
 	if failing {
 		return nil, c.err()
@@ -423,7 +458,7 @@ func TestE2E_PauseMode(t *testing.T) {
 				MaxCalls:           3,
 				OnExceed:           "pause",
 				PauseWebhook:       srv.URL,
-				PauseTimeout:       "5s",
+				PauseTimeout:       "1h",
 				PauseTimeoutAction: "deny",
 				RefreshInterval:    "30ms",
 				RedisUnavailable:   "fail_open",
@@ -433,7 +468,7 @@ func TestE2E_PauseMode(t *testing.T) {
 			}
 			p.store = newMemStore()
 			p.httpClient = &http.Client{}
-			go p.refreshLoop(30 * time.Millisecond)
+			go p.refreshLoop(time.Hour)
 			t.Cleanup(func() { close(p.stopCh); <-p.stopped })
 
 			p.mu.Lock()
@@ -480,7 +515,7 @@ func TestE2E_ConcurrentDenyOvershootBound(t *testing.T) {
 		t.Fatalf("Configure: %v", err)
 	}
 	p.store = newMemStore()
-	go p.refreshLoop(30 * time.Millisecond)
+	go p.refreshLoop(time.Hour)
 	t.Cleanup(func() { close(p.stopCh); <-p.stopped })
 
 	// Seed the cache one call below the limit. With no OnResponseFrame calls

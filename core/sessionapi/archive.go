@@ -146,5 +146,6 @@ func (s *Server) withArchivedRows(resident []session.SessionSummary) ([]session.
 		DroppedRenames:  st.DroppedRenames,
 		DroppedCaptures: st.DroppedCaptures,
 		Paused:          st.Paused,
+		FailedClosed:    st.FailedClosed,
 	}
 }

@@ -447,6 +447,16 @@ type SessionEvent struct {
 	// Use ImportedSource to make the value and Imported to test it.
 	Source string
 
+	// NoRecord is true when the request withholds its own session from the archive: it
+	// carried RecordHeader with the value RecordOff and named its session with a session-id
+	// header (#1923; Context.WithholdsSession, pinned before any plugin runs). The proxy
+	// still forwards the request and runs its plugins. The archive keeps none of the
+	// session's events from then on; what it held before the opt-out stays.
+	//
+	// Client-asserted, with the same caveat as Client above. It can stop a session's
+	// recording, never put one there or erase what is recorded.
+	NoRecord bool
+
 	// SubagentKind is the kind of a Bob child task, from Context.SubagentKind:
 	// SubagentKindSubtask or SubagentKindSubagent. Set only on a Bob child's rows, and
 	// empty everywhere else, Claude Code rows included (read Inference.AgentRole there).
@@ -722,6 +732,9 @@ type sessionEventWire struct {
 	ParentSubagent string `json:"parentSubagent,omitempty"`
 	// omitempty: absent on every live event.
 	Source LenientString `json:"source,omitempty"`
+	// omitempty: absent on every recorded row, which is every row the archive keeps. Lenient, as
+	// Source is: a producer (cortex-gateway, say) that sends a wrong type must not cost the row.
+	NoRecord LenientBool `json:"noRecord,omitempty"`
 	// omitempty: absent on every row but a Bob child task's.
 	SubagentKind string `json:"subagentKind,omitempty"`
 	// omitempty: absent wherever the listener could not name the client's process, and on
@@ -770,6 +783,7 @@ func (e SessionEvent) MarshalJSON() ([]byte, error) {
 		Subagent:        e.Subagent,
 		ParentSubagent:  e.ParentSubagent,
 		Source:          LenientString(e.Source),
+		NoRecord:        LenientBool(e.NoRecord),
 		SubagentKind:    e.SubagentKind,
 		Proc:            e.Proc,
 		ClientProc:      e.ClientProc,
@@ -820,6 +834,7 @@ func (e *SessionEvent) UnmarshalJSON(data []byte) error {
 		Subagent:        w.Subagent,
 		ParentSubagent:  w.ParentSubagent,
 		Source:          string(w.Source),
+		NoRecord:        bool(w.NoRecord),
 		SubagentKind:    w.SubagentKind,
 		Proc:            w.Proc,
 		ClientProc:      w.ClientProc,
@@ -1077,6 +1092,10 @@ type ArchiveUsage struct {
 	DroppedCaptures uint64 `json:"droppedCaptures,omitempty"`
 	// Paused is true after the disk filled, until the archive's next retention pass.
 	Paused bool `json:"paused,omitempty"`
+	// FailedClosed is true once more sessions asked not to be recorded, while the archive's
+	// writer was behind, than it keeps track of (#1923): until a restart it records no
+	// conversation.
+	FailedClosed bool `json:"failedClosed,omitempty"`
 }
 
 // ImportedSourcePrefix starts the Source of every event that an import wrote.
@@ -1095,6 +1114,19 @@ func (s *LenientString) UnmarshalJSON(b []byte) error {
 		v = ""
 	}
 	*s = LenientString(v)
+	return nil
+}
+
+// LenientBool decodes JSON true as true and any other JSON value as false, for the reason
+// LenientString gives. Used where false is the safe default: noRecord can only withhold.
+type LenientBool bool
+
+func (b *LenientBool) UnmarshalJSON(raw []byte) error {
+	var v bool
+	if json.Unmarshal(raw, &v) != nil {
+		v = false
+	}
+	*b = LenientBool(v)
 	return nil
 }
 

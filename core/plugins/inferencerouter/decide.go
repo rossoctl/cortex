@@ -199,6 +199,9 @@ type resendStep struct {
 	// sub is the model to resend with, for "model". "" means the server has no
 	// substitute: the refusal is learned, and the request is not resent.
 	sub string
+	// forget is whether the session drops the substitute the refused attempt was sent
+	// with.
+	forget bool
 	// kind, n and stated are the limit to learn, for "limit".
 	kind   limitKind
 	n      int
@@ -212,7 +215,8 @@ type resendStep struct {
 //  1. A refusal of the model (refusesModel) is never read as a limit. It gets
 //     "model" when the request was redirected to a server, was parsed, names a model
 //     and was not sent with a substitute already. Otherwise it is not resent. A
-//     substitute that is the refused model is no substitute.
+//     substitute that is the refused model is no substitute, and a routed request
+//     sent with a substitute gets forget.
 //  2. A limit refusal (limitRefusal) gets "limit" when the request was switched, was
 //     not resent for a limit already, went to a server, names a model, and the limit
 //     is plausible. A refusal that states no number teaches a window 90% of the
@@ -220,7 +224,10 @@ type resendStep struct {
 //  3. Any other answer is not resent.
 func decideResend(f resendFacts, substitute func() string) resendStep {
 	if refusesModel(f.status, f.refusal, f.model) {
-		if !f.redirected || !f.routed || !f.parsed || f.substituted || !f.hasModel {
+		if f.substituted {
+			return resendStep{forget: f.routed}
+		}
+		if !f.redirected || !f.routed || !f.parsed || !f.hasModel {
 			return resendStep{}
 		}
 		sub := substitute()

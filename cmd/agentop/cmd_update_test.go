@@ -25,6 +25,8 @@ import (
 	"testing"
 
 	"github.com/sigstore/sigstore-go/pkg/root"
+
+	"github.com/rossoctl/cortex/cmd/agentop/updatestatus"
 )
 
 // fakeInstaller puts a curl on PATH that serves an installer which prints its
@@ -60,15 +62,26 @@ func latestIs(t *testing.T, tag string) {
 func TestUpdateSkipsTheInstallerWhenCurrent(t *testing.T) {
 	for _, c := range []struct {
 		name, latest, cortex string
+		agentop              string // the installed agentop, if not v9.9.9
 		release              string // the tag fakeStagedRelease serves, if any
 		args                 []string
 		want                 string // stdout
 		code                 int
+		result               string // the status update.json records, if checked
 	}{
 		{name: "newest", latest: "v9.9.9", want: "Already at v9.9.9.\n"},
 		{name: "pinned", latest: "v9.9.8", args: []string{"--ref=v9.9.9"}, want: "Already at v9.9.9.\n"},
 		{name: "older", latest: "v9.9.10", release: "v9.9.10", want: "staged setup\n", code: 7},
 		{name: "pinned to another", latest: "v9.9.9", release: "v9.9.8", args: []string{"--ref=v9.9.8"}, want: "staged setup\n", code: 7},
+		// A dev or main build can be ahead of the newest release: only --ref replaces it.
+		{name: "dev build", latest: "v9.9.9", agentop: "#!/bin/sh\necho agentop dev\n", want: fmt.Sprintf(notReleaseNotice+"\n", "dev")},
+		{name: "main build", latest: "v9.9.9", agentop: "#!/bin/sh\necho agentop main-abc1234\n", want: fmt.Sprintf(notReleaseNotice+"\n", "main-abc1234")},
+		{name: "dev build pinned", latest: "v9.9.9", release: "v9.9.9", agentop: "#!/bin/sh\necho agentop dev\n", args: []string{"--ref=v9.9.9"}, want: "staged setup\n", code: 7},
+		// An RC moves only forward: to its release or a later one, or back by --ref.
+		{name: "rc ahead", latest: "v9.9.8", agentop: "#!/bin/sh\necho agentop v9.9.9-rc.1\n", want: fmt.Sprintf(rcAheadNotice+"\n", "agentop", "v9.9.9-rc.1", "v9.9.8"), result: updatestatus.ResultCurrent},
+		{name: "cortex rc ahead", latest: "v9.9.9", cortex: "#!/bin/sh\necho cortex v9.9.10-rc.1\n", want: fmt.Sprintf(rcAheadNotice+"\n", "cortex", "v9.9.10-rc.1", "v9.9.9"), result: updatestatus.ResultCurrent},
+		{name: "rc released", latest: "v9.9.9", release: "v9.9.9", agentop: "#!/bin/sh\necho agentop v9.9.9-rc.1\n", want: "staged setup\n", code: 7},
+		{name: "rc pinned back", latest: "v9.9.8", release: "v9.9.8", agentop: "#!/bin/sh\necho agentop v9.9.9-rc.1\n", args: []string{"--ref=v9.9.8"}, want: "staged setup\n", code: 7},
 		{name: "main", latest: "v9.9.9", args: []string{"--ref=main"}, want: "installer: --ref=main\n", code: 7},
 		// setup repairs a pair that disagree.
 		{name: "cortex behind", latest: "v9.9.9", release: "v9.9.9", cortex: "#!/bin/sh\necho cortex v9.9.8\n", want: "staged setup\n", code: 7},
@@ -81,6 +94,9 @@ func TestUpdateSkipsTheInstallerWhenCurrent(t *testing.T) {
 			if c.cortex != "" {
 				writeExe(t, filepath.Join(sc.home, ".local", "bin", "cortex"), c.cortex)
 			}
+			if c.agentop != "" {
+				writeExe(t, filepath.Join(sc.home, ".local", "bin", "agentop"), c.agentop)
+			}
 			latestIs(t, c.latest)
 			fakeInstaller(t, false)
 			if c.release != "" {
@@ -89,6 +105,11 @@ func TestUpdateSkipsTheInstallerWhenCurrent(t *testing.T) {
 			var out, errb bytes.Buffer
 			if code := runUpdate(c.args, &out, &errb); code != c.code || out.String() != c.want {
 				t.Errorf("exit %d stdout %q, want %d %q\n%s", code, out.String(), c.code, c.want, errb.String())
+			}
+			if c.result != "" {
+				if s := readStatus(t, sc); s.Result != c.result || s.Latest != c.latest {
+					t.Errorf("status %q latest %q, want %q %q", s.Result, s.Latest, c.result, c.latest)
+				}
 			}
 		})
 	}
@@ -161,6 +182,22 @@ func TestUpdateCpexNoticeAfterSetupSucceeds(t *testing.T) {
 	var out, errb bytes.Buffer
 	if code := runUpdate(nil, &out, &errb); code != 0 || out.String() != "staged setup\n"+cpexUpdateNotice+"\n" {
 		t.Fatalf("exit %d stdout %q, want 0, the staged setup's line, then the notice:\n%s", code, out.String(), errb.String())
+	}
+}
+
+// A "no" at setup's prompt is not a failed update: the title bar must not say "failed".
+func TestUpdateDeclinedIsNotAFailure(t *testing.T) {
+	sc := newDoctorScene(t)
+	sc.installed(t)
+	latestIs(t, "v9.9.10")
+	fakeStagedRelease(t, "v9.9.10", false)
+	t.Setenv("FAKE_SETUP_EXIT", fmt.Sprint(exitDeclined))
+	var out, errb bytes.Buffer
+	if code := runUpdate(nil, &out, &errb); code != exitDeclined {
+		t.Fatalf("exit %d, want %d:\n%s", code, exitDeclined, errb.String())
+	}
+	if _, err := os.Stat(filepath.Join(sc.home, ".cortex", updatestatus.FileName)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("a declined update wrote the status file (stat: %v)", err)
 	}
 }
 
@@ -450,7 +487,7 @@ func TestUpdateScriptExitsWithTheInstallersStatusOnInterrupt(t *testing.T) {
 	installStub(t, "sh", "#!"+dash+"\nexec "+dash+" \"$@\"\n")
 	installStub(t, "curl", "#!/bin/sh\nprintf '%s\\n' \"trap 'exit 3' INT\" 'echo ready' 'sleep 5 >/dev/null & wait'\n")
 	cmd := exec.Command("sh", "-c", updateScript, installerURL)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = groupAttr()
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -461,7 +498,7 @@ func TestUpdateScriptExitsWithTheInstallersStatusOnInterrupt(t *testing.T) {
 	if line, _ := bufio.NewReader(out).ReadString('\n'); line != "ready\n" {
 		t.Fatalf("installer said %q", line)
 	}
-	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGINT)
+	_ = killPID(-cmd.Process.Pid, syscall.SIGINT)
 	_ = cmd.Wait()
 	if code := cmd.ProcessState.ExitCode(); code != 3 {
 		t.Errorf("exit %d, want the installer's 3", code)

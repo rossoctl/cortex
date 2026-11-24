@@ -86,21 +86,17 @@ func getWithUA(t *testing.T, proxyURL, ua string) {
 // inboundEvents waits for the request and response events of one turn.
 //
 // SUBSCRIBED, NOT POLLED. store.Subscribe delivers each event as it is appended, so this waits
-// exactly as long as the listener takes and no longer — where a 100 x 20ms poll both sleeps on
-// a fast machine and reports "got <nil>" on a slow one, with no way to tell a listener that was
-// slow from a listener that recorded nothing. The subscription has to be taken BEFORE the
-// request, which is why it is a parameter here rather than something this helper opens.
+// exactly as long as the listener takes and no longer. The subscription has to be taken BEFORE
+// the request, which is why it is a parameter here rather than something this helper opens.
 func inboundEvents(t *testing.T, sub *session.Subscription, want int) []pipeline.SessionEvent {
 	t.Helper()
 	var out []pipeline.SessionEvent
-	deadline := time.After(5 * time.Second)
 	for len(out) < want {
-		select {
-		case ev := <-sub.Events():
-			out = append(out, ev)
-		case <-deadline:
-			t.Fatalf("waited 5s for %d inbound events, got %d: %+v", want, len(out), out)
+		ev, ok := <-sub.Events()
+		if !ok {
+			t.Fatalf("subscription closed after %d of %d inbound events: %+v", len(out), want, out)
 		}
+		out = append(out, ev)
 	}
 	return out
 }

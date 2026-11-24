@@ -52,6 +52,17 @@ func restarted(t *testing.T, opts ...Option) (*httptest.Server, *session.Store, 
 	return ts, store, a
 }
 
+// settleArchive returns once a's writer has handled everything queued before the call. A
+// delete of an id the archive never held changes nothing and queues behind the rest.
+func settleArchive(t *testing.T, a *archive.Archive) {
+	t.Helper()
+	const id = "\x00settle"
+	a.Deleted(id)
+	if _, err := a.AwaitDelete(id, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func hostN(i int) string { return "h" + string(rune('a'+i)) }
 
 func seqsOf(v *pipeline.SessionView) []uint64 {
@@ -262,26 +273,20 @@ func TestHandleGet_FillsTheGapBehindAPinnedIntent(t *testing.T) {
 
 // A session resumed after a restart lists its whole history — 10 events from before and 1 after —
 // in the default list and with ?archived=true alike. The archive marks the entry's start on its
-// own goroutine, so poll briefly for it.
+// own goroutine, so the test settles the archive first.
 func TestHandleList_AResumedSessionListsItsWholeHistory(t *testing.T) {
-	ts, store, _ := restarted(t)
+	ts, store, a := restarted(t)
 	store.Append("s1", pipeline.SessionEvent{At: time.Now(), Phase: pipeline.SessionRequest})
+	settleArchive(t, a)
 	for _, url := range []string{ts.URL + "/v1/sessions", ts.URL + "/v1/sessions?archived=true"} {
-		deadline := time.Now().Add(2 * time.Second)
-		for {
-			var n int
-			for _, s := range getList(t, url).Sessions {
-				if s.ID == "s1" {
-					n = s.EventCount
-				}
+		var n int
+		for _, s := range getList(t, url).Sessions {
+			if s.ID == "s1" {
+				n = s.EventCount
 			}
-			if n == 11 {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("%s: s1 lists %d events, want 11", url, n)
-			}
-			time.Sleep(5 * time.Millisecond)
+		}
+		if n != 11 {
+			t.Fatalf("%s: s1 lists %d events, want 11", url, n)
 		}
 	}
 }

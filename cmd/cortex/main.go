@@ -33,6 +33,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/rossoctl/cortex/core/accounting"
 	"github.com/rossoctl/cortex/core/auth"
 	"github.com/rossoctl/cortex/core/bootstrap"
 	"github.com/rossoctl/cortex/core/clientstate"
@@ -540,6 +541,14 @@ func main() {
 	// pendingPricing carries a rate table from a build to the commit that accepts it. See
 	// buildPipelines and applyPricing.
 	var pendingPricing *pricing.Table
+	// acctHost is the process's accountant host (core/accounting), nil when accounting is off.
+	// ONE per process, made by the first build and handed to every later one, so a reload keeps
+	// its Tracker state. The reloader refuses only a reload that would turn accounting on when
+	// the process booted with it off (reloader.validateAccounting); turning it off is accepted,
+	// so no later build ever needs to make acctHost, only drop it by leaving outDeps.Accounting
+	// nil.
+	var acctHost *accounting.Host
+	acctDecided := false
 	buildPipelines := func() (*pipeline.Pipeline, *pipeline.Pipeline, *config.Config, error) {
 		c, err := config.Load(*configPath)
 		if err != nil {
@@ -580,8 +589,21 @@ func main() {
 		// cannot honor fails here — on startup and on every reload — instead of
 		// running to no effect. The reverse proxy honors no redirect, which is what
 		// keeps a WritesDestination plugin off the inbound chain.
+		if !acctDecided {
+			acctDecided = true
+			if c.AccountingOn() {
+				acctHost = newAccountingHost(c, pricingRegistry)
+			}
+		}
 		inDeps := plugins.Deps{SPIFFE: provider, Pricing: pricingRegistry, Store: pluginStore, History: history, Listener: reverseproxy.Support(), LocalInstall: localInstall}
+		// The accountant on the outbound chain only: inference requests leave through it.
 		outDeps := plugins.Deps{SPIFFE: provider, Pricing: pricingRegistry, Store: pluginStore, History: history, Listener: forwardproxy.Support(c.MTLS != nil), LocalInstall: localInstall}
+		// Only while this config resolves accounting on: a reload may turn it off (the only
+		// context operator set to on_error: off), and the host then stays idle until a later
+		// reload turns it back on (reloader.validateAccounting).
+		if c.AccountingOn() {
+			outDeps.Accounting = acctHost
+		}
 		in, err := plugins.BuildWithDeps(c.Pipeline.Inbound.Plugins, inDeps)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("inbound: %w", err)
@@ -722,6 +744,9 @@ func main() {
 		// long-lived one the plugins hold, so a config reload moves both together.
 		usageAgg = usage.New(usage.WithMaxSessions(lim.MaxSessions), usage.WithPricing(pricingRegistry))
 		sessions.AddRecorder(usageAgg)
+		// Every Recorder that keeps cost is also the accountant's, for spend it makes outside a
+		// request (the keep-alive ping), which never passes through the session store.
+		acctHost.AddCostRecorder(usageAgg)
 
 		// The durable cost ledger is a SECOND Recorder alongside the aggregator, not a
 		// reader of it: the aggregator keeps independent marginals (by-model,
@@ -771,6 +796,7 @@ func main() {
 						}
 					}
 					sessions.AddRecorder(costLedger)
+					acctHost.AddCostRecorder(costLedger)
 					slog.Info("cost ledger enabled — durable cost history for window=today, window=month and window=7d",
 						// THE RESOLVED VALUE, not the configured one: `retention` is 0 on a
 						// default install and the store turns that into its default, so logging
@@ -1369,6 +1395,12 @@ func main() {
 	}
 	rld.Close(shutdownCtx)
 
+	// The accountant once no pipeline can still end a request record, and before the ledger,
+	// which its spend records reach. Close writes the final Tracker snapshot on a local install.
+	if err := acctHost.Close(); err != nil {
+		slog.Warn("accounting: final snapshot failed; the next start prices from a fresh state", "error", err)
+	}
+
 	// Flushed AFTER rld.Close (every pipeline stopped, or the shutdown budget spent)
 	// and before the store closes, so the final minute includes every event a
 	// draining request still produced. Any earlier
@@ -1408,6 +1440,7 @@ func main() {
 	if sessions != nil {
 		sessions.Close()
 	}
+
 	slog.Info("stopped", "took", time.Since(stopping).Round(time.Millisecond))
 }
 

@@ -8,6 +8,7 @@ import (
 
 	"github.com/rossoctl/cortex/core/internal/parsercommon"
 	"github.com/rossoctl/cortex/core/model"
+	"github.com/tidwall/gjson"
 )
 
 // --- request ---
@@ -244,6 +245,18 @@ type anthropicUsage struct {
 	CacheCreationInputTokens *int `json:"cache_creation_input_tokens"`
 	CacheReadInputTokens     *int `json:"cache_read_input_tokens"`
 
+	// CacheCreation splits CacheCreationInputTokens by TTL. ephemeral_1h_input_tokens
+	// is a SUBSET of CacheCreationInputTokens, never an addition to it — the object is
+	// a breakdown of the same total, as Anthropic's prompt-caching docs show. Absent
+	// on a request with no 1-hour breakpoints.
+	//
+	// RAW, READ LENIENTLY (cacheWrite1h): the breakdown is optional, and a typed
+	// field would make an off-shape value ([], a string from a relay or shim) fail
+	// the whole usage decode, losing every other count. An unreadable breakdown
+	// means "no 1h writes", nothing more. pricing.UsageFromInference applies the
+	// same rule to a 1h count larger than the total.
+	CacheCreation json.RawMessage `json:"cache_creation"`
+
 	// OutputTokensDetails splits output_tokens by what generated it. Anthropic reports
 	// one sub-field, thinking_tokens: the share spent on internal reasoning, a SUBSET of
 	// OutputTokens rather than a sibling.
@@ -273,6 +286,18 @@ func (u anthropicUsage) toNeutral() parsercommon.TokenUsage {
 	if u.CacheCreationInputTokens != nil {
 		n.CacheWrite = *u.CacheCreationInputTokens
 		n.Present |= parsercommon.KindCacheWrite
+	}
+	// A SUBSET of CacheWrite above, never added to it. No Present bit of its own:
+	// it rides on KindCacheWrite, which the total already set.
+	//
+	// Checked against THIS frame's total, because the stream merge takes each
+	// counter's maximum on its own: a frame claiming more 1h writes than writes,
+	// followed by a larger total with no breakdown, would otherwise pass the
+	// subset check in pricing.UsageFromInference. A frame with no total is not
+	// checked here; the final check in UsageFromInference still applies.
+	if v, ok := cacheWrite1h(u.CacheCreation); ok &&
+		(u.CacheCreationInputTokens == nil || v <= *u.CacheCreationInputTokens) {
+		n.CacheWrite1h = v
 	}
 	// BOTH POINTERS: a details object forwarded without the count inside it reports
 	// nothing, and must not set the bit.
@@ -577,6 +602,9 @@ func mergeAnthropicUsageMaxSeen(state *inferenceStreamState, incoming parsercomm
 	if incoming.CacheWrite > state.usage.CacheWrite {
 		state.usage.CacheWrite = incoming.CacheWrite
 	}
+	if incoming.CacheWrite1h > state.usage.CacheWrite1h {
+		state.usage.CacheWrite1h = incoming.CacheWrite1h
+	}
 }
 
 // parseAnthropicSSE folds a fully-buffered Messages SSE body. Mirrors
@@ -600,4 +628,23 @@ func parseAnthropicSSE(body []byte, ext *model.InferenceExtension) {
 		foldAnthropicFrame(data, state, ext)
 	}
 	state.finalize(ext)
+}
+
+// cacheWrite1h reads ephemeral_1h_input_tokens from a usage.cache_creation object.
+// ok is false when the field is absent or is not a non-negative whole number, and
+// when cache_creation itself is not an object: the caller then reports no 1h
+// writes, and the rest of the usage block is unaffected.
+func cacheWrite1h(raw json.RawMessage) (int, bool) {
+	if len(raw) == 0 || !gjson.ValidBytes(raw) {
+		return 0, false
+	}
+	obj := gjson.ParseBytes(raw)
+	if !obj.IsObject() {
+		return 0, false
+	}
+	v := obj.Get("ephemeral_1h_input_tokens")
+	if v.Type != gjson.Number || v.Num < 0 || v.Num != float64(int64(v.Num)) {
+		return 0, false
+	}
+	return int(v.Num), true
 }

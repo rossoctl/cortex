@@ -422,7 +422,7 @@ func serveFrames(contentType string, gz bool, frames []string, release <-chan st
 						return
 					}
 				}
-				time.Sleep(pause)
+				time.Sleep(pause) // timing: a gap between frames the stream must carry
 			}
 			_, _ = io.WriteString(out, f)
 			flush()
@@ -757,6 +757,7 @@ func TestPraxisE2E_SameEventsAsDirect(t *testing.T) {
 	// floor under both, so a missing key means the field is missing, not a 0 ms value.
 	const originDelay = 5 * time.Millisecond
 	slow := func(h http.HandlerFunc) http.HandlerFunc {
+		// timing: the delay is a floor under the measured fields
 		return func(w http.ResponseWriter, r *http.Request) { time.Sleep(originDelay); h(w, r) }
 	}
 	var got [2][]map[string]any

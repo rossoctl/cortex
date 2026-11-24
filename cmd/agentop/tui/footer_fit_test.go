@@ -57,7 +57,7 @@ func TestFitHintLine_DropsFromTheFront(t *testing.T) {
 	got := fitHintLine(m.helpView(), 60)
 
 	// The specialised, pane-specific keys go first.
-	for _, gone := range []string{"[↑↓] nav", "[c] columns", "[u] usage"} {
+	for _, gone := range []string{"[b/f] page", "[↵] detail", "[c] columns"} {
 		if strings.Contains(got, gone) {
 			t.Errorf("width 60 kept %q, which should have been dropped: %q", gone, got)
 		}
@@ -69,7 +69,7 @@ func TestFitHintLine_DropsFromTheFront(t *testing.T) {
 func TestFitHintLine_EveryPaneFitsAt80(t *testing.T) {
 	for _, pane := range []paneID{
 		paneNamespaces, panePods, paneSessions, paneEvents,
-		paneDetail, paneUsage, paneTimeline, panePipeline, panePluginDetail, paneCatalog,
+		paneDetail, paneUsage, paneTimeline, panePipeline, panePluginDetail,
 	} {
 		m := &model{pane: pane, eventColumns: defaultColumnSelection()}
 		got := fitHintLine(m.helpView(), 80)
@@ -92,7 +92,7 @@ func TestFitHintLine_UnknownWidthIsUnchanged(t *testing.T) {
 	}
 }
 
-// The optional notices — hidden-message and dropped-column counts — must not
+// The optional notices — older-event and dropped-column counts — must not
 // outlive the keys that let a user act on them.
 //
 // They were appended AFTER "[q] quit", and fitHintLine drops from the front, so at
@@ -105,11 +105,10 @@ func TestFitHintLine_NoticesNeverOutliveQuit(t *testing.T) {
 	}{
 		{"dropped columns", func(m *model) { m.eventColsDropped = 1 }},
 		{"many dropped columns", func(m *model) { m.eventColsDropped = 7 }},
-		{"hidden messages", func(m *model) { m.hideInactive = true; m.hiddenInactive = 42 }},
+		{"older events", func(m *model) { m.olderNotFetched = map[string]int{"": 42} }},
 		{"both notices", func(m *model) {
 			m.eventColsDropped = 3
-			m.hideInactive = true
-			m.hiddenInactive = 9
+			m.olderNotFetched = map[string]int{"": 9}
 		}},
 	} {
 		m := &model{pane: paneEvents, eventColumns: defaultColumnSelection()}
@@ -135,11 +134,10 @@ func TestFitHintLine_NoticesNeverOutliveQuit(t *testing.T) {
 func TestFooter_NoticesStillAppearWhenThereIsRoom(t *testing.T) {
 	m := &model{pane: paneEvents, eventColumns: defaultColumnSelection()}
 	m.eventColsDropped = 2
-	m.hideInactive = true
-	m.hiddenInactive = 5
+	m.olderNotFetched = map[string]int{"": 5}
 
 	got := fitHintLine(m.helpView(), 220)
-	for _, want := range []string{"2 more columns", "5 hidden", "[?] keys", "[q] quit"} {
+	for _, want := range []string{"2 more columns", "5 older", "[?] keys", "[q] quit"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("wide footer omits %q:\n%q", want, got)
 		}

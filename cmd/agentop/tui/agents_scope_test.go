@@ -97,7 +97,7 @@ func TestAgentsPane_EnterListsThePickedAgentsSessionsFromAnyCaller(t *testing.T)
 		{label: "claude-code/2.1.270", Counts: usage.Counts{Requests: 10, PricedRequests: 10}},
 		{label: "bob-shell/2.0.5", Counts: usage.Counts{Requests: 8}},
 	}
-	for _, from := range []paneID{paneSessions, paneEvents, paneDetail, paneUsage, panePipeline, paneCatalog} {
+	for _, from := range []paneID{paneSessions, paneEvents, paneDetail, paneUsage, panePipeline} {
 		m := &model{
 			pane:               from,
 			previousPane:       paneNone,
@@ -272,19 +272,19 @@ func TestUsageTitle_NamesTheAgentScope(t *testing.T) {
 	}
 }
 
-// [b] is omitted from the footer while a scope is active, because it cannot act.
+// [o] is omitted from the footer while a scope is active, because it cannot act.
 //
 // The wire axis is the agent's while scoped, so there is no second axis to break down by. Same
-// treatment the footer already gives [b] under latency, and for the same stated reason: a footer
+// treatment the footer already gives [o] under latency, and for the same stated reason: a footer
 // that advertises an inert key is worse than a shorter footer.
 func TestUsageFooter_OmitsTheBreakdownKeyWhileScoped(t *testing.T) {
 	m := fitModel(t, paneUsage, 120, 40, nil)
-	if !strings.Contains(m.helpView(), "[b] breakdown") {
-		t.Fatal("the unscoped footer does not offer [b]; this test is measuring the wrong thing")
+	if !strings.Contains(m.helpView(), "[o] breakdown") {
+		t.Fatal("the unscoped footer does not offer [o]; this test is measuring the wrong thing")
 	}
 	m.agentScope = "claude-code/2.1.270"
-	if strings.Contains(m.helpView(), "[b] breakdown") {
-		t.Error("the footer still advertises [b] under an agent scope, where it cannot act")
+	if strings.Contains(m.helpView(), "[o] breakdown") {
+		t.Error("the footer still advertises [o] under an agent scope, where it cannot act")
 	}
 }
 

@@ -887,6 +887,10 @@ func (t *tunnelLog) recordWithLocked(sid string, ev pipeline.SessionEvent, c *pi
 	t.deferred, t.opened = false, true
 	open := t.openEv
 	open.At = ev.At
+	// The open row shares the request's fate (#1923): it goes into the same bucket, only to be
+	// folded into ev, and it comes first. Without this, a withheld session's archive would write
+	// the open row (with its project) before it ever saw the request's flag.
+	open.NoRecord = ev.NoRecord
 	t.bucket = t.s.Sessions.AppendPairCapture(sid, open, ev, c)
 	return true
 }

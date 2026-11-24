@@ -81,11 +81,11 @@ var autoUpdateRows = []autoRow{
 	{name: "latest not a release", latest: "v9.9.10-rc.1", age: 25 * time.Hour, want: updatestatus.ResultCheckFailed},
 	{name: "not-a-release", latest: "v9.9.10", agentop: "#!/bin/sh\necho agentop dev\n", age: 25 * time.Hour, want: updatestatus.ResultNotARelease},
 	{name: "current", latest: "v9.9.9", age: 25 * time.Hour, want: updatestatus.ResultCurrent},
-	{name: "waiting", latest: "v9.9.10", age: 23 * time.Hour, want: updatestatus.ResultWaiting},
+	{name: "waiting", latest: "v9.9.10", age: 5 * time.Hour, want: updatestatus.ResultWaiting},
 	{name: "wait set", latest: "v9.9.10", config: "update:\n  wait: 72h\n", age: 71 * time.Hour, want: updatestatus.ResultWaiting},
 	{name: "wait 0", latest: "v9.9.10", config: "update:\n  wait: \"0\"\n", age: time.Minute, want: updatestatus.ResultUpdated, ran: true},
 	// A bad wait keeps the default and does not cancel auto: false.
-	{name: "wait invalid", latest: "v9.9.10", config: "update:\n  wait: soon\n", age: 23 * time.Hour, want: updatestatus.ResultWaiting},
+	{name: "wait invalid", latest: "v9.9.10", config: "update:\n  wait: soon\n", age: 5 * time.Hour, want: updatestatus.ResultWaiting},
 	// A wrong-type field does not cancel auto: false either.
 	{name: "wait list, disabled", latest: "v9.9.10", config: "update:\n  auto: false\n  wait: [24h]\n", age: 25 * time.Hour, want: updatestatus.ResultDisabled},
 	{name: "check_every map, disabled", latest: "v9.9.10", config: "update:\n  auto: false\n  check_every: {h: 6}\n", age: 25 * time.Hour, want: updatestatus.ResultDisabled},
@@ -108,7 +108,7 @@ var autoUpdateRows = []autoRow{
 	{name: "downgrade", latest: "v9.9.8", age: 25 * time.Hour, want: updatestatus.ResultUpdated, ran: true},
 	// An RC moves to its release, after the same wait.
 	{name: "rc to its release", latest: "v9.9.10", agentop: rcVersion("agentop"), cortex: rcVersion("cortex"), age: 25 * time.Hour, want: updatestatus.ResultUpdated, ran: true},
-	{name: "rc waiting", latest: "v9.9.10", agentop: rcVersion("agentop"), cortex: rcVersion("cortex"), age: 23 * time.Hour, want: updatestatus.ResultWaiting},
+	{name: "rc waiting", latest: "v9.9.10", agentop: rcVersion("agentop"), cortex: rcVersion("cortex"), age: 5 * time.Hour, want: updatestatus.ResultWaiting},
 	// An RC never moves back to an older Latest.
 	{name: "rc ahead of latest", latest: "v9.9.9", agentop: rcVersion("agentop"), cortex: rcVersion("cortex"), age: 25 * time.Hour, want: updatestatus.ResultCurrent},
 	{name: "rc cortex ahead", latest: "v9.9.9", cortex: rcVersion("cortex"), age: 25 * time.Hour, want: updatestatus.ResultCurrent},

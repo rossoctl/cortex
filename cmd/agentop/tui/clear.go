@@ -447,7 +447,7 @@ func renderClearConfirm(cc *clearConfirm, width int) string {
 	const wrap = 60
 	w := min(wrap, max(width-6, 20))
 	text, hint := confirmText(cc)
-	body := lipgloss.NewStyle().Width(w).Render(text) + "\n\n" + styleHint.Render(hint)
+	body := lipgloss.NewStyle().Width(w).Render(text) + "\n\n" + renderHints(hint)
 	box := styleBorder.Padding(0, 2)
 	if width > styleBorder.GetHorizontalBorderSize() {
 		box = box.MaxWidth(width)

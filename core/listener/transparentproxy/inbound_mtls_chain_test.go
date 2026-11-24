@@ -168,7 +168,7 @@ func startChain(t *testing.T, mode tlssniff.Mode, src *chainSVID) (addr string, 
 	hs := &http.Server{
 		Handler:           chainHandler(),
 		ConnContext:       ConnContextHook,
-		ReadHeaderTimeout: 5 * time.Second,
+		ReadHeaderTimeout: time.Hour,
 	}
 	go func() { _ = hs.Serve(sniffed) }()
 	t.Cleanup(func() { _ = hs.Close() })
@@ -198,7 +198,6 @@ func tlsClient(t *testing.T, src *chainSVID) *http.Client {
 	}
 	return &http.Client{
 		Transport: &http.Transport{TLSClientConfig: cfg},
-		Timeout:   10 * time.Second,
 	}
 }
 
@@ -242,7 +241,7 @@ func TestInboundChain_OrigDstSurvivesPermissivePlaintext(t *testing.T) {
 	src := newChainSVID(t)
 	addr, rejected := startChain(t, tlssniff.ModePermissive, src)
 
-	got := post(t, &http.Client{Timeout: 10 * time.Second}, "http://"+addr+"/api/data")
+	got := post(t, &http.Client{}, "http://"+addr+"/api/data")
 	want := fmt.Sprintf("POST /api/data dst=%s ok=true tls=false body=ping", chainDst)
 	if got != want {
 		t.Errorf("handler saw %q, want %q", got, want)
@@ -271,9 +270,6 @@ func TestInboundChain_StrictRejectionKeepsListenerServing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	if err := c.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
-		t.Fatalf("deadline: %v", err)
-	}
 	if _, err := c.Write([]byte("GET /api/data HTTP/1.1\r\nHost: authbridge\r\n\r\n")); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -287,9 +283,10 @@ func TestInboundChain_StrictRejectionKeepsListenerServing(t *testing.T) {
 		t.Errorf("strict mode wrote %q to a plaintext caller, want nothing", buf[:n])
 	}
 
+	// The callback runs before the conn is closed, so it has fired by now.
 	select {
 	case <-rejected:
-	case <-time.After(3 * time.Second):
+	default:
 		t.Error("plaintext rejection was not reported to the metrics callback")
 	}
 
@@ -339,20 +336,16 @@ func TestInboundChain_PeekedConnExposesNetConn(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	select {
-	case c, ok := <-accepted:
-		if !ok {
-			t.Fatal("Accept failed")
-		}
-		defer func() { _ = c.Close() }()
-		if _, isConn := c.(*Conn); isConn {
-			t.Fatal("tlssniff returned the transparent conn unwrapped — this test would pass vacuously")
-		}
-		dst, found := OrigDstFromConn(c)
-		if !found || dst != chainDst {
-			t.Fatalf("OrigDstFromConn(%T) = (%q, %v), want (%q, true)", c, dst, found, chainDst)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for Accept")
+	c, ok := <-accepted
+	if !ok {
+		t.Fatal("Accept failed")
+	}
+	defer func() { _ = c.Close() }()
+	if _, isConn := c.(*Conn); isConn {
+		t.Fatal("tlssniff returned the transparent conn unwrapped — this test would pass vacuously")
+	}
+	dst, found := OrigDstFromConn(c)
+	if !found || dst != chainDst {
+		t.Fatalf("OrigDstFromConn(%T) = (%q, %v), want (%q, true)", c, dst, found, chainDst)
 	}
 }

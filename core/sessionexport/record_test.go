@@ -208,6 +208,14 @@ func TestRecord_EveryFieldIsPopulated(t *testing.T) {
 	v := reflect.ValueOf(r)
 	for i := range v.NumField() {
 		f := v.Type().Field(i)
+		// Kind is the one field whose CORRECT value on this path is empty. It is `event` only on
+		// a stream carrying toolCall records (T28), and a plain GET /v1/export must stay
+		// byte-identical to the pre-toolCall format (T20) — so FromEvent deliberately leaves it
+		// unset and Writer stamps it. TestWriter_ToolCallStreamStampsEventKind covers the other
+		// half; TestWriter_PlainStreamUnchanged covers this one.
+		if f.Name == "Kind" {
+			continue
+		}
 		if v.Field(i).IsZero() {
 			t.Errorf("Record.%s is zero after projecting a fully-populated event — "+
 				"either FromEvent does not set it, or loadedEvent does not exercise it", f.Name)

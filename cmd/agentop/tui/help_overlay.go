@@ -104,8 +104,7 @@ var helpNavKeys = keyGroup{
 	notes: []string{
 		"All three work on every pane, because they move this overlay rather than " +
 			"what is behind it. With it closed they move the pane's own list instead — " +
-			"except on the usage pane, which has no list: there b cycles the breakdown " +
-			"and g / G do nothing.",
+			"except on the usage pane, which has no list: there they do nothing.",
 	},
 }
 
@@ -192,13 +191,10 @@ func (jt jumpTarget) name() string {
 	return strings.ToLower(paneName(jt.pane))
 }
 
-// jumpTargets are the four keys that leave the pane you are on.
+// jumpTargets are the keys that leave the pane you are on.
 //
-// `C` WAS `P` UNTIL THE PIPELINE TOOK THAT LETTER, and this section is the reason
-// that swap was cheap: `P`-for-catalog was never shown in any footer, so there
-// was close to no muscle memory behind it — and the discoverability problem the
-// overlay existed to solve for it is now a titled section rather than one line in
-// a group of ten.
+// NO `C`: the plugin catalog was its own pane under `C`, and is now the pipeline
+// pane's "available" section, so one key shows what runs and what could.
 var jumpTargets = []jumpTarget{
 	{key: "u", pane: paneUsage,
 		desc: "charts over the events the proxy has seen — every session from the " +
@@ -206,9 +202,7 @@ var jumpTargets = []jumpTarget{
 	{key: "T", pane: paneTimeline,
 		desc: "the selected session's agents, tools and hosts on a time axis"},
 	{key: "P", pane: panePipeline,
-		desc: "the plugin chain this proxy runs, editable in $EDITOR"},
-	{key: "C", pane: paneCatalog,
-		desc: "every plugin the proxy offers, from /v1/plugins"},
+		desc: "the plugin chain this proxy runs, editable in $EDITOR, then the plugins it could run"},
 	{key: "A", pane: paneAgents,
 		desc: "what each coding agent has spent today; pick one to scope the views"},
 	{key: "$", pane: paneNone, label: "spend",
@@ -288,8 +282,8 @@ var paneKeys = map[paneID]keyGroup{
 		purpose: "Kubernetes agent workloads grouped by namespace; where agentop starts",
 		bindings: []keyBinding{
 			{"↑↓ / jk", "navigate"},
-			{"↵", "open namespace"},
-			{"l", "connect to the local session API"},
+			{"↵ / → / l", "open namespace"},
+			{"L", "connect to the local session API"},
 			{"r", "reload agent list"},
 			// `esc` ALONE, not "q · esc": quit is already in ANYWHERE, and `q` here made
 			// this the one pane group that restated a key from it. What is pane-specific
@@ -303,7 +297,7 @@ var paneKeys = map[paneID]keyGroup{
 		purpose: "the agent pods in that namespace, each with a proxy to connect to",
 		bindings: []keyBinding{
 			{"↑↓ / jk", "navigate"},
-			{"↵", "port-forward + connect"},
+			{"↵ / → / l", "port-forward + connect"},
 			{"esc", "back to namespaces"},
 			{"r", "reload agent list"},
 		},
@@ -315,8 +309,8 @@ var paneKeys = map[paneID]keyGroup{
 		bindings: []keyBinding{
 			{"↑↓ / jk", "navigate"},
 			{"↵ / → / l", "drill into session"},
-			{"X", "clear all history, in memory and on disk (asks first; the cost ledger is kept)"},
 			{"x", "erase this session, in memory and on disk (asks first; the cost ledger is kept)"},
+			{"S", "move this session to another inference server"},
 			{"esc", "back to the agents picker, else pods picker"},
 		},
 	},
@@ -326,13 +320,12 @@ var paneKeys = map[paneID]keyGroup{
 		bindings: []keyBinding{
 			{"↑↓ / jk", "navigate"},
 			{"↵ / → / l", "event detail"},
-			{"s", "toggle passthru/skip rows"},
 			{"/ then tab", "search each row's details: ↵, n and N find the next match"},
 			{"c", "column picker (checkboxes + descriptions)"},
 			{"c then s", "sort by a column: desc → asc → chronological"},
 			{"⚒ rows", "tool calls. DURATION, for a tool: from the reply to the next request of the same agent"},
 			{"↵ on ▲ row", "load the page before the oldest event shown"},
-			{"t", "back to the live tail (resumes updates)"},
+			{"G", "the newest row; when paged back, the live tail (resumes updates)"},
 			{"esc / ← / h", "back to sessions"},
 		},
 	},
@@ -349,7 +342,7 @@ var paneKeys = map[paneID]keyGroup{
 	},
 	panePipeline: {
 		title:   "PIPELINE (this pane)",
-		purpose: "the plugin chain this proxy runs, in the order it runs them",
+		purpose: "the plugin chain this proxy runs, in order, then the plugins available to add",
 		bindings: []keyBinding{
 			{"↑↓ / jk", "navigate"},
 			{"↵ / → / l", "plugin detail"},
@@ -371,8 +364,7 @@ var paneKeys = map[paneID]keyGroup{
 		bindings: []keyBinding{
 			{"m", "cycle metric (tokens/requests/errors/latency/cost)"},
 			{"w", "cycle window (10m/1h/6h)"},
-			{"b", "cycle breakdown (none/status/method/plugin/host; not for latency or a scope)"},
-			{"s", "toggle session / all sessions"},
+			{"o", "cycle breakdown (none/status/method/plugin/host; not for latency or a scope)"},
 			{"esc", "back"},
 		},
 	},
@@ -387,16 +379,6 @@ var paneKeys = map[paneID]keyGroup{
 			{"esc", "back"},
 		},
 	},
-	paneCatalog: {
-		title:   "PLUGIN CATALOG (this pane)",
-		purpose: "every plugin the proxy offers, whether or not the pipeline runs it",
-		bindings: []keyBinding{
-			{"↑↓ / jk", "navigate"},
-			{"↵ / → / l", "plugin detail"},
-			{"r", "refresh from /v1/plugins"},
-			{"esc / ← / h", "back"},
-		},
-	},
 	paneAgents: {
 		title: "AGENTS (this pane)",
 		// "coding" is load-bearing and pinned by
@@ -409,9 +391,6 @@ var paneKeys = map[paneID]keyGroup{
 			{"↑↓ / jk", "navigate"},
 			// Said here too because the footer only describes the row under the cursor.
 			{"↵", "open/close a row's projects; on a sub-row, scope and list its sessions"},
-			// One line each, at 76 columns here and 90 in the note: Other under a project is
-			// where spend from before the upgrade lands, so a month view can be mostly Other.
-			{"space", "close from a sub-row; COST adds up, SESSIONS overlap, pre-upgrade is Other"},
 			{"S", "choose the inference server this agent's new sessions use"},
 			{"w", "cycle the window: the rows and the breakdown together"},
 			{"x", "erase this agent's sessions (asks first); on All agents, everything"},
@@ -431,6 +410,9 @@ var paneKeys = map[paneID]keyGroup{
 		// views can honour it rather than whether any can.
 		notes: []string{
 			"Opens at 2 agents. Agent/project scopes sessions, usage pane, spend band. Other: unknowns.",
+			// Other under a project is where spend from before the upgrade lands, so a month
+			// view can be mostly Other.
+			"COST adds up; SESSIONS overlap; pre-upgrade spend is Other.",
 		},
 	},
 }
@@ -439,7 +421,7 @@ var paneKeys = map[paneID]keyGroup{
 // the overlay is stable across openings (Go map iteration is random).
 var otherPaneOrder = []paneID{
 	paneNamespaces, panePods, paneSessions, paneEvents,
-	paneDetail, paneAgents, paneUsage, paneTimeline, panePipeline, panePluginDetail, paneCatalog,
+	paneDetail, paneAgents, paneUsage, paneTimeline, panePipeline, panePluginDetail,
 }
 
 // helpKeyColWidth is the fixed width of the key column so descriptions
@@ -708,6 +690,12 @@ func renderDrillPath(pane paneID, width int) string {
 	return out
 }
 
+// helpTwoColumnMinWidth is the narrowest body that is drawn in two columns. Each column
+// needs the key indent (2), the key column (12), the gutter (2) and about 40 columns of
+// description: 2*56, plus 3 for the separator. A 140-column terminal (134 of body) gets two
+// columns, an 80-column one (74) gets one.
+const helpTwoColumnMinWidth = 2*56 + 3
+
 // helpBodyLines builds the scrollable body of the key-help overlay, wrapped to
 // width: the active pane in full (emphasized), then where it can go, then the
 // spine, then the keys that work anywhere, then the spend drawer's own, then every
@@ -717,6 +705,11 @@ func renderDrillPath(pane paneID, width int) string {
 // get back, and only then the complete reference. The old body ran active pane →
 // GLOBAL → a glyph wall, which answered the last question badly and the first
 // three not at all.
+//
+// TWO COLUMNS ON A WIDE BODY (helpTwoColumnMinWidth). The left column holds this pane
+// and where it can go, the right one the keys that work anywhere and the drill path,
+// so the first screen answers more without a scroll. EVERY PANE stays one column below
+// them, at the full width.
 //
 // The other panes are rendered IN FULL, descriptions and all, rather than
 // compacted to their bare keys. `USAGE  m  w  b  s  esc` told a reader that the
@@ -730,17 +723,29 @@ func helpBodyLines(pane paneID, width int) string {
 	if width < helpMinProseWidth {
 		width = helpMinProseWidth
 	}
-	var sections []string
-
-	if g, ok := paneKeys[pane]; ok {
-		sections = append(sections, renderKeyGroup(g, true, width, 0))
+	two := width >= helpTwoColumnMinWidth
+	colW := width
+	if two {
+		colW = (width - 3) / 2
 	}
-	sections = append(sections,
-		renderJumpSection(pane, width),
-		renderDrillPath(pane, width),
-	)
+
+	var left, right []string
+	if g, ok := paneKeys[pane]; ok {
+		left = append(left, renderKeyGroup(g, true, colW, 0))
+	}
+	left = append(left, renderJumpSection(pane, colW))
 	for _, g := range helpGlobalGroups(pane) {
-		sections = append(sections, renderKeyGroup(g, false, width, 0))
+		right = append(right, renderKeyGroup(g, false, colW, 0))
+	}
+	drill := renderDrillPath(pane, colW)
+
+	var sections []string
+	if two {
+		right = append(right, drill)
+		sections = append(sections, joinHelpColumns(
+			strings.Join(left, "\n\n"), strings.Join(right, "\n\n"), colW, width))
+	} else {
+		sections = append(append(append(sections, left...), drill), right...)
 	}
 
 	// Every other pane, in full. The active pane is already rendered above.
@@ -759,8 +764,38 @@ func helpBodyLines(pane paneID, width int) string {
 	if len(others) > 1 {
 		sections = append(sections, strings.Join(others, "\n\n"))
 	}
+	// Last: the bottom bar has no room for it. Wrapped, not cut, below its width: a cut URL
+	// cannot be followed.
+	url := "  " + feedbackURL
+	if lipgloss.Width(url) > width {
+		url = ansi.Hardwrap(feedbackURL, width, true)
+	}
+	sections = append(sections, styleHint.Render("FEEDBACK")+"\n"+styleMuted.Render(url))
 
 	return strings.Join(sections, "\n\n")
+}
+
+// joinHelpColumns draws left and right side by side, each line of left padded to colW,
+// with a dim separator between. The shorter column is padded with blank lines.
+//
+// EACH ROW IS PADDED TO width, so the overlay spans the terminal as the one-column body
+// does. A body one column short centred the panel one column in, and the base's key bar
+// showed in the gap beside it.
+func joinHelpColumns(left, right string, colW, width int) string {
+	l, r := strings.Split(left, "\n"), strings.Split(right, "\n")
+	sep := styleDim.Render(" │ ")
+	rows := make([]string, max(len(l), len(r)))
+	for i := range rows {
+		var a, b string
+		if i < len(l) {
+			a = l[i]
+		}
+		if i < len(r) {
+			b = r[i]
+		}
+		rows[i] = padRight(padRight(a, colW)+sep+b, width)
+	}
+	return strings.Join(rows, "\n")
 }
 
 // helpBodyWidth is the natural (unwrapped) width of the help body, used
@@ -829,6 +864,7 @@ func renderHelpOverlay(vp viewport.Model, width, height int, prompt, status stri
 	}
 	// The overlay is drawn over the footer, so its search is drawn here: the prompt in place
 	// of the hint while it is open, else the search's status ahead of the hint.
+	keys := hint
 	switch {
 	case prompt != "":
 		hint = prompt
@@ -843,7 +879,12 @@ func renderHelpOverlay(vp viewport.Model, width, height int, prompt, status stri
 		}
 	}
 
-	inner := vp.View() + "\n" + styleHint.Render(hint)
+	// The open prompt is a text input that carries its own escapes, so it is no hint line.
+	foot := renderTrailingHints(hint, keys)
+	if prompt != "" {
+		foot = styleHint.Render(hint)
+	}
+	inner := vp.View() + "\n" + foot
 
 	// No Width()/MaxHeight() here: the viewport is already sized to the
 	// terminal by helpViewportSize (which reserves helpOverlayFrameH rows
@@ -872,9 +913,8 @@ func padRight(s string, n int) string {
 // preserving the surrounding view. Both are treated as plain rendered
 // blocks; the overlay's lines replace the base's at the computed offset.
 //
-// ANSI-aware only insofar as lipgloss.Width is used for column math —
-// good enough because the overlay fully covers the columns it occupies,
-// so no partial-escape splicing happens on the overlay's own rows.
+// ANSI-aware: the base's prefix and tail are cut with ANSI-aware functions,
+// and the overlay fully covers the columns it occupies.
 func overlayCenter(base, overlay string, width, height int) string {
 	baseLines := strings.Split(base, "\n")
 	overLines := strings.Split(overlay, "\n")
@@ -918,15 +958,20 @@ func overlayCenter(base, overlay string, width, height int) string {
 		if row >= len(out) {
 			break
 		}
-		// Rebuild the row as: base prefix (left columns) + overlay line.
-		// Anything the overlay covers to the right is dropped — the panel
-		// is opaque, and reconstructing a styled tail past an ANSI-laden
-		// prefix is not worth the complexity for a modal.
+		// Rebuild the row as: base prefix (left columns) + overlay line, padded to the
+		// panel's width + the base's tail right of the panel. The tail is what keeps the
+		// body box's right edge visible beside the panel. ansi.TruncateLeft keeps the
+		// tail's styles; the panel's own columns are opaque.
 		prefix := truncToWidth(out[row], left)
 		if w := lipgloss.Width(prefix); w < left {
 			prefix += strings.Repeat(" ", left-w)
 		}
-		out[row] = prefix + ol
+		tail := ansi.TruncateLeft(out[row], left+overW, "")
+		if rest := lipgloss.Width(out[row]) - left - overW; rest > 0 && lipgloss.Width(tail) > rest {
+			// TruncateLeft kept a double-width rune that crosses the panel's edge: show its right half as a space.
+			tail = " " + ansi.TruncateLeft(out[row], left+overW+1, "")
+		}
+		out[row] = prefix + padRight(ol, overW) + tail
 	}
 	return strings.Join(out, "\n")
 }

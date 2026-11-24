@@ -364,7 +364,7 @@ func (s serviceStep) apply(env *setupEnv, act *checklist.Running) (string, undo,
 	// once it is gone: a failure before the stop leaves it running, and a second copy
 	// would take proxy.pid from it. Asked up to a minute after the stop, so a live pid
 	// that now runs something else is gone too.
-	case adopt > 0 && (!alive(adopt) || setupPIDExePath(adopt) != adoptSeen):
+	case adopt > 0 && (!processAlive(adopt) || setupPIDExePath(adopt) != adoptSeen):
 		env.priorDesc = "the previous background Cortex is running again"
 		env.priorManual = startByHand(env, adoptExe)
 		env.restorePrior = func() error {
@@ -459,7 +459,7 @@ func (serviceStep) applyUnsupervised(env *setupEnv) (string, undo, error) {
 		err = se
 	}
 	u := undo{label: "the background proxy", fn: func() error {
-		if alive(pid) {
+		if processAlive(pid) {
 			if err := stopPID(pid); err != nil {
 				return err
 			}

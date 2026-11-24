@@ -263,9 +263,13 @@ type agentRowAdder func(d agentRowDesc, agent, sessions, lastSeen, cost, server 
 // addProjectRows adds the sub-rows of the open row agent: All projects, one row per project, then
 // Other. a is the agent's own row, nil for All agents. Until the first reply lands, only All
 // projects shows.
-func (m *model) addProjectRows(add agentRowAdder, agent string, a *agentRow, now time.Time) {
+//
+// budget is the width a cost cell may take (see rebuildAgentsTable).
+func (m *model) addProjectRows(add agentRowAdder, agent string, a *agentRow, now time.Time, budget int) {
 	const indent = "    "
 	data, loaded := m.agentProjects[agent]
+	// A `w` press clears m.agentProjects, so what it holds is for the pane's window.
+	window := m.agentsSpanDef().window
 	sessions := func(d agentRowDesc) (string, string) {
 		n, last := m.subRowSessions(d)
 		if n == 0 {
@@ -279,11 +283,11 @@ func (m *model) addProjectRows(add agentRowAdder, agent string, a *agentRow, now
 	// Under an agent, its own row's figures, so opening a row changes no number on screen.
 	cost, server := "", ""
 	if a != nil {
-		cost = agentCostCellIn(a.Counts, a.units, agentsCostWidth)
+		cost = agentCostCellIn(a.Counts, a.units, m.agentsSplits[agentsSplitKey{agent, "", m.agentsShownWindow()}], budget)
 		router, _ := m.activeRouter()
 		server = agentServerCell(router, agent)
 	} else if loaded {
-		cost = agentCostCellIn(data.all.Counts, data.all.units, agentsCostWidth)
+		cost = agentCostCellIn(data.all.Counts, data.all.units, m.agentsSplits[agentsSplitKey{"", "", window}], budget)
 	}
 	add(all, indent+"All projects", n, last, cost, server)
 	if !loaded {
@@ -307,12 +311,12 @@ func (m *model) addProjectRows(add agentRowAdder, agent string, a *agentRow, now
 		d := agentRowDesc{agent: agent, kind: agentRowProject, project: named[i].label}
 		n, last := sessions(d)
 		add(d, indent+sanitizeLabel(name), n, last,
-			agentCostCellIn(named[i].Counts, named[i].units, agentsCostWidth), "")
+			agentCostCellIn(named[i].Counts, named[i].units, m.agentsSplits[agentsSplitKey{agent, named[i].label, window}], budget), "")
 	}
 	od := agentRowDesc{agent: agent, kind: agentRowProjectOther}
 	if count, _ := m.subRowSessions(od); other.CostMicros == 0 && count == 0 {
 		return
 	}
 	n, last = sessions(od)
-	add(od, indent+otherProjects, n, last, agentCostCellIn(other.Counts, other.units, agentsCostWidth), "")
+	add(od, indent+otherProjects, n, last, agentCostCellIn(other.Counts, other.units, nil, budget), "")
 }

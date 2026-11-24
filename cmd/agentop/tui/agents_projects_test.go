@@ -126,8 +126,10 @@ func projectsModel(t *testing.T, series map[string]map[string]int64) (*model, fu
 		mu.Lock()
 		asked = append(asked, r.URL.RawQuery)
 		mu.Unlock()
-		if r.URL.Query().Has("project") {
-			t.Errorf("query %q carries project=", r.URL.RawQuery)
+		// project= is sent but not echoed, so this server acts as one older than project=.
+		// agentop's own fold labels must never go on the wire.
+		if p := r.URL.Query().Get("project"); p == otherProjects || p == projectOverflowLabel {
+			t.Errorf("query %q carries project=%s", r.URL.RawQuery, p)
 		}
 		q := r.URL.Query()
 		// The agent is echoed, as the real server does, so fetchUsageScoped takes no fallback.
@@ -183,8 +185,7 @@ func pressCmd(m *model, key tea.KeyMsg) tea.Cmd {
 var spaceKey = tea.KeyMsg{Type: tea.KeySpace}
 
 // deliver runs cmd and passes each rows or projects reply it gives through Update, then delivers
-// what Update returned in the same way. Other replies are dropped, and a command that blocks (a
-// tick) is given up.
+// what Update returned in the same way. Other replies are dropped.
 func deliver(m *model, cmd tea.Cmd) {
 	var mu sync.Mutex
 	var msgs []tea.Msg
@@ -197,21 +198,15 @@ func deliver(m *model, cmd tea.Cmd) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			done := make(chan tea.Msg, 1)
-			go func() { done <- c() }()
-			select {
-			case msg := <-done:
-				switch msg := msg.(type) {
-				case tea.BatchMsg:
-					for _, cc := range msg {
-						run(cc)
-					}
-				case agentRowsLoadedMsg, agentProjectsLoadedMsg:
-					mu.Lock()
-					msgs = append(msgs, msg)
-					mu.Unlock()
+			switch msg := c().(type) {
+			case tea.BatchMsg:
+				for _, cc := range msg {
+					run(cc)
 				}
-			case <-time.After(300 * time.Millisecond):
+			case agentRowsLoadedMsg, agentProjectsLoadedMsg:
+				mu.Lock()
+				msgs = append(msgs, msg)
+				mu.Unlock()
 			}
 		}()
 	}
@@ -253,7 +248,7 @@ func onDesc(t *testing.T, m *model, d agentRowDesc) {
 func openClaudeCode(t *testing.T, m *model) {
 	t.Helper()
 	onRow(t, m, projAgent)
-	deliver(m, pressCmd(m, spaceKey))
+	deliver(m, pressCmd(m, enterKey))
 }
 
 var (
@@ -296,7 +291,7 @@ func TestAgentsProjects_NoProjectsNoMarkerAndSpacePagesDown(t *testing.T) {
 	}
 }
 
-func TestAgentsProjects_SpaceOnAnAgentFetchesItsProjects(t *testing.T) {
+func TestAgentsProjects_EnterOnAnAgentFetchesItsProjects(t *testing.T) {
 	m, asked := projectsModel(t, defaultProjectSeries)
 	openClaudeCode(t, m)
 	if q := asked(); !hasQuery(q, "agent=claude-code", "group=project") {
@@ -316,10 +311,10 @@ func TestAgentsProjects_SpaceOnAnAgentFetchesItsProjects(t *testing.T) {
 	}
 }
 
-func TestAgentsProjects_SpaceOnAllAgentsFetchesWithoutAgent(t *testing.T) {
+func TestAgentsProjects_EnterOnAllAgentsFetchesWithoutAgent(t *testing.T) {
 	m, asked := projectsModel(t, defaultProjectSeries)
 	onRow(t, m, "")
-	deliver(m, pressCmd(m, spaceKey))
+	deliver(m, pressCmd(m, enterKey))
 	q := asked()
 	if !hasQuery(q, "group=project") {
 		t.Fatalf("queries %v; want a group=project one", q)
@@ -380,11 +375,23 @@ func TestAgentsProjects_OpenStateAndCursorSurviveRefetchAndW(t *testing.T) {
 	}
 }
 
-func TestAgentsProjects_SpaceOnASubRowClosesTheParent(t *testing.T) {
+// Space no longer closes a row from a sub-row: it is the table's page-down, as everywhere.
+// Enter on the open agent row is how to close it.
+func TestAgentsProjects_SpaceOnASubRowDoesNotCloseTheParent(t *testing.T) {
 	m, _ := projectsModel(t, defaultProjectSeries)
 	openClaudeCode(t, m)
 	onDesc(t, m, cortexRow)
 	runCmds(pressCmd(m, spaceKey))
+	if !m.agentsExpanded[projAgent] {
+		t.Error("space closed the row; only Enter on the agent row does")
+	}
+}
+
+func TestAgentsProjects_EnterOnTheOpenAgentClosesIt(t *testing.T) {
+	m, _ := projectsModel(t, defaultProjectSeries)
+	openClaudeCode(t, m)
+	onDesc(t, m, agentRowDesc{agent: projAgent, kind: agentRowHeading})
+	runCmds(pressCmd(m, enterKey))
 	if len(m.agentsExpanded) != 0 {
 		t.Errorf("rows still open: %v", m.agentsExpanded)
 	}
@@ -492,11 +499,11 @@ func TestAgentsProjects_FooterNamesTheFullLabel(t *testing.T) {
 	if got := m.helpView(); !strings.Contains(got, "[↵] projects") {
 		t.Errorf("closed row footer %q; want [↵] projects", got)
 	}
-	deliver(m, pressCmd(m, spaceKey))
+	deliver(m, pressCmd(m, enterKey))
 	onDesc(t, m, agentRowDesc{agent: projAgent, kind: agentRowProject, project: label})
 	got := m.helpView()
-	if !strings.Contains(got, sanitizeLabel(label)) || !strings.Contains(got, "[space] close") {
-		t.Errorf("footer %q; want %q and [space] close", got, sanitizeLabel(label))
+	if !strings.HasPrefix(got, sanitizeLabel(label)+"  [↵]") || strings.Contains(got, "[space]") {
+		t.Errorf("footer %q; want it to start with %q and no [space]", got, sanitizeLabel(label))
 	}
 	if strings.Contains(got, "\x1b") {
 		t.Errorf("footer carries a raw escape: %q", got)
@@ -523,8 +530,8 @@ func TestAgentsProjects_FetchErrorClearsOnCloseAndW(t *testing.T) {
 		m.Update(agentProjectsLoadedMsg{agent: projAgent, err: errors.New("boom"), window: m.agentsSpanDef().window})
 	}
 	fail()
-	onDesc(t, m, cortexRow)
-	runCmds(pressCmd(m, spaceKey))
+	onDesc(t, m, agentRowDesc{agent: projAgent, kind: agentRowHeading})
+	runCmds(pressCmd(m, enterKey))
 	if strings.Contains(m.View(), "refresh failed") {
 		t.Error("error still shows after the last row closed")
 	}

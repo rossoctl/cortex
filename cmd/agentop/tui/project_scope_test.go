@@ -112,7 +112,7 @@ func TestProjectScope_AProjectUnderAllAgentsHasNoAgent(t *testing.T) {
 	series := map[string]map[string]int64{"": {"~/works/cortex": 1_000_000, "~/moca": 2_000_000}}
 	m, _ := projectsModel(t, series)
 	m.agentsTbl.SetCursor(0)
-	deliver(m, pressCmd(m, spaceKey))
+	deliver(m, pressCmd(m, enterKey))
 	onDesc(t, m, agentRowDesc{kind: agentRowProject, project: "~/works/cortex"})
 	pressCmd(m, enterKey)
 	wantScopes(t, m, "", "~/works/cortex")

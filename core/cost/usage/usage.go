@@ -178,8 +178,10 @@ type Counts struct {
 	CacheWriteCostMicros int64 `json:"cacheWriteCostMicros,omitempty"`
 	CacheReadCostMicros  int64 `json:"cacheReadCostMicros,omitempty"`
 	OutputCostMicros     int64 `json:"outputCostMicros,omitempty"`
-	// AvoidedMicros is cost that was NOT INCURRED — tool-prune's removed prompt tokens
-	// priced at the tier they would have landed in — in the same unit as CostMicros.
+	// AvoidedMicros is cost that was NOT INCURRED — what the context operators (tool-prune,
+	// context-guru, the keeper) saved, as the accountant priced it, tier by tier — in the same
+	// unit as CostMicros. ONLY BASIS "usd": a subscriptionEquivalent saving is in AvoidedUnits
+	// and an unknown one in AvoidedUnknownMicros (design §5.7a). See event.Event.Figures.
 	//
 	// A COUNTERFACTUAL SITTING BESIDE A MEASUREMENT, and the adjacency is deliberate: the
 	// invariant on event.Event.Avoided forbids adding any of this to spend, to a budget
@@ -196,17 +198,14 @@ type Counts struct {
 	// and event.Record's own doc names that as the interesting case; deriving this from
 	// the priced record would silently drop it.
 	//
-	// ESTIMATED, usually. Saving.Estimated marks a figure derived from a bytes-to-tokens
-	// ratio rather than a tokenizer, and the per-request flag does not survive summation —
-	// so a client must present this as approximate unconditionally rather than inferring
-	// exactness from its absence here.
+	// ESTIMATED, sometimes. Saving.Estimated marks a figure from an estimated op or rate, and
+	// the per-request flag does not survive summation — so a client must present this as
+	// approximate unconditionally rather than inferring exactness from its absence here.
 	//
-	// GROSS, NOT NET, which is the caveat most likely to be dropped on the way to a screen.
-	// tool-prune's own doc is explicit: changing the remove list re-writes the cached prompt
-	// prefix at the cache-WRITE rate while the recurring saving accrues at the cache-READ
-	// rate, tens of requests apart, and nothing subtracts the re-warm from these dollars. A
-	// short window just after a config change therefore reads optimistically; a long steady
-	// one converges. See docs/tool-prune-plugin.md, "The figure is gross, not net".
+	// GROSS, NOT NET, which is the caveat most likely to be dropped on the way to a screen. What
+	// the same operators CAUSED — a rewrite inside the cached prefix, a cache break — is
+	// PenaltyMicros, beside it and never subtracted from it here. Net is AvoidedMicros minus
+	// PenaltyMicros, and may be negative.
 	//
 	// SUMMABLE BECAUSE IT IS DOLLARS. The same doc refuses to publish one "tokens saved"
 	// figure, because prompt tiers differ by up to 12.5x and a single token count invites
@@ -215,6 +214,31 @@ type Counts struct {
 	// actually came out of BEFORE reaching this counter, so the sum is tier-correct by
 	// construction. A tokens-avoided aggregate would not be, and is deliberately not offered.
 	AvoidedMicros int64 `json:"avoidedMicros,omitempty"`
+	// PenaltyMicros is what the operators behind AvoidedMicros caused on the same requests,
+	// priced: event.Event.TotalPenaltyMicros, basis "usd" only. Never netted into AvoidedMicros
+	// and never floored: a net below zero is the two figures, read together.
+	PenaltyMicros int64 `json:"penaltyMicros,omitempty"`
+	// AvoidedUnits and PenaltyUnits are AvoidedMicros and PenaltyMicros for requests on a
+	// subscription login (basis "subscriptionEquivalent"), in usage-limit units — tokens times
+	// accounting.subscription_weights — as integer MILLI-units. Not money, and estimated.
+	AvoidedUnits int64 `json:"avoidedUnits,omitempty"`
+	PenaltyUnits int64 `json:"penaltyUnits,omitempty"`
+	// AvoidedAPIEquivalentMicros is what the savings in AvoidedUnits would have been worth at API
+	// rates, net of their penalty like the units: the "API equivalent" a reader shows beside them. NOT MONEY — the request
+	// was on a subscription — so it is in no dollar total.
+	AvoidedAPIEquivalentMicros int64 `json:"avoidedApiEquivalentMicros,omitempty"`
+	// AvoidedUnknownMicros is the net saved dollars (saved minus penalty, may be negative) of
+	// savings whose billing mode was unknown (basis "unknown"). Shown beside the money totals, never added to them.
+	AvoidedUnknownMicros int64 `json:"avoidedUnknownMicros,omitempty"`
+	// PluginSpendMicros is what the context operators' own model calls cost (event.Event.Spends,
+	// basis "usd"): a context-guru summary call, for instance. Those calls do not pass through
+	// the proxy, so this is the only figure that holds them. KEPT OUT OF CostMicros so the
+	// existing spend totals keep their meaning; spend in all is CostMicros + PluginSpendMicros.
+	// PluginSpendUnits is the subscriptionEquivalent calls in milli-units, and
+	// PluginSpendUnknownMicros the calls whose billing mode was unknown (never added).
+	PluginSpendMicros        int64 `json:"pluginSpendMicros,omitempty"`
+	PluginSpendUnits         int64 `json:"pluginSpendUnits,omitempty"`
+	PluginSpendUnknownMicros int64 `json:"pluginSpendUnknownMicros,omitempty"`
 	// PricedRequests counts the requests that actually produced a cost. Coverage
 	// is a counter rather than a flag because buckets are summed when a client
 	// asks for a coarser resolution, and because a deployment can price some of
@@ -357,6 +381,14 @@ func (c *Counts) Add(o Counts) {
 	// one is money; see the field. Checked like the rest because a saving is modelled from
 	// the same table as a cost and inherits its range.
 	c.addInto(&c.AvoidedMicros, o.AvoidedMicros)
+	c.addInto(&c.PenaltyMicros, o.PenaltyMicros)
+	c.addInto(&c.AvoidedUnits, o.AvoidedUnits)
+	c.addInto(&c.PenaltyUnits, o.PenaltyUnits)
+	c.addInto(&c.AvoidedAPIEquivalentMicros, o.AvoidedAPIEquivalentMicros)
+	c.addInto(&c.AvoidedUnknownMicros, o.AvoidedUnknownMicros)
+	c.addInto(&c.PluginSpendMicros, o.PluginSpendMicros)
+	c.addInto(&c.PluginSpendUnits, o.PluginSpendUnits)
+	c.addInto(&c.PluginSpendUnknownMicros, o.PluginSpendUnknownMicros)
 	c.addInto(&c.PricedRequests, o.PricedRequests)
 	// Summed alongside PricedRequests, never out of it: it is a subset disclosure, not a
 	// deduction. See the field's own comment for why the aggregate discloses rather than
@@ -396,6 +428,23 @@ func (c *Counts) addInto(dst *int64, v int64) {
 	if saturated {
 		c.Saturated = true
 	}
+}
+
+// AddFigures accumulates one record's savings and plugin spends (event.Event.Figures) into c,
+// each into its field of the same name. The ledger and the ring both call it, so the two put the
+// same figure in the same field.
+func (c *Counts) AddFigures(f event.Figures) {
+	c.Add(Counts{
+		AvoidedMicros:              f.AvoidedMicros,
+		PenaltyMicros:              f.PenaltyMicros,
+		AvoidedUnits:               f.AvoidedUnits,
+		PenaltyUnits:               f.PenaltyUnits,
+		AvoidedAPIEquivalentMicros: f.AvoidedAPIEquivalentMicros,
+		AvoidedUnknownMicros:       f.AvoidedUnknownMicros,
+		PluginSpendMicros:          f.PluginSpendMicros,
+		PluginSpendUnits:           f.PluginSpendUnits,
+		PluginSpendUnknownMicros:   f.PluginSpendUnknownMicros,
+	})
 }
 
 // maxPlausibleRequestTokens is the largest token count one request could report, per field.
@@ -772,7 +821,9 @@ func (a *Aggregator) costOf(e *model.SessionEvent, ce event.Event, haveRec bool)
 		// pricing entry, so the one case worth naming.
 		return eventCost{priceable: 1, unpricedKey: key}
 	}
-	tiers, micros, ok, _ := pricing.CostByTier(rates, u)
+	// CostWith1h, the same helper settle.modelledCost uses, so a fallback-priced
+	// event gets the 1h cache-write premium a producer-priced one gets.
+	tiers, micros, ok, _, estimated1h := pricing.CostWith1h(rates, u, pricing.AnthropicShaped(e.Inference.Model))
 	if !ok {
 		// TWO CAUSES REACH HERE, AND ONLY ONE OF THEM IS A MISSING RATE. Either a rate was
 		// found that does not cover every tier this request used — a gap an operator closes
@@ -803,7 +854,12 @@ func (a *Aggregator) costOf(e *model.SessionEvent, ce event.Event, haveRec bool)
 	// The reason is kept, not just the bit: this arm has the actual answer in hand —
 	// pricing.IncompleteReason returns which of the two it is — and throwing it away here
 	// would make a fallback-priced window unable to say what a producer-priced one can.
-	if reason := pricing.IncompleteReason(e.Inference); reason != "" {
+	// The guessed-1h-rate reason ranks below the counters' reasons, as in settle.
+	reason := pricing.IncompleteReason(e.Inference)
+	if reason == "" && estimated1h {
+		reason = pricing.ReasonCacheWrite1hRateEstimated
+	}
+	if reason != "" {
 		ec.incomplete, ec.incompleteReason = 1, reason
 	}
 	return ec
@@ -836,9 +892,14 @@ type Aggregator struct {
 	// It can come up LONGER than the agent axis's row for the same agent, in one case: a minute
 	// with more than maxLabelsPerBucket agent labels files the late ones under (other) in byAgent,
 	// while the agent's own ring still counts them. The ring is the right figure there.
-	agents  map[string][]bucket
-	maxSess int
-	now     func() time.Time
+	agents map[string][]bucket
+	// projects holds a ring per project label: one of every agent's traffic, keyed agent "", and
+	// one per recognised agent, so project= can be answered with any grouping, for the reason
+	// agents exists. Unlike agent names, project labels are an open set, so the map is capped
+	// at maxProjectRings and the coldest ring goes. See projectRing for what that costs a reader.
+	projects map[projectKey]*projectRing
+	maxSess  int
+	now      func() time.Time
 
 	// pending holds request-phase plugin names awaiting their response event,
 	// keyed by RequestID. See Record.
@@ -926,6 +987,7 @@ func New(opts ...Option) *Aggregator {
 		all:      make([]bucket, NumBuckets),
 		sessions: make(map[string]*sessionRing),
 		agents:   make(map[string][]bucket),
+		projects: make(map[projectKey]*projectRing),
 		pending:  make(map[string]*pendingRequest),
 		maxSess:  defaultMaxSessions,
 		now:      time.Now,
@@ -1028,7 +1090,7 @@ func (a *Aggregator) Record(sessionID string, e *model.SessionEvent) {
 	// avoided rides BESIDE ec rather than inside it, so the counterfactual and the measured
 	// figure travel on separate wires and no expression can add one to the other by
 	// resembling it. See Counts.AvoidedMicros.
-	var avoided int64
+	var avoided event.Figures
 	if e.Phase != model.SessionRequest {
 		// ONE unmarshal, feeding both. costOf wants the record only when it priced
 		// something and this wants it either way, so each calling cost/event for itself
@@ -1048,7 +1110,7 @@ func (a *Aggregator) Record(sessionID string, e *model.SessionEvent) {
 			ec.unit = rec.Currency
 		}
 		if haveRec {
-			avoided = rec.TotalAvoidedMicros()
+			avoided = rec.Figures()
 		}
 	}
 
@@ -1075,15 +1137,22 @@ func (a *Aggregator) Record(sessionID string, e *model.SessionEvent) {
 	t := at.Truncate(BucketWidth)
 	a.foldInto(a.all, t, sessionID, e, requestPlugins, ec, avoided)
 
-	// BEFORE the session ring, whose branch below returns early on both of its paths. See the
-	// agents field for why only a recognised agent gets a ring.
-	if agent := event.AgentLabel(e.Client); model.IsKnownAgent(agent) {
+	// The agent and project rings come BEFORE the session ring, whose branch below returns early
+	// on both of its paths. See the agents field for why only a recognised agent gets a ring.
+	agent := event.AgentLabel(e.Client)
+	knownAgent := model.IsKnownAgent(agent)
+	if knownAgent {
 		ring, ok := a.agents[agent]
 		if !ok {
 			ring = make([]bucket, NumBuckets)
 			a.agents[agent] = ring
 		}
 		a.foldInto(ring, t, sessionID, e, requestPlugins, ec, avoided)
+	}
+	project := projectLabel(e)
+	a.foldInto(a.projectRingLocked(projectKey{"", project}, at), t, sessionID, e, requestPlugins, ec, avoided)
+	if knownAgent {
+		a.foldInto(a.projectRingLocked(projectKey{agent, project}, at), t, sessionID, e, requestPlugins, ec, avoided)
 	}
 
 	if ring, ok := a.sessions[sessionID]; ok {
@@ -1253,7 +1322,7 @@ func PriceableRequest(e *model.SessionEvent) bool {
 // which session it belongs to: a.all is shared and a sessionRing holds only
 // buckets. Both call sites pass the same id, which is what lets the bySession
 // label be recorded uniformly instead of only on the all-sessions ring.
-func (a *Aggregator) foldInto(ring []bucket, t time.Time, sessionID string, e *model.SessionEvent, requestPlugins []string, ec eventCost, avoided int64) {
+func (a *Aggregator) foldInto(ring []bucket, t time.Time, sessionID string, e *model.SessionEvent, requestPlugins []string, ec eventCost, avoided event.Figures) {
 	b := &ring[slot(t)]
 	if !b.start.Equal(t) {
 		*b = bucket{start: t} // stale lap: reset rather than accumulate onto old data
@@ -1294,7 +1363,6 @@ func (a *Aggregator) foldInto(ring []bucket, t time.Time, sessionID string, e *m
 		Requests:             1,
 		Tokens:               tokens,
 		CostMicros:           ec.micros,
-		AvoidedMicros:        avoided,
 		InputCostMicros:      ec.tierMicros[pricing.TierInput],
 		CacheWriteCostMicros: ec.tierMicros[pricing.TierCacheWrite],
 		CacheReadCostMicros:  ec.tierMicros[pricing.TierCacheRead],
@@ -1313,6 +1381,7 @@ func (a *Aggregator) foldInto(ring []bucket, t time.Time, sessionID string, e *m
 	// token counters above, so every other field is zero on one side of Add's `+=`, and
 	// PresentKinds is `0 | x`. Errors is set below and so is unaffected by the order.
 	one.Add(split)
+	one.AddFigures(avoided)
 	if ec.unpricedKey != "" {
 		addLabel(&b.byUnpriced, ringLabel(ec.unpricedKey), Counts{Requests: 1})
 	}
@@ -1340,12 +1409,19 @@ func (a *Aggregator) foldInto(ring []bucket, t time.Time, sessionID string, e *m
 		b.latN++
 	}
 
+	a.labelOne(b, sessionID, e, modelName, requestPlugins, one, ec, ec.priced > 0 || !avoided.IsZero())
+}
+
+// labelOne folds one event's Counts into each of the bucket's label breakdowns. hasMoney says
+// the event carries a figure in a unit, so its unit is noted on the model, endpoint, agent and
+// project series.
+func (a *Aggregator) labelOne(b *bucket, sessionID string, e *model.SessionEvent, modelName string, requestPlugins []string, one Counts, ec eventCost, hasMoney bool) {
 	unit := pricing.CurrencyUSD
 	if ec.unit != "" {
 		unit = ringLabel(ec.unit)
 	}
 	addLabel(&b.byCurrency, unit, one)
-	if ec.priced == 0 && avoided == 0 {
+	if !hasMoney {
 		unit = ""
 	}
 	if modelName != "" {

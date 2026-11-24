@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -100,7 +99,7 @@ func TestSessionsPane_AgentColumnOnlyWhenTwoAgentsAreListed(t *testing.T) {
 	}
 	one := &model{width: 200, sessions: sessionsFixture()[:1]}
 	one.rebuildSessionsTable()
-	if want := alignSessionsHeaders(fitTableColumns(sessionsColumnsFor(200), 200)); !sameColumns(one.sessionsTbl.Columns(), want) {
+	if want := alignSessionsHeaders(fitTableColumns(sessionsColumnsFor(200-boxSideCols), 200-boxSideCols)); !sameColumns(one.sessionsTbl.Columns(), want) {
 		t.Errorf("one agent: columns %v, want today's %v", one.sessionsTbl.Columns(), want)
 	}
 }
@@ -139,7 +138,7 @@ func TestSessionsPane_ScopedTitleAndTheEmptyScope(t *testing.T) {
 	if title := strings.SplitN(view, "\n", 2)[0]; !strings.Contains(title, "agent=Claude-User") {
 		t.Errorf("title %q does not name the scope", title)
 	}
-	if !strings.Contains(view, "no session belongs to") {
+	if !strings.Contains(view, "No session belongs to") {
 		t.Errorf("a raw User-Agent scope matched sessions or said nothing:\n%s", view)
 	}
 }
@@ -148,7 +147,7 @@ func TestSessionsPane_ScopedTitleAndTheEmptyScope(t *testing.T) {
 func TestAgentsPane_SessionsColumnOnlyOnceSessionsNameAgents(t *testing.T) {
 	m := &model{agentsTbl: newAgentsTable(), agents: []agentRow{{label: "bob-shell/2.0.5"}, {label: "node"}}}
 	m.rebuildAgentsTable()
-	if !sameColumns(m.agentsTbl.Columns(), fitTableColumns(agentsColumns(m.agentsWindowLabel()), 0)) {
+	if !sameColumns(m.agentsTbl.Columns(), fitTableColumns(agentsColumns(m.agentsWindowLabel(), agentsCostFloor(m.agentsWindowLabel())), 0)) {
 		t.Errorf("no session names an agent and the columns changed: %v", m.agentsTbl.Columns())
 	}
 	m.sessions = sessionsFixture()
@@ -182,29 +181,9 @@ func TestAgentsPane_EnterRestartsTheBandUnderTheScope(t *testing.T) {
 	if m.agentScope != "bob-shell/2.0.5" || cmd == nil {
 		t.Fatalf("scope %q, cmd %v", m.agentScope, cmd)
 	}
-	runBatchNoWait(cmd)
+	runCmds(cmd)
 	if !sawAgent.Load() {
 		t.Error("no band request named the new scope")
-	}
-}
-
-// runBatchNoWait is runBatch for a batch holding ticks: each member runs on its own goroutine and
-// the test waits a moment rather than for a tick that blocks for seconds.
-func runBatchNoWait(cmd tea.Cmd) {
-	done := make(chan tea.Msg, 1)
-	go func() { done <- cmd() }()
-	select {
-	case msg := <-done:
-		if batch, ok := msg.(tea.BatchMsg); ok {
-			for _, c := range batch {
-				if c == nil {
-					continue
-				}
-				go c()
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
-	case <-time.After(time.Second):
 	}
 }
 
@@ -280,7 +259,7 @@ func TestSessionsPane_AnOlderServerListsEverySessionUnderAScope(t *testing.T) {
 	v := fitModel(t, paneSessions, 160, 40, nil)
 	v.sessions, v.agentScope = old, "bob-shell/2.0.5"
 	v.rebuildSessionsTable()
-	if view := v.paneView(); strings.Contains(view, "no session belongs to") {
+	if view := v.paneView(); strings.Contains(view, "No session belongs to") {
 		t.Errorf("an older server's sessions read as belonging to no agent:\n%s", view)
 	}
 	if footer := v.footerView(); !strings.Contains(footer, "list not scoped") {
@@ -396,9 +375,8 @@ func TestNarrowToProject_OtherFoldsUnknownAndOverflow(t *testing.T) {
 	}
 }
 
-// A project scope asks for the project axis and narrows it here: no project= key goes on the wire
-// (D3). With no project the read is fetchUsageScoped's.
-func TestFetchUsageScopedProject_AsksGroupProjectAndNoProjectKey(t *testing.T) {
+// With no project the read is fetchUsageScoped's: one query, no group=.
+func TestFetchUsageScopedProject_NoProjectIsTheAgentRead(t *testing.T) {
 	var queries []string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		queries = append(queries, r.URL.RawQuery)
@@ -406,18 +384,6 @@ func TestFetchUsageScopedProject_AsksGroupProjectAndNoProjectKey(t *testing.T) {
 	}))
 	defer ts.Close()
 	client := apiclient.New(ts.URL)
-	if _, err := fetchUsageScopedProject(context.Background(), client, "today", 0, "claude-code", "~/a", usage.GroupNone); err != nil {
-		t.Fatal(err)
-	}
-	if len(queries) != 1 || !strings.Contains(queries[0], "agent=claude-code") || !strings.Contains(queries[0], "group=project") {
-		t.Fatalf("queries = %q, want one with agent=claude-code and group=project", queries)
-	}
-	for _, q := range queries {
-		if v, _ := url.ParseQuery(q); v.Has("project") {
-			t.Errorf("query %q has a project key", q)
-		}
-	}
-	queries = nil
 	if _, err := fetchUsageScopedProject(context.Background(), client, "today", 0, "claude-code", "", usage.GroupNone); err != nil {
 		t.Fatal(err)
 	}

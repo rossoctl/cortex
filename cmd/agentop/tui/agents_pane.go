@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/rossoctl/cortex/cmd/agentop/money"
 	"github.com/rossoctl/cortex/cmd/agentop/tui/table"
@@ -175,11 +176,15 @@ func (m *model) agentsSpanDef() spendSpanDef { return spendSpanDefs[m.agentsSpan
 // round trip — the drawer's caption follows the same rule (drawerLabels). The requested window
 // stands in until the first reply lands.
 func (m *model) agentsWindowLabel() string {
-	window := m.agentsRowsWindow
-	if window == "" {
-		window = m.agentsSpanDef().window
+	return strings.ToLower(spanLabelFor(m.agentsShownWindow()))
+}
+
+// agentsShownWindow is the window of the agent rows on screen; see agentsWindowLabel.
+func (m *model) agentsShownWindow() string {
+	if m.agentsRowsWindow != "" {
+		return m.agentsRowsWindow
 	}
-	return strings.ToLower(spanLabelFor(window))
+	return m.agentsSpanDef().window
 }
 
 // cycleAgentsWindow handles `w` on the agents pane, drawer open or closed: the rows refetch for
@@ -267,8 +272,8 @@ func (m *model) fetchAgentRowsCmd(open agentsOpen, from paneID) tea.Cmd {
 
 // agentsColumns is the table's declared layout, at the width it wants on a wide terminal.
 //
-// A FUNCTION RATHER THAN A LITERAL INSIDE newAgentsTable, matching pipelineColumns and
-// catalogColumns, because layout() has to re-fit these on every resize and must do it from
+// A FUNCTION RATHER THAN A LITERAL INSIDE newAgentsTable, matching pipelineColumns,
+// because layout() has to re-fit these on every resize and must do it from
 // THESE definitions rather than from the live table's columns — refitting the live ones
 // compounds each narrowing, so widening the terminal back up never restores what it took away.
 //
@@ -278,19 +283,26 @@ func (m *model) fetchAgentRowsCmd(open agentsOpen, from paneID) tea.Cmd {
 // whole list, which is not limited to the window, and SERVER is the routing now. REQUESTS and
 // TOKENS were dropped for that reason — two more window figures beside two that are not read as
 // one denominator, and the usage pane and `agentop cost --by agent` carry them.
-func agentsColumns(window string) []table.Column {
-	title := "COST " + strings.ToUpper(window)
+//
+// costWidth is COST's width: rebuildAgentsTable sizes it to its widest cell, inside the width
+// the other columns leave free (agentsCostFloor at least).
+func agentsColumns(window string, costWidth int) []table.Column {
 	return []table.Column{
 		{Title: "AGENT", Width: 34},
-		{Title: title, Width: max(agentsCostWidth, len(title))},
+		{Title: agentsCostTitle(window), Width: costWidth},
 	}
 }
+
+func agentsCostTitle(window string) string { return "COST " + strings.ToUpper(window) }
+
+// agentsCostFloor is COST's narrowest width in the window: its declared width, or its title.
+func agentsCostFloor(window string) int { return max(agentsCostWidth, len(agentsCostTitle(window))) }
 
 // startupAgentsGateCmd asks, once per connection, whether this proxy has enough agents on it to
 // be worth a picker.
 //
 // ONE FETCH FROM initSessionView, which is the single place every entry point converges on:
-// `--endpoint` mode's Init, the pod picker's portForwardReadyMsg, and `[l]`'s local endpoint all
+// `--endpoint` mode's Init, the pod picker's portForwardReadyMsg, and `[L]`'s local endpoint all
 // call it, and each replaces m.client first. Hooking it there rather than in Init is what makes
 // the gate run again when the operator backs out to the pod picker and enters a DIFFERENT pod —
 // a different proxy has different agents on it, and the answer from the previous one is not an
@@ -314,7 +326,7 @@ func (m *model) startupAgentsGateCmd() tea.Cmd {
 // newAgentsTable builds an empty per-agent breakdown table.
 func newAgentsTable() table.Model {
 	t := table.New(
-		table.WithColumns(agentsColumns(spendSpanDefs[spanToday].label)),
+		table.WithColumns(agentsColumns(spendSpanDefs[spanToday].label, agentsCostFloor(spendSpanDefs[spanToday].label))),
 		table.WithFocused(true),
 	)
 	t.SetStyles(tableStyles())
@@ -348,11 +360,15 @@ func (m *model) rebuildAgentsTable() {
 	withSessions := m.sessionsNameAgents()
 	cursor := m.agentsTbl.Cursor()
 	prev, hadPrev := m.selectedAgentRow()
-	cols := agentsColumns(m.agentsWindowLabel())
+	window := m.agentsWindowLabel()
+	floor := agentsCostFloor(window)
+	cols := agentsColumns(window, floor)
+	kinds := []cellKind{cellPlain, cellBold} // AGENT is bolded per row below; COST
 	if withSessions {
 		cols = slices.Insert(cols, 1,
 			table.Column{Title: "SESSIONS", Width: 8},
 			table.Column{Title: "LAST SEEN", Width: agentsLastSeenWidth})
+		kinds = slices.Insert(kinds, 1, cellPlain, cellMuted)
 	}
 	// SERVER, last, only while the proxy runs an inference-router that routes — not one under
 	// on_error: observe, which keeps its config but moves nothing (see routerStatus). Without
@@ -368,15 +384,25 @@ func (m *model) rebuildAgentsTable() {
 	router, routed := m.activeRouter()
 	if routed {
 		cols = append(cols, table.Column{Title: "SERVER", Width: agentsServerWidth})
+		kinds = append(kinds, cellMuted)
 	}
-	if want := fitTableColumns(cols, m.width); !sameColumns(m.agentsTbl.Columns(), want) {
-		m.agentsTbl.SetRows(nil)
-		m.agentsTbl.SetColumns(want)
-	}
+	// COST GROWS INTO THE WIDTH THE OTHER COLUMNS, AT THEIR DECLARED WIDTHS, LEAVE FREE, so a
+	// cost in two units or one foreign unit shows whole on a wide terminal. The cells are rendered
+	// against that budget first; a cell that does not fit falls back (agentCostCellIn). On a
+	// narrow terminal free is under floor, so COST is floor and AGENT is fit as before.
+	costCol := slices.IndexFunc(cols, func(c table.Column) bool { return c.Title == agentsCostTitle(window) })
+	free := m.innerWidth() - tableWidth(cols) + cols[costCol].Width
+	budget := max(floor, free)
+	widest := 0
 	picker := m.pickerRows()
 	rows := make([]table.Row, 0, len(picker)+1)
 	descs := make([]agentRowDesc, 0, len(picker)+1)
+	top := map[string]bool{} // the AGENT labels of top-level rows, which are bold
 	add := func(d agentRowDesc, agent, sessions, lastSeen, cost, server string) {
+		if d.kind == agentRowAgent || d.kind == agentRowHeading {
+			top[agent] = true
+		}
+		widest = max(widest, lipgloss.Width(cost))
 		row := table.Row{agent, cost}
 		if withSessions {
 			row = slices.Insert(row, 1, sessions, lastSeen)
@@ -407,7 +433,7 @@ func (m *model) rebuildAgentsTable() {
 	// either: routing is chosen per agent, and S on this row says so.
 	if m.agentRowOpen("") {
 		add(agentRowDesc{kind: agentRowHeading}, mark("")+allAgentsLabel, "", "", "", "")
-		m.addProjectRows(add, "", nil, now)
+		m.addProjectRows(add, "", nil, now, budget)
 	} else {
 		add(agentRowDesc{kind: agentRowAgent}, mark("")+allAgentsLabel, "", "", "", "")
 	}
@@ -418,13 +444,25 @@ func (m *model) rebuildAgentsTable() {
 		if m.agentRowOpen(a.label) {
 			// An open row is a heading: its figures move to All projects below it.
 			add(agentRowDesc{agent: a.label, kind: agentRowHeading}, label, "", "", "", "")
-			m.addProjectRows(add, a.label, &a, now)
+			m.addProjectRows(add, a.label, &a, now, budget)
 			continue
 		}
 		add(agentRowDesc{agent: a.label, kind: agentRowAgent}, label,
 			m.agentSessionsCell(a.label), relTime(now, m.agentLastSeen(a.label)),
-			agentCostCellIn(a.Counts, a.units, agentsCostWidth), agentServerCell(router, a.label))
+			agentCostCellIn(a.Counts, a.units, m.agentsSplits[agentsSplitKey{a.label, "", m.agentsShownWindow()}], budget), agentServerCell(router, a.label))
 	}
+	cols[costCol].Width = max(floor, min(budget, widest))
+	if want := fitTableColumns(cols, m.innerWidth()); !sameColumns(m.agentsTbl.Columns(), want) {
+		m.agentsTbl.SetRows(nil)
+		m.agentsTbl.SetColumns(want)
+	}
+	byKind := kindsCellStyle(kinds)
+	m.agentsTbl.SetCellStyle(func(r int, row table.Row, col int) lipgloss.Style {
+		if col == 0 && top[row[0]] {
+			return styleBold
+		}
+		return byKind(r, row, col) // dims a "—"
+	})
 	m.agentsTbl.SetRows(rows)
 	m.agentRowDescs = descs
 	// Follow the row, not the index: a refresh can reorder the rows under the cursor. When the
@@ -478,12 +516,19 @@ func agentCostCell(c usage.Counts) string {
 const agentsCostWidth = 12
 
 // agentCostCellIn is agentCostCell in the agent's own units: dollars (nil, or USD), one foreign
-// unit relabelled to fit the column, and more than one withheld as money.Mixed — an agent's
-// figure summed across units is not an amount.
-func agentCostCellIn(c usage.Counts, units []string, budget int) string {
+// unit relabelled to fit the column, and more than one shown unit by unit from byUnit, the row's
+// group=currency split (unitsAmount). An agent's figure summed across units is not an amount, so
+// with no split, or one wider than budget, the cell is money.Mixed.
+func agentCostCellIn(c usage.Counts, units []string, byUnit map[string]int64, budget int) string {
 	cell := agentCostCell(c)
 	if cell == emptyCell {
 		return cell
+	}
+	if len(units) > 1 {
+		if out, ok := unitsAmount(units, byUnit); ok && lipgloss.Width(out) <= budget {
+			return out
+		}
+		return money.Mixed
 	}
 	// sessionMoneyCellIn fits a large figure and its clamp marker into budget. Zero stays here,
 	// because that function shows a zero as unpriced.
@@ -498,6 +543,72 @@ func agentCostCellIn(c usage.Counts, units []string, budget int) string {
 		return out
 	}
 	return emptyCell
+}
+
+// agentsSplitKey names one row's group=currency split: the agent label ("" is All agents), the
+// project series label ("" for an agent row and for All projects, which shows its agent row's
+// figures), and the window the split answers for.
+type agentsSplitKey struct{ agent, project, window string }
+
+// agentsUnitSplitLoadedMsg carries one row's cost per unit back to Update. A failed fetch has err
+// set and is not stored.
+type agentsUnitSplitLoadedMsg struct {
+	key    agentsSplitKey
+	byUnit map[string]int64
+	err    error
+}
+
+// fetchAgentsSplitCmd requests the cost per unit of the row key, for a row in more than one
+// unit, so agentCostCellIn can show each unit's amount. The caller builds key on the update
+// goroutine, with the window it has then.
+func (m *model) fetchAgentsSplitCmd(key agentsSplitKey) tea.Cmd {
+	if m.client == nil {
+		return nil
+	}
+	client := m.client
+	def := m.agentsSpanDef()
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), agentsFetchTimeout)
+		defer cancel()
+		snap, err := fetchUsageScopedProject(ctx, client, def.window, def.resolution, key.agent, key.project, usage.GroupCurrency)
+		if err != nil {
+			return agentsUnitSplitLoadedMsg{key: key, err: err}
+		}
+		return agentsUnitSplitLoadedMsg{key: key, byUnit: unitCosts(snap)}
+	}
+}
+
+// fetchAgentRowSplitsCmd requests the split of every agent row in more than one unit. Other is
+// folded here, not a label the server knows, so it keeps money.Mixed.
+func (m *model) fetchAgentRowSplitsCmd() tea.Cmd {
+	window := m.agentsSpanDef().window
+	var cmds []tea.Cmd
+	for _, a := range m.agents {
+		if len(a.units) > 1 && a.label != otherAgents {
+			cmds = append(cmds, m.fetchAgentsSplitCmd(agentsSplitKey{a.label, "", window}))
+		}
+	}
+	return tea.Batch(cmds...)
+}
+
+// fetchProjectSplitsCmd requests the split of every row in data, agent's projects, that is in
+// more than one unit: All projects under All agents, and each named project. All projects under
+// an agent uses that agent row's split, and the Other rows keep money.Mixed.
+func (m *model) fetchProjectSplitsCmd(agent string, data agentProjectsData) tea.Cmd {
+	if agent == otherAgents {
+		return nil
+	}
+	window := m.agentsSpanDef().window
+	var cmds []tea.Cmd
+	if agent == "" && len(data.all.units) > 1 {
+		cmds = append(cmds, m.fetchAgentsSplitCmd(agentsSplitKey{"", "", window}))
+	}
+	for _, r := range data.rows {
+		if len(r.units) > 1 && r.label != otherProjects && r.label != projectOverflowLabel {
+			cmds = append(cmds, m.fetchAgentsSplitCmd(agentsSplitKey{agent, r.label, window}))
+		}
+	}
+	return tea.Batch(cmds...)
 }
 
 // enterAgents opens the pane as an overlay over `from`, the pane `A` was pressed on.

@@ -51,7 +51,7 @@ Read this section before you export. It decides whether this is the right tool.
 
 ### What a record carries
 
-One record is one event. A record holds 36 fields. Cortex caps each label at 96 bytes, so
+One record is one event. A record holds 37 fields. Cortex caps each label at 96 bytes, so
 nearly every field is a number or a short label. `sessionId` and `requestId` are the
 exceptions: see [Two fields are not short](#two-fields-are-not-short).
 
@@ -67,6 +67,7 @@ exceptions: see [Two fields are not short](#two-fields-are-not-short).
 | Counts | `messageCount`, `toolCount`, `toolCallCount` |
 | Caller | `client`, `agentRole` |
 | Transport | `direction`, `phase`, `tunnel`, `tunnelReason`, `schema` |
+| Record type | `kind` |
 
 `client` is the coding agent Cortex recognised from the User-Agent, such as
 `claude-code/2.1.270`. For proxied traffic Cortex does not copy the header's text: the
@@ -115,6 +116,14 @@ secret reaches the encoded bytes, which fails CI.
 The count above is pinned. `TestDocSecretCountMatchesAllSecrets` fails if this page
 and the test disagree.
 
+### A session that asked not to be recorded
+
+The archive is the export's only source, so a session that sent `X-Cortex-Record: off`
+exports none of its events from then on. What the archive held from before the opt-out
+stays, and exports as usual. A session that asked from its first request exports no
+records at all. See
+[Keeping a session out of the archive](session-api.md#keeping-a-session-out-of-the-archive).
+
 ### Questions an export answers
 
 - Token spend per model
@@ -124,6 +133,8 @@ and the test disagree.
 - Error rates and refusal rates
 - Agent-version adoption
 - How traffic changed across a release
+- Which tools ran, how long each took, and how model time compares with tool time —
+  with `--with-tool-calls`. See [Tool calls](#tool-calls).
 
 ### Questions an export cannot answer
 
@@ -132,21 +143,52 @@ and the test disagree.
 - Which file a tool touched
 - Why a request was made
 - Who the user was
-- Which tools ran. A record counts them in `toolCallCount`. It never names them.
+- Which command a `Bash` call ran. The name is `Bash`; the command is an argument, and
+  arguments stay out permanently.
 
-Tool names are not refused on privacy grounds. A name is low risk, unlike an argument: a
-`Bash` command line is a secret, and arguments stay out permanently. Two other reasons keep
-names out for now:
+Without `--with-tool-calls` a record counts tool calls in `toolCallCount` and never names
+them. That flag adds a second kind of line, one per call, carrying the name and the paired
+duration. Tool names were never refused on privacy grounds — a name is low risk, unlike an
+argument — but two problems had to be solved first, and both now are:
 
-- A record is a flat list of scalars. A name list would be the first array, which changes
-  the shape every consumer parses.
-- Names alone would not give per-tool latency. A tool result arrives in a later request,
-  and the key that pairs it with its call is the tool-use id, which no record carries. So a
-  name list says only which tools a response asked for.
+- A record is a flat list of scalars, so a name *list* would have been the first array. A
+  record per call keeps every line flat.
+- A name list on a response record could not carry per-tool latency, because a result
+  arrives in a later request and the key that pairs the two is the tool-use id — which an
+  export must not carry, since it would join a record back to a conversation. The pairing
+  happens inside Cortex instead, and the records carry its answer rather than its key.
 
-Use `GET /v1/sessions/{id}/timeline` for names today. It pairs each call with its result by
-tool-use id, and it returns named spans.
-[#1906](https://github.com/rossoctl/cortex/issues/1906) tracks adding names here.
+`GET /v1/sessions/{id}/timeline` still answers the same question for one session, with the
+tool-use id included, for a caller inside the machine.
+
+Two rules before you total the timeline's spans, both of which cost real accuracy:
+
+- **A batch of parallel calls can share one window.** Calls the model issues together always
+  share a *start*, because that start is the end of the response that asked for them. They
+  share an *end* only when their results come back in one later request — which is the case
+  that leaves them with no duration each. Measured at 14% of spans (50 of 348) on one 30-day
+  archive. Charging every member of such a batch the whole window's time overcounts; read a
+  shared window once per batch.
+- **Exclude `lost` spans.** A span that never got an answer but provably stopped sets `end`
+  equal to `start`, so it passes an `end != null` filter as a 0 ms call and drags a p50
+  toward zero. A span with no `end` is still running. Filter `lost`, and drop a span with no
+  `end`.
+
+  A third kind needs no filter: a call whose agent finished the tool and then could not reach
+  the model to report back — a lid closed, a VPN dropped — gets its `end` from the first failed
+  dial and is **not** marked `lost`. **Keep it.** Its duration is usually the tool's rather than
+  the outage's: Cortex cuts the span at that dial precisely so the outage is excluded, and
+  against Claude Code's own transcripts the dial landed within a fraction of a second of the
+  tool's real end. Without the cut, one 9-minute `Bash` drew as 8 hours. "Usually" because the
+  cut is matched by host and not by agent, so another agent's failure can end a call that was
+  still running — a subagent's long `Bash` cut where the main agent retried.
+
+  Two things to know about that kind before you join on it. **Its result may be missing, or may
+  have arrived much later** — an `end` and no `lost` does not mean a result came back, so an
+  error rate or a result-size join over these spans is counting something else. And **only a
+  failed dial is caught this way**: an upstream 502, or a client that hung up mid-handshake,
+  leaves its outage inside the span. So a long tail can still be an outage of another kind
+  rather than a slow tool.
 
 An export is **content-free**. It is **not anonymous**. It keeps hosts, models, session
 ids and timestamps. Together these show who called what, and when. Read an export before
@@ -372,6 +414,274 @@ A session can appear in an export with fewer events than it has. Example: a sess
 started a month ago, and it ran again this morning. `--since 24h` carries this morning's
 events from it. `--since 24h` excludes its older events.
 
+## Tool calls
+
+Add one record per tool call, paired with its result:
+
+```sh
+agentop export --with-tool-calls
+```
+
+Over HTTP, this is `?include=toolCalls`:
+
+```sh
+curl -s 'http://localhost:9094/v1/export?include=toolCalls'
+```
+
+The export then carries two kinds of line, and every line says which it is:
+
+```json
+{"schema":1,"kind":"event","sessionId":"45fa31b2-…","seq":2077,"at":"2026-11-05T15:52:21Z"}
+{"schema":1,"kind":"toolCall","sessionId":"45fa31b2-…","startedAt":"2026-11-05T15:52:25.629885Z",
+ "callSeq":2077,"resultSeq":2081,"callIndex":0,"tool":"Bash","toolSource":"builtin",
+ "durationMs":473,"endReason":"result","modelMs":4279,"gapMs":812,"gapKind":"tool",
+ "inputBytes":64,"resultBytes":1432,"agentRole":"main","client":"claude-code/2.1.270"}
+```
+
+Select one kind with `jq`:
+
+```sh
+agentop export --with-tool-calls | jq 'select(.kind == "toolCall")'
+```
+
+Without the flag, the output is byte-for-byte what it was before tool-call records
+existed, and no line carries `kind`. An existing script keeps working unchanged. A script
+that must handle both forms treats a missing `kind` as `event`.
+
+### What a tool-call record carries
+
+| Group | Fields |
+|---|---|
+| Identity | `kind`, `sessionId`, `startedAt` |
+| Placement | `callSeq`, `callIndex`, `resultSeq` |
+| Tool | `tool`, `toolSource` |
+| Timing | `durationMs`, `endReason`, `modelMs`, `gapMs`, `gapKind` |
+| Effort | `inputBytes`, `resultBytes`, `isError` |
+| Batching | `parallelN`, `durationShared` |
+| Context | `agentRole`, `client`, `backgrounded` |
+
+`startedAt` is when the call began: the end of the response that asked for it. It is always
+present, so every call can be placed on a timeline. The end, where there is one, is
+`startedAt` plus `durationMs`.
+
+`callSeq` is the `seq` of the response that asked, and `resultSeq` the `seq` of the request
+that carried the result. Join on `sessionId` **and** one of those to reach the event records
+either side — `seq` counts from 1 within each session, so it is not unique across them.
+`resultSeq`
+is absent when no result ever arrived.
+
+`callIndex` is the call's position among the calls one response asked for, counting from 0.
+A batch has no other order.
+
+`durationMs` is present only when the call has an end. See
+[`endReason`](#how-a-call-ended).
+
+`modelMs` is how long the asking response took. `gapMs` is the idle interval before that
+response, and `gapKind` says what the interval was. See
+[Model time, tool time and idle time](#model-time-tool-time-and-idle-time).
+
+`inputBytes` is the size of the call's arguments and `resultBytes` the size of its result.
+Both are byte counts, and a size is not content: Cortex measures each string on the wire and
+keeps only the number. The arguments themselves never enter the export, so `inputBytes` tells
+you how much a call was asked with and never what it was asked.
+
+Both are written even at zero. A call with no arguments reports `"inputBytes":0`, and an empty
+result reports `"resultBytes":0`. An absent field means "not measured", never zero.
+
+### A tool name is bounded, and an MCP name is hashed
+
+`toolSource` says what kind of tool it is:
+
+| `toolSource` | `tool` | Meaning |
+|---|---|---|
+| `builtin` | the name itself | A tool from the agent's own set: `Bash`, `Read`, `Edit`. |
+| `mcp` | `hmac-sha256:` and a hash | An MCP tool. The name is operator-defined. |
+| `unknown` | `hmac-sha256:` and a hash | Cortex cannot place the name. Treated as operator-defined. |
+
+An MCP tool name is namespaced and chosen by whoever configured the server, so it can carry
+a vendor relationship, an internal system name or a project codename —
+`mcp__acme-billing-prod__refund` names a customer. Cortex hashes it under a key this
+install generates once and keeps.
+
+Two consequences:
+
+- **The same tool carries the same label in every export from this install.** Totals per
+  tool work.
+- **Labels do not match across installs.** Two machines hash the same MCP name to different
+  labels, so counts cannot be pooled by tool name. This is deliberate.
+
+To make new labels, delete the key — but **restart Cortex around the deletion**, in this
+order:
+
+```sh
+agentop service stop
+rm ~/.cortex/sessions/export-toolname-key
+agentop service start
+```
+
+A running proxy holds the key in memory after its first opted-in export, so deleting the
+file alone changes nothing: the next export still labels MCP tools under the old key until
+the process restarts.
+
+Old exports then no longer compare, and the old labels cannot be recovered. That is the
+same property that made a keyed hash safe to ship.
+
+`toolSource` says nothing about **where** a tool ran. A `Bash` call may run on a laptop or
+in a remote sandbox; an MCP tool may be served over stdio locally or over HTTP remotely.
+Cortex sees the model ask and the result arrive, so a record measures the call as the agent
+saw it, transport included.
+
+### How a call ended
+
+`endReason` is a closed set. `durationMs` is present only for the reasons that have an end:
+
+| `endReason` | `durationMs` | Meaning |
+|---|---|---|
+| `result` | yes | The result arrived. The ordinary case. |
+| `background` | yes, to the acknowledgement only | The result only acknowledged a job that keeps running. The command's real duration is longer and is not here. |
+| `ended_run` | no | The call ends the run by design and never gets a result. |
+| `abandoned` | no | The agent moved on without the result. |
+| `stopped` | no | The run was stopped while the call was open. |
+
+A call still running when the export is taken is **not** exported at all. It has no
+duration to report, and a record that appeared with one in a later export would make the
+export irreproducible.
+
+`durationMs` is absent, never zero, for a call with no end. A zero would pass a
+`durationMs > 0` filter as a 0 ms call and drag a median toward zero.
+
+`backgrounded` is `true` when the call started a background job. Count missing job time on
+that field rather than on `endReason`. The job's own run is not in this export, so summed
+tool time undercounts by however long such commands ran.
+
+### Model time, tool time and idle time
+
+Three quantities, and only one of them is inferred:
+
+- `modelMs` is **measured**. It is the asking response's own duration.
+- `durationMs` is **measured**. It is the call's paired duration.
+- `gapMs` is the leftover interval before the asking response — from the end of that agent's
+  previous response to the start of the request that produced this one. It contains no model
+  time and no tool time of this call.
+
+`gapKind` classifies that interval by the agent's previous response:
+
+| `gapKind` | Meaning |
+|---|---|
+| `user` | The previous response asked for no tool. The model stopped and waited for a person. |
+| `tool` | The previous response asked for tools. They were running. |
+| `first` | The agent's first turn. `gapMs` is absent. |
+
+**`gapKind` itself is absent when the export starts mid-session.** `first` means the agent's
+first turn in the whole session, so Cortex writes it only when the export reaches the start of
+that session. Three things stop it reaching the start: `--since`, the 50,000-event pairing
+limit, and a session whose oldest segments have aged out of the archive. In those exports the
+first call Cortex can see for each agent carries neither `gapMs` nor `gapKind`, because the
+turn before it was never read. Absent means "not measured", not "no gap".
+
+So a count of `first` records is a count of agents **only** in an export that starts at the
+session's start.
+
+**Do not add a `tool` gap to tool time.** The interval covers what the previous turn's calls
+were doing, so it overlaps their own `durationMs`. Adding both counts the same wall clock
+twice.
+
+**A `user` gap needs a stated ceiling.** On one 30-day archive the same data totals 24.8 h
+of user wait at a 300 s cap, 44.8 h at 1800 s, 56.8 h at 3600 s, and 539 h uncapped — a 20x
+spread. The export carries the raw figure. Publish your ceiling beside any duty cycle you
+derive from it.
+
+**A `user` gap is that agent's own idleness, not the machine's.** While one agent waits for
+a person, a background job or a subagent can be working. Summed `user` gaps are an upper
+bound on idleness, not the figure itself.
+
+**An approval wait reads as execution.** When a person sits on a permission prompt, that
+time lands inside a `tool` gap and cannot be told from the command running. This is the
+largest single error in any density figure built from this export.
+
+### Two rules before you total these records
+
+Both cost real accuracy, and neither is guessable from the field list.
+
+**Take `modelMs` and `gapMs` once per `callSeq`.** Both belong to the asking response, not
+to the call, so every record of a batch repeats them. Summing `modelMs` over records counts
+one turn's inference once per call in the batch:
+
+```sh
+# Model time per session, counted once per asking response.
+agentop export --with-tool-calls \
+  | jq -r 'select(.kind == "toolCall") | [.sessionId, .callSeq, .modelMs] | @tsv' \
+  | sort -u \
+  | awk -F'\t' '{t[$1] += $3} END {for (s in t) print s, t[s]"ms"}'
+```
+
+**A batch of calls shares one measured window.** When a model asks for several calls at
+once, they share a start, and they share an end when their results come back together.
+`durationShared` marks such a record and `parallelN` says how many calls were in the batch.
+The marker says the window is shared — not that the calls ran at the same time. Summing
+their durations charges each call the whole window.
+
+Take the **longest** duration in each batch, once, and add the unbatched calls normally:
+
+```sh
+# Tool time per session: a shared window once per batch, lone calls summed.
+agentop export --with-tool-calls \
+  | jq -s -r '[ .[] | select(.kind == "toolCall" and .durationMs != null) ]
+      | group_by([.sessionId, .callSeq])
+      | map({ sessionId: .[0].sessionId,
+              ms: (if .[0].durationShared
+                   then (map(.durationMs) | max)
+                   else (map(.durationMs) | add) end) })
+      | group_by(.sessionId)
+      | map({ sessionId: .[0].sessionId, total: (map(.ms) | add) })
+      | .[] | "\(.sessionId) \(.total)ms"'
+```
+
+The maximum, not any member's duration: siblings in one batch can report different
+durations, because a result that arrives before its asking response finished is clamped to
+the call's start. The window is the longest of them. Deduplicating rows instead — on
+`sessionId`, `callSeq` and `durationMs` — keeps every distinct duration, so two siblings at
+100 ms and 200 ms report 300 ms where the shared window is 200 ms.
+
+This reads the whole stream into memory (`jq -s`). For a month of traffic, filter to one
+session or a `--since` window first.
+
+### A capped session says so
+
+Two limits bound what one session contributes, and either one gets a marker line instead of
+silence:
+
+- **4096 tool-call records.** `dropped` counts the calls not written, against `cap`.
+- **50,000 events held for pairing.** `droppedEvents` counts the session's oldest events
+  that were not read, against `eventCap`. Pairing needs a session's events together, so this
+  is the bound on what that costs. It matches the limit on a `/timeline` request.
+
+```json
+{"schema":1,"kind":"toolCallsTruncated","sessionId":"…","dropped":57,"cap":4096}
+{"schema":1,"kind":"toolCallsTruncated","sessionId":"…","dropped":0,"cap":4096,"droppedEvents":1200,"eventCap":50000}
+```
+
+Check for either before you publish a per-session total:
+
+```sh
+agentop export --with-tool-calls | jq 'select(.kind == "toolCallsTruncated")'
+```
+
+A marker means that session's tool time is a **lower bound**, not a total. The event records
+themselves are never dropped by these limits — only what the pairing holds.
+
+The busiest session on one 30-day archive held 1,030 calls in 2,911 events, so neither limit
+is normally reached.
+
+### What a tool-call record never carries
+
+- **The tool's arguments.** A `Bash` command line is a secret.
+- **The tool's result.** `resultBytes` is its size. The text never leaves the machine.
+- **The tool-use id.** It is the key Cortex pairs a call with its result by, and exporting
+  it would let a record be joined back to a conversation. Join on `sessionId`, `callSeq` and
+  `callIndex` instead.
+- **An MCP tool's name in clear.** See above.
+
 ## Step 4: answer a question with the export
 
 The export is NDJSON. One record per line. `jq` reads it directly.
@@ -481,7 +791,7 @@ The columns are:
 | `CACHE_R` | `cacheReadTokens` | Prompt tokens served from the cache, and far cheaper. |
 | `CACHE_W` | `cacheWriteTokens` | Prompt tokens written to the cache for a later turn. |
 | `OUTPUT` | `outputTokens` | Tokens the model generated. |
-| `TOOL_CALLS` | `toolCallCount` | Tool calls this response asked for. Never their names. |
+| `TOOL_CALLS` | `toolCallCount` | Tool calls this response asked for. Their names and durations need `--with-tool-calls`. |
 
 Two rules for reading the token columns:
 
@@ -512,8 +822,9 @@ Use each endpoint for what it holds:
 | You want | Use | Why |
 |---|---|---|
 | Token counts, latency, status | the export | It has all four token fields |
-| Tool names and spans | the timeline | The export has `toolCallCount`, never names |
-| Both at once | join them on `seq` | No single endpoint has both |
+| Tool names and durations, across every session | `agentop export --with-tool-calls` | One stream, no join by hand |
+| Tool spans for one session, with the tool-use id | the timeline | The export never carries that id |
+| Token counts beside tool calls | the export with `--with-tool-calls` | Join on `sessionId` **and** `callSeq` to `seq` — `seq` counts from 1 per session, so it is not unique on its own |
 
 The timeline's `tools` array holds the tool calls that each model response asked for. A
 tool's `seq` is its **response's** `seq`, so join a tool to the export's
@@ -883,9 +1194,14 @@ these rules per field. This page is the summary.
 | *(none)* | Every archived session, every event |
 | `?session=<id>` | Only the named sessions. Repeatable: `&session=a&session=b`. An unknown id is a 400 (see below) |
 | `?since=<duration>` | Only events newer than that far back. Use `168h` (a Go duration) or `7d` (a day count) |
+| `?include=toolCalls` | Also carry one record per tool call. See [Tool calls](#tool-calls) |
 
-Cortex parses both parameters before it writes the first byte. A bad value is therefore a
+Cortex parses every parameter before it writes the first byte. A bad value is therefore a
 real 400, not a truncated stream. A repeated `since` is also a 400.
+
+`include` accepts only `toolCalls`. Any other value is a 400 rather than a silent ignore,
+so a typo such as `?include=toolcalls` tells you rather than returning the plain stream and
+looking like the feature does nothing.
 
 An unknown `?session=` is a 400 that names the archived sessions. The list is bounded in
 bytes, not in ids. This keeps the answer inside what a client reads of a 400 body, however
@@ -907,6 +1223,7 @@ output goes to a file or to a pipe. A summary line goes to stderr, for example
 | `--gzip` | Write the file gzip-compressed. Needs `--out`, and the name must end in `.gz` |
 | `--session ID` | Repeatable and comma-separated: `--session a --session b` or `--session a,b` |
 | `--since DUR` | `168h` or `7d`, as on the endpoint |
+| `--with-tool-calls` | Also carry one record per tool call. See [Tool calls](#tool-calls) |
 | `--endpoint URL` | Ask a specific proxy rather than the local one |
 
 A refused query fails before the command creates the output file. An unknown `--session`

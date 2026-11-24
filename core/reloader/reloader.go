@@ -114,6 +114,9 @@ type Reloader struct {
 	startTimeout time.Duration
 	// afterFunc arms the debounce timer: time.AfterFunc, or a test's own.
 	afterFunc func(time.Duration, func()) debounceTimer
+	// attempts, when set, receives after each reload attempt, without blocking; a test
+	// waits on it.
+	attempts chan struct{}
 	// onCommit is run after a reload is accepted; see WithOnCommit.
 	onCommit func(*config.Config)
 	// extraDirs and fingerprint widen what a reload depends on; see WithExtraWatch.
@@ -126,6 +129,9 @@ type Reloader struct {
 
 	status    atomic.Pointer[Status]
 	activeCfg atomic.Pointer[config.Config]
+	// bootAccounting is whether accounting resolved on in the boot config: the binaries build
+	// the accountant host then, or never (see validateAccounting).
+	bootAccounting bool
 
 	// resolvedBase is the base name of configPath with symlinks followed, set
 	// by Start when it differs enough to need its own watch, and read only by
@@ -169,6 +175,7 @@ func New(configPath string, inbound, outbound *pipeline.Holder, build PipelineBu
 		opt(r)
 	}
 	r.activeCfg.Store(initialCfg)
+	r.bootAccounting = initialCfg.AccountingOn()
 
 	// Seed the hash with the bytes main.go just loaded, so a spurious
 	// fsnotify event that fires immediately after startup (e.g., the
@@ -380,6 +387,12 @@ func (r *Reloader) watchLoop(ctx context.Context, watcher *fsnotify.Watcher) {
 			// backends send no event while holding the lock Add takes, so this
 			// cannot block on the channel this loop drains.
 			r.reloadOnce(ctx, watcher)
+			if r.attempts != nil {
+				select {
+				case r.attempts <- struct{}{}:
+				default:
+				}
+			}
 		}
 	}
 }
@@ -417,6 +430,10 @@ func (r *Reloader) reloadOnce(parent context.Context, watcher *fsnotify.Watcher)
 	// gRPC/HTTP servers; the cost ledger is a writer opened once and
 	// held by the session store. Operator needs a pod restart for those.
 	if err := validateReloadable(r.activeCfg.Load(), newCfg); err != nil {
+		r.recordFailure(attempt, err)
+		return
+	}
+	if err := validateAccounting(r.bootAccounting, newCfg); err != nil {
 		r.recordFailure(attempt, err)
 		return
 	}
@@ -672,8 +689,32 @@ func validateReloadable(active, next *config.Config) error {
 	if !reflect.DeepEqual(active.Praxis, next.Praxis) {
 		diffs = append(diffs, "praxis.*")
 	}
+	// accounting.subscription_weights too, as resolved: the host reads them once, when it is built.
+	if active.Accounting.Weights() != next.Accounting.Weights() {
+		diffs = append(diffs, "accounting.subscription_weights")
+	}
 	if len(diffs) > 0 {
 		return fmt.Errorf("unreloadable field changed, pod restart required: %v", diffs)
+	}
+	return nil
+}
+
+// validateAccounting refuses a reload that turns accounting on when the process booted with it
+// off. accounting.enabled is compared as RESOLVED, not as written: under auto, adding the first
+// context operator turns it on as surely as editing the block does.
+//
+// Only off→on needs a restart: the binaries build the accountant host once, at boot, and only
+// when accounting is on, so with no host there is nothing to hand the plugins. The other way
+// round is a reload like any other. The host exists, and the binaries hand it to a build only
+// while the config resolves accounting on, so a reload that turns it off (an operator setting
+// the only context operator to on_error: off, or removing it) leaves the host idle, and a later
+// reload can turn it back on. Refusing that reload would break on_error: off as "a kill-switch
+// without a redeploy" (core/pipeline/policy.go; review finding).
+//
+// Compared with the boot config, not the last accepted one, so on→off→on is accepted too.
+func validateAccounting(bootOn bool, next *config.Config) error {
+	if !bootOn && next.AccountingOn() {
+		return fmt.Errorf("unreloadable field changed, pod restart required: [accounting.enabled (resolved false→true; the process booted with accounting off)]")
 	}
 	return nil
 }

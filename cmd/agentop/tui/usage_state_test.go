@@ -94,26 +94,26 @@ func TestUsage_StaleTickChainDoesNotReschedule(t *testing.T) {
 	}
 }
 
-// esc must return to the pane Usage was opened from, even after the catalog
-// overlay has been opened on top. model.previousPane is shared with the catalog,
+// esc must return to the pane Usage was opened from, even after the agents
+// pane has been opened on top. model.previousPane is shared with that pane,
 // so relying on it sent esc to Sessions instead of Events.
-func TestUsage_ReturnPaneSurvivesCatalogOverlay(t *testing.T) {
+func TestUsage_ReturnPaneSurvivesAgentsOverlay(t *testing.T) {
 	m := &model{pane: paneEvents, selectedSess: "s1", previousPane: paneNone}
 	m.openUsage("s1")
 	if m.usage.returnPane != paneEvents {
 		t.Fatalf("returnPane = %v, want paneEvents", m.usage.returnPane)
 	}
 
-	// Simulate opening the catalog from Usage and escaping back out of it: the
-	// catalog uses previousPane and clears it on the way out.
+	// Simulate opening the agents pane from Usage and escaping back out of it: it
+	// uses previousPane and clears it on the way out.
 	m.previousPane = paneUsage
-	m.pane = paneCatalog
+	m.pane = paneAgents
 	m.previousPane = paneNone
 	m.pane = paneUsage
 
 	// Usage's own esc must still know where it came from.
 	if m.usage.returnPane != paneEvents {
-		t.Errorf("returnPane = %v after a catalog round trip, want paneEvents", m.usage.returnPane)
+		t.Errorf("returnPane = %v after an agents round trip, want paneEvents", m.usage.returnPane)
 	}
 }
 
@@ -227,30 +227,30 @@ func TestRenderUsageChart_PicksTheRightForm(t *testing.T) {
 	}
 }
 
-// Returning into Usage from the catalog overlay must restart the poll chain.
-// The tick in flight when the catalog opened was dropped by the focus guard, so
+// Returning into Usage from the agents pane must restart the poll chain.
+// The tick in flight when that pane opened was dropped by the focus guard, so
 // without an explicit restart the 20s auto-refresh is silently dead: the chart
 // freezes and only `r` (a one-shot refetch) or backing all the way out and
 // re-entering with `u` brings it back.
-func TestUsage_CatalogRoundTripRestartsPolling(t *testing.T) {
+func TestUsage_AgentsRoundTripRestartsPolling(t *testing.T) {
 	m := &model{pane: paneEvents, selectedSess: "s1", previousPane: paneNone}
 	m.openUsage("s1")
 	genBefore := m.usage.tickGen
 
-	// P opens the catalog from Usage; previousPane records where to return.
+	// A opens the agents pane from Usage; previousPane records where to return.
 	m.previousPane = paneUsage
-	m.pane = paneCatalog
+	m.pane = paneAgents
 
-	// A tick from the pre-catalog chain arrives while the catalog has focus and
+	// A tick from the earlier chain arrives while the agents pane has focus and
 	// is dropped — this is what leaves nothing scheduled.
 	if _, cmd := m.Update(usageTickMsg{gen: genBefore}); cmd != nil {
-		t.Error("a tick was rescheduled while the catalog had focus")
+		t.Error("a tick was rescheduled while the agents pane had focus")
 	}
 
-	// esc out of the catalog, back into Usage.
+	// esc out of the agents pane, back into Usage.
 	cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
 	if m.pane != paneUsage {
-		t.Fatalf("pane = %v after esc from catalog, want paneUsage", m.pane)
+		t.Fatalf("pane = %v after esc from the agents pane, want paneUsage", m.pane)
 	}
 	if cmd == nil {
 		t.Fatal("returning into Usage scheduled no work — the poll chain is dead")
@@ -265,7 +265,7 @@ func TestUsage_CatalogRoundTripRestartsPolling(t *testing.T) {
 		t.Error("the restarted chain does not reschedule")
 	}
 	if _, c := m.Update(usageTickMsg{gen: genBefore}); c != nil {
-		t.Error("the pre-catalog chain is still alive — two chains would double the poll rate")
+		t.Error("the earlier chain is still alive — two chains would double the poll rate")
 	}
 }
 

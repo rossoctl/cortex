@@ -98,7 +98,7 @@ func TestSpendStripVisible_HiddenOnPreConnectionPickers(t *testing.T) {
 }
 
 func TestSpendStripVisible_ShownOnTheDataPanes(t *testing.T) {
-	for _, p := range []paneID{paneSessions, paneEvents, paneDetail, panePipeline, paneUsage, paneCatalog} {
+	for _, p := range []paneID{paneSessions, paneEvents, paneDetail, panePipeline, paneUsage} {
 		m := &model{height: 40}
 		m.pane = p
 		if !m.spendStripVisible() {
@@ -121,11 +121,10 @@ func TestSpendStripVisible_FoldsAwayOnAShortTerminal(t *testing.T) {
 	}
 }
 
-func TestLayout_ReservesExactlyTheBandsRowsForTheStrip(t *testing.T) {
-	// Get this wrong and every table renders one row too tall, pushing the footer
-	// off-screen. The row is ADDED to the existing title(1) + footer(2) budget --
-	// layout's old comment said "title + blank + footer" but there was never a
-	// blank row to borrow.
+func TestLayout_TheBandCostsNoRow(t *testing.T) {
+	// The band is the label of the box's top edge (#2020), so it costs no row of its own:
+	// above and below the fold the body gets the same rows. Get the reservation wrong and
+	// every table renders one row too tall, pushing the footer off-screen.
 	tall := &model{width: 100, height: 40}
 	tall.pane = paneEvents
 	tall.layout()
@@ -134,34 +133,29 @@ func TestLayout_ReservesExactlyTheBandsRowsForTheStrip(t *testing.T) {
 	short.pane = paneEvents
 	short.layout()
 
-	// dividerLines is in both expectations, and in the short one it is the ONLY new term: the
-	// rule closes the top block on every pane and at every height, so unlike the band it is
-	// reserved below the fold too.
-	if want := 40 - 3 - dividerLines - spendBandLines; tall.bodyHeight != want {
-		t.Errorf("bodyHeight with the band = %d, want %d (height - title - 2 footer rows - "+
-			"dividerLines - spendBandLines)", tall.bodyHeight, want)
+	if want := 40 - 1 - footerLines - boxTopLines - boxBottomLines; tall.bodyHeight != want {
+		t.Errorf("bodyHeight with the band = %d, want %d (height - title - footer rows - "+
+			"box edges; the band is in the top edge)", tall.bodyHeight, want)
 	}
-	if want := 19 - 3 - dividerLines; short.bodyHeight != want {
-		t.Errorf("bodyHeight below the fold = %d, want %d (the divider's row, no band rows)",
+	if want := 19 - 1 - footerLines - boxTopLines - boxBottomLines; short.bodyHeight != want {
+		t.Errorf("bodyHeight below the fold = %d, want %d (the box edges)",
 			short.bodyHeight, want)
 	}
 }
 
-func TestLayout_PickerPanesStillReserveTheStripRow(t *testing.T) {
+func TestLayout_PickerPanesReserveWhatDataPanesDo(t *testing.T) {
 	// The ruling: reserve by HEIGHT, not per pane. layout() runs on resize, so a
-	// pane-aware reservation would need re-running on every pane transition -- and
-	// a picker one row shorter than it could be is invisible next to an events
-	// table that is wrong by a row and pushes the footer off the bottom.
+	// pane-aware reservation would need re-running on every pane transition.
 	picker := &model{width: 100, height: 40}
 	picker.pane = panePods
 	picker.layout()
 
-	if want := 40 - 3 - dividerLines - spendBandLines; picker.bodyHeight != want {
+	if want := 40 - 1 - footerLines - boxTopLines - boxBottomLines; picker.bodyHeight != want {
 		t.Errorf("picker bodyHeight = %d, want %d: the reservation must not depend on the pane",
 			picker.bodyHeight, want)
 	}
 	if picker.spendStripVisible() {
-		t.Error("the picker reserves the row but must not DRAW the strip")
+		t.Error("the picker must not DRAW the strip")
 	}
 }
 

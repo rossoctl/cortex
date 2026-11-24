@@ -31,6 +31,11 @@ repos:
         files: \.md$
         pass_filenames: false
         always_run: true
+      - id: check-test-timing
+        name: Check Go tests for sleeps, polls and real-time bounds
+        entry: python3 scripts/dev/check-test-timing.py
+        language: system
+        files: _test\.go$
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.9.10

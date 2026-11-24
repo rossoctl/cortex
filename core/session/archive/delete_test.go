@@ -25,7 +25,7 @@ func TestDelete_RemovesOneSessionAndLeavesTheOthers(t *testing.T) {
 	tick(a) // both are on disk
 
 	a.Deleted("gone")
-	res, err := a.AwaitDelete("gone", 5*time.Second)
+	res, err := a.AwaitDelete("gone", time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestDelete_EventsQueuedBeforeAreGoneAndAfterStartFresh(t *testing.T) {
 	r.record("s1", synthSession(95, 1, 512)...) // after the delete: numbered on from 7
 	close(a.gate)
 
-	if _, err := a.AwaitDelete("s1", 5*time.Second); err != nil {
+	if _, err := a.AwaitDelete("s1", time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	settle(a)
@@ -94,7 +94,7 @@ func TestDelete_AFailedRenameKeepsTheHistoryAndReportsIt(t *testing.T) {
 	blockRenames(t, root, filepath.Join(root, dataDirName, dirName("s1")))
 
 	a.Deleted("s1")
-	if _, err := a.AwaitDelete("s1", 5*time.Second); err == nil {
+	if _, err := a.AwaitDelete("s1", time.Hour); err == nil {
 		t.Fatal("a delete whose rename failed reported success")
 	}
 	if rows := a.Summaries(); len(rows) != 1 || rows[0].ID != "s1" {
@@ -114,7 +114,7 @@ func TestDelete_UsesTheReserveWhenTheQueueIsFull(t *testing.T) {
 	newRecorder(a).record("s1", synthSession(97, 34, 512)...) // 102 events: more than the whole queue
 	a.Deleted("s1")
 	close(a.gate)
-	if _, err := a.AwaitDelete("s1", 5*time.Second); err != nil {
+	if _, err := a.AwaitDelete("s1", time.Hour); err != nil {
 		t.Fatalf("a delete behind a full queue failed: %v", err)
 	}
 	if rows := a.Summaries(); len(rows) != 0 {
@@ -127,7 +127,7 @@ func TestDelete_AnIDTheArchiveNeverHeldRemovesNothing(t *testing.T) {
 	a := openTest(t, t.TempDir(), newClock())
 	defer a.Close()
 	a.Deleted("never")
-	res, err := a.AwaitDelete("never", 5*time.Second)
+	res, err := a.AwaitDelete("never", time.Hour)
 	if err != nil || res.Sessions != 0 {
 		t.Fatalf("AwaitDelete(never) = %+v, %v; want nothing removed and no error", res, err)
 	}
@@ -139,7 +139,7 @@ func TestAwaitDelete_TimesOutWhileTheWriterIsHeld(t *testing.T) {
 	defer a.Close()
 	a.gate = make(chan struct{})
 	a.Deleted("s1")
-	if _, err := a.AwaitDelete("s1", 50*time.Millisecond); err == nil {
+	if _, err := a.AwaitDelete("s1", time.Nanosecond); err == nil {
 		t.Fatal("AwaitDelete returned no error while the delete was still queued")
 	}
 	close(a.gate)

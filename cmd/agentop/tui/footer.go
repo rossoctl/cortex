@@ -8,58 +8,51 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// feedbackURL is where a user sends feedback or reports a problem. The footer
-// carries it on every screen (see #975): the moment a user is looking at their
-// session data is the moment they have an opinion, and the tool should not make
-// them hunt for the repository. Kept quiet (muted style) and to one line.
+// feedbackURL is where a user sends feedback or reports a problem (#975). It is the last
+// section of the [?] help (helpBodyLines), not on the screen: the bottom bar is one line and
+// has no room for it.
 //
 // The /issues/new/choose form drops the user on the template picker — the
 // Laptop feedback form — one click from filing, rather than on the issue list.
 // This is the same destination the docs point at (see rossoctl#977).
 const feedbackURL = "https://github.com/rossoctl/cortex/issues/new/choose"
 
-// footerView renders the bottom two lines: status (connection + rate
-// + optional transient flash, then a muted feedback link) and a
-// context-sensitive keybinding hint. No lipgloss borders; parent view handles
-// the frame.
+// footerLines is the height of footerView, and the number of rows layout() reserves for it.
+const footerLines = 1
+
+// barEssentialHints ends every helpView line (TestFitHintLine_KeepsQuitAndHelpAtEveryWidth).
+const barEssentialHints = "[?] keys  [q] quit"
+
+// barInk is st drawn on the bar: the status runs keep their ink and get the bar's ground.
+func barInk(st lipgloss.Style) lipgloss.Style { return st.Background(colorBarBg) }
+
+// footerView is the one bottom bar: the key hints on the left and the status on the right
+// (see bottomBar). The status is ordered by what a cut drops last: the connection state,
+// then the other notes, then a timed flash.
 func (m *model) footerView() string {
-	var status strings.Builder
+	conn := m.connStatus()
 
-	// A sticky flash gets the whole line, starting at column 0.
+	// A sticky flash takes the place of the other notes and of every hint but [?] and [q].
 	//
-	// Yank is the case this exists for: the path is the longest thing the footer
-	// ever carries, and appending it after the ~32 columns of connection state,
-	// rate pushed it off the right edge on a narrow terminal — the user
-	// saw "yanked → /Users/you/.cortex/agentop-" and could not read the filename,
-	// which is the whole point of showing it. Dropping the prefix while the notice
-	// is up buys those columns back; the prefix returns on the next keypress, and
-	// a sticky flash is by definition something the user just asked for and is
-	// reading right now.
+	// Yank is the case this exists for: the path is the longest thing the bar ever
+	// carries, and the filename at its end is the whole point of showing it. The other
+	// notes and hints return on the next keypress, and a sticky flash is by definition
+	// something the user just asked for and is reading right now.
 	if m.flash != "" && m.flashSticky {
-		return styleTitle.Render(fitFlashLine(m.flash, m.width)) + "\n" +
-			styleHint.Render(fitHintLine(m.helpView(), m.width))
-	}
-
-	// Connection state dot.
-	switch m.connState.phase {
-	case connOpen:
-		status.WriteString(styleOK.Render("● connected"))
-	case connReconnecting:
-		status.WriteString(styleWarn.Render(
-			fmt.Sprintf("◐ reconnecting (attempt %d, next in %ds)",
-				m.connState.attempt,
-				int(time.Until(m.connState.nextRetry).Round(time.Second).Seconds()))))
-	case connFailed:
-		msg := "✗ failed"
-		if m.connState.err != nil {
-			msg += ": " + m.connState.err.Error()
+		statusRoom := m.width - lipgloss.Width("… "+barEssentialHints) - 2
+		flash := barInk(styleTitle)
+		status := ""
+		if room := statusRoom - lipgloss.Width(conn) - 3; room >= 2 {
+			status = conn + barInk(styleMuted).Render("   ") + flash.Render(fitFlashLine(m.flash, room))
+		} else if statusRoom >= 1 {
+			status = flash.Render(fitFlashLine(m.flash, statusRoom))
 		}
-		status.WriteString(styleError.Render(msg))
-	default:
-		status.WriteString(styleMuted.Render("… connecting"))
+		return bottomBar(barEssentialHints, status, m.width)
 	}
 
-	status.WriteString(styleMuted.Render("  "))
+	var status strings.Builder
+	status.WriteString(conn)
+	status.WriteString(barInk(styleMuted).Render("  "))
 
 	// Rate. Spelled out rather than "ev/s", which reads as a unit the operator has to
 	// decode before it tells them anything.
@@ -67,27 +60,27 @@ func (m *model) footerView() string {
 	// A "drops: N" counter used to sit beside it. Nothing ever incremented it, so it
 	// displayed a hardcoded zero — which is worse than showing nothing, because it
 	// teaches that no event is ever dropped. Removed with its field; see #1060.
-	status.WriteString(styleMuted.Render(fmt.Sprintf("%.1f events/sec", m.rate)))
+	status.WriteString(barInk(styleMuted).Render(fmt.Sprintf("%.1f events/sec", m.rate)))
+	warn := barInk(styleWarn)
 	if m.paused {
-		status.WriteString(styleWarn.Render("   [paused]"))
+		status.WriteString(warn.Render("   [paused]"))
 	}
 	// A server switch S started, until its one flash replaces this. State, not a key, like
 	// [paused]: the write waits for the proxy's reload, which takes about a second.
 	if m.serverSwitch != nil {
-		status.WriteString(styleWarn.Render("   [" + m.serverSwitch.text() + "]"))
+		status.WriteString(warn.Render("   [" + m.serverSwitch.text() + "]"))
 	}
 	// The active pane's search: which match the cursor is on, how many there are, or that
-	// there are none — see searchStatus. Here rather than in the hint line because it is
-	// state, not a keybinding — the same reason [paused] sits above. Only the sessions and
-	// events panes search, and each its own, so no other pane shows one.
+	// there are none — see searchStatus. In the status rather than in the hints because it is
+	// state, not a keybinding — the same reason [paused] sits above.
 	if s := m.searchStatus(m.pane); s != "" {
-		status.WriteString(styleWarn.Render("   " + s))
+		status.WriteString(warn.Render("   " + s))
 	}
 	if m.pane == paneSessions && m.agentScope != "" && m.sessionsScope() == "" {
-		status.WriteString(styleWarn.Render("   [no session names its agent: list not scoped]"))
+		status.WriteString(warn.Render("   [no session names its agent: list not scoped]"))
 	}
 	if m.pane == paneSessions && m.projectScope != "" && m.sessionsProjectScope() == "" {
-		status.WriteString(styleWarn.Render("   [no session names its project: list not scoped]"))
+		status.WriteString(warn.Render("   [no session names its project: list not scoped]"))
 	}
 	// A non-chronological sort, for the same reason as the search above: it is
 	// state the operator chose, and a table in an order the eye does not expect
@@ -111,49 +104,86 @@ func (m *model) footerView() string {
 		if m.sortDesc {
 			glyph = sortGlyphDesc
 		}
-		status.WriteString(styleWarn.Render("   [sort: " + string(m.sortCol) + glyph + "]"))
+		status.WriteString(warn.Render("   [sort: " + string(m.sortCol) + glyph + "]"))
 	}
 
-	// Flash message (e.g. "yanked → ~/.cortex/agentop-events/...").
-	if m.flash != "" && (m.flashSticky || time.Now().Before(m.flashUntil)) {
-		status.WriteString(styleTitle.Render("   " + m.flash))
+	// Timed flash message (e.g. "copied"), last: a cut drops it first.
+	if m.flash != "" && time.Now().Before(m.flashUntil) {
+		status.WriteString(barInk(styleTitle).Render("   " + m.flash))
 	}
-
-	// Feedback link, quiet and last on the status line. It has the weakest claim
-	// on the columns — the connection state, rate and any flash are what a
-	// user is actively debugging with — so it is the first thing to drop when the
-	// line would otherwise overflow the terminal and wrap onto a third row. It is
-	// dropped whole rather than truncated: half a URL is not clickable and reads
-	// as corruption. On the common wide terminal it is always present, which is
-	// the case #975 is about; a width of 0 (no size yet) keeps it too.
-	feedback := styleMuted.Render("   feedback: " + feedbackURL)
-	if m.width <= 0 || lipgloss.Width(status.String())+lipgloss.Width(feedback) <= m.width {
-		status.WriteString(feedback)
-	}
-
-	hint := fitHintLine(m.helpView(), m.width)
-
-	return fitStatusLine(status.String(), m.width) + "\n" + styleHint.Render(hint)
+	return bottomBar(m.helpView(), status.String(), m.width)
 }
 
-// fitStatusLine bounds the status row to the terminal.
-//
-// layout() reserves exactly three rows for title + blank + footer, so a status row
-// wider than the terminal wraps and costs the hint line below it — the row carrying
-// [?] keys and [q] quit. Every writer above appends unconditionally, and only the
-// feedback link checked the width, so a state-rich row (paused + a search + an active
-// sort) overflows at 80 columns: measured 87 with the filter the search replaced.
-//
-// Truncates from the RIGHT, unlike fitHintLine's drop-from-the-front. The two lines
-// rank their contents oppositely: the hint line's last entries are the escape hatches
-// a stuck operator needs, while this row leads with the connection state and the
-// rate — what someone is actively debugging with — and trails into optional state
-// markers. So the tail is what should go.
-func fitStatusLine(status string, width int) string {
-	if width <= 0 || lipgloss.Width(status) <= width {
-		return status
+// connStatus is the connection state, styled for the bar.
+func (m *model) connStatus() string {
+	switch m.connState.phase {
+	case connOpen:
+		return barInk(styleOK).Render("● connected")
+	case connReconnecting:
+		return barInk(styleWarn).Render(fmt.Sprintf("◐ reconnecting (attempt %d, next in %ds)",
+			m.connState.attempt,
+			int(time.Until(m.connState.nextRetry).Round(time.Second).Seconds())))
+	case connFailed:
+		msg := "✗ failed"
+		if m.connState.err != nil {
+			msg += ": " + m.connState.err.Error()
+		}
+		return barInk(styleError).Render(msg)
+	default:
+		return barInk(styleMuted).Render("… connecting")
 	}
-	return truncToWidth(status, width)
+}
+
+// pickerStatus is the status of the Namespaces and Pods bars: the search status, the
+// error and a flash. A picker has no connection to the session API, so no connection state.
+func (m *model) pickerStatus() string {
+	var parts []string
+	if st := m.searchStatus(m.pane); st != "" {
+		parts = append(parts, barInk(styleWarn).Render(st))
+	}
+	if m.pickerErr != "" {
+		parts = append(parts, barInk(styleError).Render("error: "+m.pickerErr))
+	}
+	if m.flash != "" && (m.flashSticky || time.Now().Before(m.flashUntil)) {
+		parts = append(parts, barInk(styleTitle).Render(m.flash))
+	}
+	return strings.Join(parts, barInk(styleMuted).Render("   "))
+}
+
+// bottomBar lays hints out on the left and status on the right of one line of width columns.
+// hints is helpView(); status is the styled status, already in bar ink.
+//
+// The priority when the line is short, from the first to keep: [?] keys [q] quit, then the
+// head of the status (it is cut from the RIGHT, so the connection state goes last), then the
+// other hints, which fitHintLine drops from the left. The status gets at most what the line
+// has after "… [?] keys  [q] quit" and a gap, so it never pushes those two out.
+func bottomBar(hints, status string, width int) string {
+	if width <= 0 {
+		if status == "" {
+			return renderKeyBar(hints, 0)
+		}
+		return renderKeyBar(hints, 0) + "  " + status
+	}
+	statusRoom := width - lipgloss.Width("… "+barEssentialHints) - 2
+	if statusRoom < 1 {
+		status = ""
+	} else if lipgloss.Width(status) > statusRoom {
+		status = truncToWidth(status, statusRoom)
+	}
+	if status == "" {
+		bar := renderKeyBar(fitHintLine(hints, width), width)
+		if colorOn() {
+			return bar
+		}
+		// renderKeyBar does not pad under Ascii; the bar must still be width columns.
+		return bar + strings.Repeat(" ", max(width-lipgloss.Width(bar), 0))
+	}
+	left := renderKeyBar(fitHintLine(hints, width-lipgloss.Width(status)-2), 0)
+	gap := strings.Repeat(" ", max(width-lipgloss.Width(left)-lipgloss.Width(status), 0))
+	if colorOn() {
+		gap = styleBar.Render(gap)
+	}
+	return left + gap + status
 }
 
 // fitFlashLine bounds a full-width flash to the terminal, truncating from the

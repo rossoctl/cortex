@@ -43,21 +43,23 @@ func fullEvent() pipeline.SessionEvent {
 			// is ~190KB while the completion it produced is a couple of KB. A
 			// fixture with those two the same size makes the projection look 3x
 			// rather than the ~163x it measures against a live proxy.
-			Messages:         bigConversation(24, 8192),
-			ToolResults:      []pipeline.InferenceToolResult{{ToolUseID: "toolu_1", Content: strings.Repeat("r", 4096)}},
-			HistoryToolCalls: []pipeline.InferenceToolCall{{ID: "toolu_1", Name: "Bash", Arguments: strings.Repeat("a", 1024)}},
-			Tools:            []pipeline.InferenceTool{{Name: "search"}},
-			AgentRole:        pipeline.AgentRoleMain,
-			Completion:       strings.Repeat("y", 2048),
-			ToolCalls:        []pipeline.InferenceToolCall{{Name: "search"}},
-			PromptTokens:     100,
-			CompletionTokens: 50,
-			TotalTokens:      150,
-			InputTokens:      90,
-			CacheReadTokens:  10,
-			OutputTokens:     50,
-			PresentKinds:     9,
-			FinishReason:     "stop",
+			Messages:           bigConversation(24, 8192),
+			ToolResults:        []pipeline.InferenceToolResult{{ToolUseID: "toolu_1", Content: strings.Repeat("r", 4096)}},
+			HistoryToolCalls:   []pipeline.InferenceToolCall{{ID: "toolu_1", Name: "Bash", Arguments: strings.Repeat("a", 1024)}},
+			Tools:              []pipeline.InferenceTool{{Name: "search"}},
+			AgentRole:          pipeline.AgentRoleMain,
+			Completion:         strings.Repeat("y", 2048),
+			ToolCalls:          []pipeline.InferenceToolCall{{Name: "search"}},
+			PromptTokens:       100,
+			CompletionTokens:   50,
+			TotalTokens:        150,
+			InputTokens:        90,
+			CacheReadTokens:    10,
+			CacheWriteTokens:   6,
+			CacheWrite1hTokens: 4,
+			OutputTokens:       50,
+			PresentKinds:       9,
+			FinishReason:       "stop",
 			// Set only when a plugin changed the model; differs from Model on purpose.
 			RequestedModel:   "claude-opus-5-5",
 			ServedModel:      "bedrock/us.anthropic.claude-opus-5-5",
@@ -101,6 +103,7 @@ func fullEvent() pipeline.SessionEvent {
 		ParentSession: "s-parent",
 		ParentProject: "~/src/parent",
 		Source:        "imported:claude-code",
+		NoRecord:      true,
 	}
 }
 
@@ -241,6 +244,11 @@ func TestSummarizeEvent_DropsPayloadsKeepsTimelineFields(t *testing.T) {
 	if got.Source != full.Source {
 		t.Errorf("source = %q, want %q", got.Source, full.Source)
 	}
+	// noRecord is kept for the same reason: a bool that marks a row of a session the archive
+	// withholds (#1923).
+	if got.NoRecord != full.NoRecord {
+		t.Errorf("noRecord = %v, want %v", got.NoRecord, full.NoRecord)
+	}
 	if got.Direction != full.Direction || got.Phase != full.Phase {
 		t.Error("direction/phase did not survive")
 	}
@@ -261,6 +269,8 @@ func TestSummarizeEvent_DropsPayloadsKeepsTimelineFields(t *testing.T) {
 		{"totalTokens", got.Inference.TotalTokens, full.Inference.TotalTokens},
 		{"inputTokens", got.Inference.InputTokens, full.Inference.InputTokens},
 		{"cacheReadTokens", got.Inference.CacheReadTokens, full.Inference.CacheReadTokens},
+		{"cacheWriteTokens", got.Inference.CacheWriteTokens, full.Inference.CacheWriteTokens},
+		{"cacheWrite1hTokens", got.Inference.CacheWrite1hTokens, full.Inference.CacheWrite1hTokens},
 		{"outputTokens", got.Inference.OutputTokens, full.Inference.OutputTokens},
 	} {
 		if tc.got != tc.want {
@@ -450,9 +460,11 @@ func TestSummarizeEvent_ShapeIsGuarded(t *testing.T) {
 		// so the struct copy keeps it; asserted above.
 		// 36 since Source, TIMELINE data: agentop marks an imported row by it (#1871). A
 		// scalar, so the struct copy keeps it; asserted above.
-		// 38 since ParentSession and ParentProject, TIMELINE data: a reader files the row
-		// under RollupProject (#1991). Scalars, so the struct copy keeps them; asserted above.
-		{"SessionEvent", reflect.TypeOf(pipeline.SessionEvent{}), 38},
+		// 37 and 38 since ParentSession and ParentProject, TIMELINE data: a reader files the
+		// row under RollupProject (#1991). Scalars, so the struct copy keeps them; asserted above.
+		// 39 since NoRecord, TIMELINE data: it marks a row of a withheld session (#1923). A
+		// scalar, so the struct copy keeps it; asserted above.
+		{"SessionEvent", reflect.TypeOf(pipeline.SessionEvent{}), 39},
 		// 25 since AgentRole, which is TIMELINE data: agentop's CONTEXT gauge reads it on every
 		// row the timeline serves. It needs no assertion of its own in the projection test
 		// beyond the equality one there — a scalar survives the struct copy, unlike the two
@@ -469,7 +481,9 @@ func TestSummarizeEvent_ShapeIsGuarded(t *testing.T) {
 		// MessageCount and ToolCount: recorded before ToolCalls is dropped, because
 		// core/sessionexport's content-free record carries a tool-call figure and len() on a
 		// nilled slice reported absence for every projected row. Kept; asserted above.
-		{"InferenceExtension", reflect.TypeOf(pipeline.InferenceExtension{}), 36},
+		// 37 since CacheWrite1hTokens, the 1h part of CacheWriteTokens: a token count the
+		// cost of a row is priced from, so TIMELINE data like the others. Kept; asserted above.
+		{"InferenceExtension", reflect.TypeOf(pipeline.InferenceExtension{}), 37},
 		{"A2AExtension", reflect.TypeOf(pipeline.A2AExtension{}), 11},
 		{"MCPExtension", reflect.TypeOf(pipeline.MCPExtension{}), 6},
 	} {

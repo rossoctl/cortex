@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -69,6 +70,9 @@ var setupConfirm = func(w io.Writer) bool {
 	return setupConfirmFrom(tty, w)
 }
 
+// setupNow is the clock ready in is measured on. A var so a test can set the time.
+var setupNow = time.Now
+
 // setupAnimate reports whether the screen animates on w: on a terminal. A var for
 // the reason uninstallAnimate gives.
 var setupAnimate = isTerminal
@@ -77,6 +81,27 @@ var setupAnimate = isTerminal
 // the terminal, which stand in for setup's header and its ✓ downloaded row. An
 // environment variable, because the handoff flags are frozen.
 const installerDrewEnv = "CORTEX_INSTALLER_DREW"
+
+// callerStartedEnv is when the command that runs setup started, in Unix seconds:
+// install.sh, agentop update or make dev-install. ready in then counts the download or
+// the build too. An environment variable for the reason installerDrewEnv gives.
+const callerStartedEnv = "CORTEX_SETUP_STARTED"
+
+// callerStarted reads callerStartedEnv and removes it, so nothing setup starts takes
+// it. A value that does not parse or is in the future is ignored.
+func callerStarted() (time.Time, bool) {
+	v, set := os.LookupEnv(callerStartedEnv)
+	if !set {
+		return time.Time{}, false
+	}
+	_ = os.Unsetenv(callerStartedEnv)
+	// shortcut: whole seconds, so ready in can be up to 1s high; take a fraction if a caller can give one.
+	secs, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || time.Unix(secs, 0).After(setupNow()) {
+		return time.Time{}, false
+	}
+	return time.Unix(secs, 0), true
+}
 
 // setupSignals is the channel Ctrl-C and SIGTERM arrive on, and the func that
 // stops them arriving. A var so tests can send one without signalling themselves.
@@ -187,6 +212,7 @@ func runSetup(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	env.argv = append([]string{os.Args[0], "setup"}, args...)
+	callerAt, fromCaller := callerStarted()
 	ui := checklist.New(stdout, setupAnimate(stdout))
 	defer ui.Close()
 
@@ -263,6 +289,10 @@ func runSetup(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
+	var promptAt time.Time // read only when fromCaller: the test clock moves at each read
+	if fromCaller {
+		promptAt = setupNow()
+	}
 	if !opts.yes {
 		ui.Consent(consentItems(planned))
 		ui.Blank()
@@ -293,15 +323,21 @@ func runSetup(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// ready in is the time the changes took, from here: not the time spent reading
-	// the list of them at the prompt.
-	started := time.Now()
+	// the list of them at the prompt. From callerAt, less that time, when a caller
+	// said when it started.
+	started := setupNow()
 	if !applySteps(env, ui, planned, sigs) {
 		return 1
 	}
 	for _, f := range env.onSuccess {
 		f()
 	}
-	printSetupEnding(env, ui, time.Since(started))
+	now := setupNow()
+	took := now.Sub(started)
+	if fromCaller {
+		took = now.Sub(callerAt) - started.Sub(promptAt)
+	}
+	printSetupEnding(env, ui, took)
 	return 0
 }
 

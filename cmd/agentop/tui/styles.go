@@ -2,7 +2,11 @@
 package tui
 
 import (
+	"regexp"
+	"strings"
+
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/rossoctl/cortex/cmd/agentop/tui/table"
 )
@@ -34,6 +38,15 @@ var (
 	// Mid-tone in both themes for the same reason colorOnSeries is inverted relative to the
 	// palette — it has to sit under default-foreground text without hiding it.
 	colorSelectedBg = lipgloss.AdaptiveColor{Light: "#D7D7FF", Dark: "#303050"}
+
+	colorDim     = lipgloss.AdaptiveColor{Light: "#9CA3AF", Dark: "#4B5563"} // dividers, " · ", "—"
+	colorZebraBg = lipgloss.AdaptiveColor{Light: "#F3F4F6", Dark: "#15151C"} // every second table row
+	colorChipBg  = lipgloss.AdaptiveColor{Light: "#E5E7EB", Dark: "#374151"} // key chip ground
+	colorChipFg  = lipgloss.AdaptiveColor{Light: "#111827", Dark: "#F3F4F6"} // key chip text
+
+	colorBarBg     = lipgloss.AdaptiveColor{Light: "#F3F4F6", Dark: "#1F2937"} // the key bar, the last line
+	colorBarChipBg = lipgloss.AdaptiveColor{Light: "#D1D5DB", Dark: "#4B5563"} // a key chip on the bar
+	colorBarChipFg = lipgloss.AdaptiveColor{Light: "#111827", Dark: "#F9FAFB"} // its text
 )
 
 var (
@@ -43,7 +56,21 @@ var (
 	styleWarn   = lipgloss.NewStyle().Foreground(colorWarn)
 	styleError  = lipgloss.NewStyle().Foreground(colorError)
 	styleMuted  = lipgloss.NewStyle().Foreground(colorMuted)
-	styleBorder = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colorMuted)
+	styleBorder = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colorAccent)
+
+	styleNone       = lipgloss.NewStyle()
+	styleDim        = lipgloss.NewStyle().Foreground(colorDim)
+	styleBold       = lipgloss.NewStyle().Bold(true)
+	styleChip       = lipgloss.NewStyle().Foreground(colorChipFg).Background(colorChipBg)
+	styleBar        = lipgloss.NewStyle().Background(colorBarBg)
+	styleBarLabel   = lipgloss.NewStyle().Foreground(colorMuted).Background(colorBarBg)
+	styleBarChip    = lipgloss.NewStyle().Foreground(colorBarChipFg).Background(colorBarChipBg)
+	styleSeg        = lipgloss.NewStyle().Foreground(colorOnSeries).Background(colorAccent).Bold(true)
+	styleAccent     = lipgloss.NewStyle().Foreground(colorAccent)
+	styleAccentBold = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
+	styleMutedBold  = lipgloss.NewStyle().Foreground(colorMuted).Bold(true)
+	styleInbound    = lipgloss.NewStyle().Foreground(colorInbound)
+	styleOutbound   = lipgloss.NewStyle().Foreground(colorOutbound)
 
 	// styleMatch and styleCurrentMatch draw the characters a search matched: a background,
 	// so a match reads the same whatever ink the text under it has (the JSON colorizer's,
@@ -93,10 +120,16 @@ var (
 //
 // ONE STYLE FOR EVERY TABLE. Scoping this to the sessions table would have left one pane
 // tinting its selection and five inverting theirs.
+//
+// Per-column color now exists, and it keeps the argument above: the table applies a pane's
+// cell style after it cuts the cell to width, and a cell style sets only ink and bold, never
+// Reverse or a background. So the gauge's filled blocks keep their ink (accent) on the tinted
+// row, and its brackets are dim through Glyphs. Zebra rows (Alt) are a background on rows the
+// cursor is not on, and the bar (Bar) replaces the cursor row's blank left pad.
 func tableStyles() table.Styles {
 	s := table.DefaultStyles()
 	s.Header = s.Header.
-		Foreground(colorAccent).
+		Foreground(colorMuted).
 		BorderForeground(colorMuted).
 		Bold(true)
 	s.Selected = lipgloss.NewStyle().Bold(true).Background(colorSelectedBg)
@@ -107,5 +140,270 @@ func tableStyles() table.Styles {
 	s.Match = styleMatch
 	s.CurrentMatch = styleCurrentMatch
 	s.Marked = lipgloss.NewStyle().Foreground(colorWarn)
+	s.Alt = lipgloss.NewStyle().Background(colorZebraBg)
+	s.Bar = lipgloss.NewStyle().Foreground(colorAccent)
+	s.Glyphs = tableGlyphs
 	return s
+}
+
+// tableGlyphs are the runes drawn in their own ink inside a styled cell: the CTX gauge's
+// ░ track and the BYTES arrows dim, a tool row's ┗⚒/┣⚒ mark and the subagent │ dim, the agents
+// pane's open marks accent.
+var tableGlyphs = map[rune]lipgloss.Style{
+	'░': styleDim, '↑': styleDim, '↓': styleDim,
+	'┗': styleDim, '┣': styleDim, '⚒': styleDim, '│': styleDim,
+	'▸': styleAccent, '▾': styleAccent,
+}
+
+// cellKind is the style a pane gives one of its columns.
+type cellKind int
+
+const (
+	cellPlain cellKind = iota
+	cellMuted
+	cellBold
+	cellOK
+	cellAccent
+)
+
+var cellKindStyles = [...]lipgloss.Style{
+	cellPlain: styleNone, cellMuted: styleMuted, cellBold: styleBold, cellOK: styleOK, cellAccent: styleAccent,
+}
+
+// kindsCellStyle styles each cell by its column's kind, kinds parallel to the table's columns.
+func kindsCellStyle(kinds []cellKind) table.CellStyleFunc {
+	return dashDim(func(_ int, _ table.Row, col int) lipgloss.Style {
+		if col < len(kinds) {
+			return cellKindStyles[kinds[col]]
+		}
+		return styleNone
+	})
+}
+
+// pickerCellStyle is the Namespaces and Pods tables' style: the name bold, the rest muted.
+var pickerCellStyle = dashDim(func(_ int, _ table.Row, col int) lipgloss.Style {
+	if col == 0 {
+		return styleBold
+	}
+	return styleMuted
+})
+
+// colorOn reports whether lipgloss emits color. Under Ascii (what go test gets) every
+// helper below returns exactly what the code drew before it existed.
+func colorOn() bool { return lipgloss.ColorProfile() != termenv.Ascii }
+
+// hintChipRe is a key hint: [x] with x non-empty and no space or bracket in it.
+var hintChipRe = regexp.MustCompile(`\[[^\[\]\s]+\]`)
+
+type hintPart struct {
+	text string
+	chip bool // text is the key, brackets removed
+}
+
+// splitHintChips splits a plain hint line into key hints and the text between them.
+// An unclosed "[" (a hint fitHintLine cut in half) stays plain text.
+func splitHintChips(s string) []hintPart {
+	var parts []hintPart
+	last := 0
+	for _, loc := range hintChipRe.FindAllStringIndex(s, -1) {
+		if loc[0] > last {
+			parts = append(parts, hintPart{text: s[last:loc[0]]})
+		}
+		parts = append(parts, hintPart{text: s[loc[0]+1 : loc[1]-1], chip: true})
+		last = loc[1]
+	}
+	if last < len(s) {
+		parts = append(parts, hintPart{text: s[last:]})
+	}
+	return parts
+}
+
+// renderHints styles a hint line that is already cut to width. With color, each [x]
+// becomes the chip " x " (same width); the rest is drawn in the hint style.
+func renderHints(fitted string) string {
+	if !colorOn() {
+		return styleHint.Render(fitted)
+	}
+	return chipHints(fitted, styleHint, styleChip)
+}
+
+func chipHints(fitted string, label, chip lipgloss.Style) string {
+	var b strings.Builder
+	for _, p := range splitHintChips(fitted) {
+		if p.chip {
+			b.WriteString(chip.Render(" " + p.text + " "))
+		} else {
+			b.WriteString(label.Render(p.text))
+		}
+	}
+	return b.String()
+}
+
+// renderTrailingHints is renderHints for a line whose tail is the key hints keys and whose head
+// is other text, such as an error or a search status, that keeps its brackets.
+func renderTrailingHints(fitted, keys string) string {
+	if !colorOn() {
+		return styleHint.Render(fitted)
+	}
+	return trailingChipHints(fitted, keys, styleHint, styleChip)
+}
+
+func trailingChipHints(fitted, keys string, label, chip lipgloss.Style) string {
+	if head, ok := strings.CutSuffix(fitted, keys); ok {
+		if head == "" {
+			return chipHints(keys, label, chip)
+		}
+		return label.Render(head) + chipHints(keys, label, chip)
+	}
+	// The fit cut into the keys, so no other text is left.
+	if strings.HasSuffix(keys, strings.TrimPrefix(fitted, "… ")) {
+		return chipHints(fitted, label, chip)
+	}
+	return label.Render(fitted)
+}
+
+// renderKeyBar is renderHints for the last line of the screen: with color, the line is a
+// shaded bar padded to width (no pad when width <= 0). Under Ascii it is renderHints.
+func renderKeyBar(fitted string, width int) string {
+	if !colorOn() {
+		return renderHints(fitted)
+	}
+	return padBar(chipHints(fitted, styleBarLabel, styleBarChip), width)
+}
+
+func padBar(line string, width int) string {
+	if pad := width - lipgloss.Width(line); pad > 0 {
+		line += styleBar.Render(strings.Repeat(" ", pad))
+	}
+	return line
+}
+
+// titleMarkRe finds the parts of a title that are not bold default ink.
+var titleMarkRe = regexp.MustCompile(` · |https?://\S+|\([^()]*\)`)
+
+// renderTitle styles a pane title without changing its text: a leading "agentop" in
+// accent bold, " · " dim, URLs and (…) groups muted, the rest bold.
+func renderTitle(title string) string { return renderTitleInk(title, "", styleNone) }
+
+// renderTitleInk is renderTitle with the first copy of mark in bold ink. An empty
+// mark, or one that is not in the title, leaves the title as renderTitle styles it.
+func renderTitleInk(title, mark string, ink lipgloss.Style) string {
+	if !colorOn() {
+		return styleTitle.Render(title)
+	}
+	var b strings.Builder
+	rest := title
+	if r, ok := strings.CutPrefix(rest, "agentop"); ok {
+		b.WriteString(styleAccentBold.Render("agentop"))
+		rest = r
+	}
+	if i := strings.Index(rest, mark); mark != "" && i >= 0 {
+		writeTitleSegments(&b, rest[:i])
+		b.WriteString(ink.Bold(true).Render(mark))
+		rest = rest[i+len(mark):]
+	}
+	writeTitleSegments(&b, rest)
+	return b.String()
+}
+
+// writeTitleSegments writes s with " · " dim, URLs and (…) groups muted, the rest bold.
+func writeTitleSegments(b *strings.Builder, s string) {
+	last := 0
+	for _, loc := range titleMarkRe.FindAllStringIndex(s, -1) {
+		if loc[0] > last {
+			b.WriteString(styleBold.Render(s[last:loc[0]]))
+		}
+		m := s[loc[0]:loc[1]]
+		if m == " · " {
+			b.WriteString(styleDim.Render(m))
+		} else {
+			b.WriteString(styleMuted.Render(m))
+		}
+		last = loc[1]
+	}
+	if last < len(s) {
+		b.WriteString(styleBold.Render(s[last:]))
+	}
+}
+
+// colorGroup is the meaning a cell's value carries, which picks its ink.
+type colorGroup int
+
+const (
+	groupDefault colorGroup = iota
+	groupMuted
+	groupOK
+	groupWarn
+	groupError
+	groupAccent
+	groupDim
+)
+
+// statusGroup classifies a STATUS cell. Cells are aligned, so spaces are trimmed first.
+func statusGroup(cell string) colorGroup {
+	v := strings.TrimSpace(cell)
+	switch v {
+	case "—":
+		return groupDim
+	case "ok":
+		return groupOK
+	case "running":
+		return groupWarn
+	case "lost", "error":
+		return groupError
+	}
+	if len(v) == 3 && strings.Trim(v, "0123456789") == "" {
+		switch v[0] {
+		case '2':
+			return groupOK
+		case '4':
+			return groupWarn
+		case '5':
+			return groupError
+		}
+	}
+	return groupMuted
+}
+
+// actionGroup classifies an ACTION cell. A trailing "*" marks a shadow verdict of the
+// same verb, so it takes the verb's group: a would-be deny still reads as a deny.
+func actionGroup(cell string) colorGroup {
+	switch strings.TrimSuffix(strings.TrimSpace(cell), "*") {
+	case "modify":
+		return groupAccent
+	case "deny":
+		return groupError
+	case "tunnel", "—":
+		return groupDim
+	}
+	return groupMuted
+}
+
+// groupStyle returns the package-level style for a group.
+func groupStyle(g colorGroup) lipgloss.Style {
+	switch g {
+	case groupMuted:
+		return styleMuted
+	case groupOK:
+		return styleOK
+	case groupWarn:
+		return styleWarn
+	case groupError:
+		return styleError
+	case groupAccent:
+		return styleAccent
+	case groupDim:
+		return styleDim
+	}
+	return styleNone
+}
+
+// dashDim draws a cell whose value is "—" (no value) dim, and every other cell with f.
+func dashDim(f table.CellStyleFunc) table.CellStyleFunc {
+	return func(r int, row table.Row, col int) lipgloss.Style {
+		if col < len(row) && strings.TrimSpace(row[col]) == "—" {
+			return styleDim
+		}
+		return f(r, row, col)
+	}
 }

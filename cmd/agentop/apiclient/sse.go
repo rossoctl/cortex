@@ -93,7 +93,7 @@ func (c *Client) streamLoop(ctx context.Context, filter string, out chan<- Strea
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(wait):
+		case <-c.reconnectAfter(wait):
 		}
 	}
 }

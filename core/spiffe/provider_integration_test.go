@@ -6,7 +6,6 @@ import (
 	"context"
 	"os"
 	"testing"
-	"time"
 )
 
 // TestProvider_BasicLifecycle exercises NewProvider against a real
@@ -20,8 +19,7 @@ func TestProvider_BasicLifecycle(t *testing.T) {
 		t.Skip("SPIFFE_ENDPOINT_SOCKET not set; skipping integration test")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	dir := t.TempDir()
 	p, err := NewProvider(ctx, ProviderConfig{
@@ -58,10 +56,10 @@ func TestProvider_BasicLifecycle(t *testing.T) {
 
 // TestProvider_AgentUnreachable verifies NewProvider returns an error
 // (rather than blocking forever) when the socket path doesn't exist
-// and the context has a short deadline.
+// and the context is done.
 func TestProvider_AgentUnreachable(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 
 	_, err := NewProvider(ctx, ProviderConfig{
 		SocketPath:  "unix:///nonexistent/spire-agent.sock",

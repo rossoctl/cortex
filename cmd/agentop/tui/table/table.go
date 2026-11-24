@@ -24,16 +24,21 @@
 // styled, so a highlight is applied to the truncated text — and a match the truncation cut
 // off is shown by highlighting the "…" that replaced it. Every piece of a row carries the
 // row's style itself, rather than the row being wrapped in it once: a highlight ends in a
-// reset, and a reset inside a wrapped row ends the row's style with it.
+// reset, and a reset inside a wrapped row ends the row's style with it. Also added: a
+// per-cell style hook (WithCellStyle, SetCellStyle) whose ink a rune in Styles.Glyphs
+// overrides, zebra rows (Styles.Alt) and a selection bar (Styles.Bar), all drawn after a
+// cell is cut to width.
 package table
 
 import (
 	"strings"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
+	"github.com/muesli/termenv"
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
@@ -52,6 +57,7 @@ type Model struct {
 	cursor int
 	focus  bool
 	styles Styles
+	cell   CellStyleFunc
 
 	// query is the search the rows are matched against, full the pane's full cell values
 	// for it (nil when the rows hold them already), and hits the rows that matched, by
@@ -67,6 +73,10 @@ type Model struct {
 	start    int
 	end      int
 }
+
+// CellStyleFunc gives the style of cell col of row, the row at index r: foreground and bold
+// only. A style with neither leaves the cell as it is drawn without a hook. Not upstream.
+type CellStyleFunc func(r int, row Row, col int) lipgloss.Style
 
 // Row represents one line in the table.
 type Row []string
@@ -165,6 +175,13 @@ type Styles struct {
 	Match        lipgloss.Style
 	CurrentMatch lipgloss.Style
 	Marked       lipgloss.Style
+	// Alt is the style of every second row (odd indexes), used when it sets a background.
+	// Bar is the ink of a "▌" drawn in the cursor row's left pad, under a color profile.
+	// Glyphs draws each listed rune in its own style inside a cell the hook styles. Not
+	// upstream: see the package doc.
+	Alt    lipgloss.Style
+	Bar    lipgloss.Style
+	Glyphs map[rune]lipgloss.Style
 }
 
 // DefaultStyles returns a set of default style definitions for this table.
@@ -249,6 +266,19 @@ func WithStyles(s Styles) Option {
 	return func(m *Model) {
 		m.styles = s
 	}
+}
+
+// WithCellStyle sets the per-cell style hook. Not upstream.
+func WithCellStyle(f CellStyleFunc) Option {
+	return func(m *Model) {
+		m.cell = f
+	}
+}
+
+// SetCellStyle sets the per-cell style hook; nil removes it. It does not draw: the next
+// SetRows, SetColumns or UpdateViewport draws with it. Not upstream.
+func (m *Model) SetCellStyle(f CellStyleFunc) {
+	m.cell = f
 }
 
 // WithKeyMap sets the key map.
@@ -450,22 +480,22 @@ func (m *Model) cellSpans(r, i int, text string) []find.Range {
 	return nil
 }
 
-// paint draws text in style, with each span in match.
-func paint(text string, spans []find.Range, style, match lipgloss.Style) string {
+// paint draws text with draw, with each span in match.
+func paint(text string, spans []find.Range, draw func(string) string, match lipgloss.Style) string {
 	if len(spans) == 0 {
-		return style.Render(text)
+		return draw(text)
 	}
 	var b strings.Builder
 	at := 0
 	for _, sp := range spans {
 		if sp.Start > at {
-			b.WriteString(style.Render(ansi.Cut(text, at, sp.Start)))
+			b.WriteString(draw(ansi.Cut(text, at, sp.Start)))
 		}
 		b.WriteString(match.Render(ansi.Cut(text, sp.Start, sp.End)))
 		at = sp.End
 	}
 	if w := ansi.StringWidth(text); at < w {
-		b.WriteString(style.Render(ansi.Cut(text, at, w)))
+		b.WriteString(draw(ansi.Cut(text, at, w)))
 	}
 	return b.String()
 }
@@ -597,14 +627,8 @@ func (m *Model) renderRow(r int) string {
 		}
 	}
 
-	row, match := lipgloss.NewStyle(), m.styles.Match
-	switch {
-	case r == m.cursor:
-		row, match = m.styles.Selected, m.styles.CurrentMatch
-	case spans != nil && !lit:
-		row = m.styles.Marked
-	}
-	match = match.Inherit(row)
+	row, match := m.rowStyles(r, spans != nil && !lit)
+	barred := r == m.cursor && m.barShown()
 
 	s := make([]string, 0, len(m.cols))
 	for i := range m.rows[r] {
@@ -615,13 +639,223 @@ func (m *Model) renderRow(r int) string {
 		if spans != nil {
 			sp = spans[i]
 		}
-		box := lipgloss.NewStyle().Width(widths[i]).MaxWidth(widths[i]).Inline(true).Inherit(row)
-		// Filled to the column before it is painted, so the text and the padding after it are
-		// one run in the row's style rather than a run and a pad lipgloss styles apart.
-		filled := runewidth.FillRight(texts[i], widths[i])
-		s = append(s, m.styles.Cell.Inherit(row).Render(box.Render(paint(filled, sp, row, match))))
+		s = append(s, m.renderCell(r, i, texts[i], widths[i], sp, row, match, barred))
+		barred = false
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, s...)
+	line := lipgloss.JoinHorizontal(lipgloss.Top, s...)
+	if m.cell != nil {
+		line = mergeRuns(line)
+	}
+	return m.zebra(r, spans != nil && !lit, line)
+}
+
+// zebra draws line, a row drawn with no row style, on the Alt background when row r is a
+// zebra row: the background opens the line, and each reset is cut to what keeps it. A
+// foreground-only run closes with its own off codes, any other run with a reset and the
+// background again. One background on the joined row costs far fewer bytes than one on
+// every nested cell run.
+func (m *Model) zebra(r int, marked bool, line string) string {
+	const reset = "\x1b[0m"
+	if r == m.cursor || marked || r%2 == 0 || !hasColor(m.styles.Alt.GetBackground()) {
+		return line
+	}
+	bg, _, _ := strings.Cut(m.styles.Alt.Render(" "), " ")
+	if bg == "" {
+		return line
+	}
+	var b strings.Builder
+	b.Grow(len(line) + 2*len(bg))
+	b.WriteString(bg)
+	for {
+		i := strings.Index(line, reset)
+		if i < 0 {
+			break
+		}
+		closer := reset + bg
+		if p := strings.LastIndex(line[:i], "\x1b["); p >= 0 {
+			if q := strings.IndexByte(line[p:i], 'm'); q > 0 {
+				if c, ok := fgCloser(line[p+2 : p+q]); ok {
+					closer = c
+				}
+			}
+		}
+		b.WriteString(line[:i])
+		b.WriteString(closer)
+		line = line[i+len(reset):]
+	}
+	b.WriteString(line)
+	b.WriteString(reset)
+	return b.String()
+}
+
+// mergeRuns joins two runs in one foreground-only SGR that only spaces part:
+// "S a RESET spaces S b" becomes "S a spaces b". A space in a foreground ink looks the
+// same as a plain space, so the text and its width do not change, and each draw of the
+// page measures fewer escape bytes. A run with a background, underline or reverse is
+// never joined: the spaces would show it.
+func mergeRuns(line string) string {
+	const reset = "\x1b[0m"
+	if strings.Count(line, reset) < 2 {
+		return line
+	}
+	var b strings.Builder
+	b.Grow(len(line))
+	open := "" // the foreground-only SGR the text written since the last reset is in
+	for {
+		i := strings.Index(line, reset)
+		if i < 0 {
+			break
+		}
+		if p := strings.LastIndex(line[:i], "\x1b["); p >= 0 {
+			open = ""
+			if q := strings.IndexByte(line[p:i], 'm'); q > 0 && fgOnly(line[p+2:p+q]) {
+				open = line[p : p+q+1]
+			}
+		}
+		j := i + len(reset)
+		k := j
+		for k < len(line) && line[k] == ' ' {
+			k++
+		}
+		if open != "" && strings.HasPrefix(line[k:], open) {
+			b.WriteString(line[:i])
+			b.WriteString(line[j:k])
+			line = line[k+len(open):]
+			continue
+		}
+		b.WriteString(line[:j])
+		line = line[j:]
+		open = ""
+	}
+	b.WriteString(line)
+	return b.String()
+}
+
+// fgOnly is whether the SGR parameters params set only bold, faint, italic or a
+// foreground color.
+func fgOnly(params string) bool {
+	_, ok := fgCloser(params)
+	return ok
+}
+
+// fgCloser is the SGR that turns off what params set, and whether params set only bold,
+// faint, italic or a foreground color.
+func fgCloser(params string) (string, bool) {
+	weight, italic := false, false
+	ps := strings.Split(params, ";")
+	for i := 0; i < len(ps); i++ {
+		switch p := ps[i]; {
+		case p == "1", p == "2":
+			weight = true
+		case p == "3":
+			italic = true
+		case p == "39":
+		case len(p) == 2 && (p[0] == '3' || p[0] == '9') && p[1] >= '0' && p[1] <= '7':
+		case p == "38" && i+1 < len(ps) && ps[i+1] == "5":
+			i += 2
+		case p == "38" && i+1 < len(ps) && ps[i+1] == "2":
+			i += 4
+		default:
+			return "", false
+		}
+	}
+	off := "\x1b["
+	if weight {
+		off += "22;"
+	}
+	if italic {
+		off += "23;"
+	}
+	return off + "39m", true
+}
+
+// renderCell draws one cell, text already cut to width. With no cell style, the text is
+// filled to the column before it is painted, so the text and the padding after it are one
+// run in the row's style rather than a run and a pad lipgloss styles apart. With one, the
+// text is drawn in the row style over the cell style, with glyphs and matches over that,
+// and the pad is a run of its own in the row style. barred draws the selection bar in the
+// cell's left padding.
+func (m *Model) renderCell(r, i int, text string, width int, sp []find.Range, row, match lipgloss.Style, barred bool) string {
+	var body string
+	if cs, ok := m.cellStyle(r, i); ok {
+		cell := row.Inherit(cs)
+		body = paint(text, sp, m.glyphs(cell, row), match) +
+			row.Render(strings.Repeat(" ", max(width-ansi.StringWidth(text), 0)))
+	} else {
+		body = paint(runewidth.FillRight(text, width), sp, render(row), match)
+	}
+	box := lipgloss.NewStyle().Width(width).MaxWidth(width).Inline(true).Inherit(row)
+	pad := m.styles.Cell.Inherit(row)
+	if barred {
+		return m.styles.Bar.Inherit(row).Render("▌") + pad.PaddingLeft(0).Render(box.Render(body))
+	}
+	return pad.Render(box.Render(body))
+}
+
+// rowStyles is the style of row r and of its matches: the cursor's, a marked row's, or
+// none. zebra adds the Alt background after the row is drawn.
+func (m *Model) rowStyles(r int, marked bool) (row, match lipgloss.Style) {
+	row, match = lipgloss.NewStyle(), m.styles.Match
+	switch {
+	case r == m.cursor:
+		row, match = m.styles.Selected, m.styles.CurrentMatch
+	case marked:
+		row = m.styles.Marked
+	}
+	return row, match.Inherit(row)
+}
+
+// cellStyle is the hook's style for cell i of row r, and whether it applies: it sets a
+// foreground or bold.
+func (m *Model) cellStyle(r, i int) (lipgloss.Style, bool) {
+	if m.cell == nil {
+		return lipgloss.Style{}, false
+	}
+	cs := m.cell(r, m.rows[r], i)
+	return cs, hasColor(cs.GetForeground()) || cs.GetBold()
+}
+
+// barShown is whether the cursor row gets the selection bar: under a color profile, with a
+// Bar ink, and with a left cell pad for the bar to replace, so the width stays the same.
+func (m *Model) barShown() bool {
+	return lipgloss.ColorProfile() != termenv.Ascii && hasColor(m.styles.Bar.GetForeground()) &&
+		m.styles.Cell.GetPaddingLeft() > 0
+}
+
+func render(s lipgloss.Style) func(string) string {
+	return func(text string) string { return s.Render(text) }
+}
+
+func hasColor(c lipgloss.TerminalColor) bool {
+	_, none := c.(lipgloss.NoColor)
+	return !none
+}
+
+// glyphs draws text in cell, except that each rune in Styles.Glyphs is drawn in its glyph
+// style under the row style.
+func (m *Model) glyphs(cell, row lipgloss.Style) func(string) string {
+	if len(m.styles.Glyphs) == 0 {
+		return render(cell)
+	}
+	return func(text string) string {
+		var b strings.Builder
+		from := 0
+		for at, c := range text {
+			g, ok := m.styles.Glyphs[c]
+			if !ok {
+				continue
+			}
+			if from < at {
+				b.WriteString(cell.Render(text[from:at]))
+			}
+			b.WriteString(row.Inherit(g).Render(string(c)))
+			from = at + utf8.RuneLen(c)
+		}
+		if from < len(text) {
+			b.WriteString(cell.Render(text[from:]))
+		}
+		return b.String()
+	}
 }
 
 // cellWidths gives the text width of each of a row's n cells. The cells of a full row get
@@ -667,18 +901,8 @@ func (m *Model) renderSectionRow(r int) string {
 		lit = len(spans) > 0
 	}
 
-	row, match := lipgloss.NewStyle(), m.styles.Match
-	switch {
-	case r == m.cursor:
-		row, match = m.styles.Selected, m.styles.CurrentMatch
-	case spans != nil && !lit:
-		row = m.styles.Marked
-	}
-	match = match.Inherit(row)
-
-	filled := runewidth.FillRight(text, total)
-	box := lipgloss.NewStyle().Width(total).MaxWidth(total).Inline(true).Inherit(row)
-	return m.styles.Cell.Inherit(row).Render(box.Render(paint(filled, spans, row, match)))
+	row, match := m.rowStyles(r, spans != nil && !lit)
+	return m.zebra(r, spans != nil && !lit, m.renderCell(r, 0, text, total, spans, row, match, r == m.cursor && m.barShown()))
 }
 
 func clamp(v, low, high int) int {

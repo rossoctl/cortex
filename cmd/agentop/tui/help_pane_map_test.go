@@ -108,6 +108,13 @@ func TestHelpBody_EveryPaneSectionSpellsOutEveryDescription(t *testing.T) {
 		t.Fatalf("body has no EVERY PANE section:\n%s", body)
 	}
 	for p := paneNamespaces; p <= lastPaneID; p++ {
+		// Read each pane in EVERY PANE, one column at full width: the active pane is drawn
+		// above it, in a column of a two-column body, so its prose wraps there.
+		body := body
+		if p == paneSessions {
+			body = helpBodyLines(paneEvents, helpWide)
+		}
+		body = sectionFrom(t, body, everyPaneTitle, false)
 		g := paneKeys[p]
 		name := paneName(p)
 		if !strings.Contains(body, name) {
@@ -411,13 +418,13 @@ func TestHelpNavKeys_MoveTheOverlayOnEveryPane(t *testing.T) {
 }
 
 // And the exception the note names: with the overlay closed, usage is the one pane
-// where `b` is not paging and `g` moves nothing.
+// where the nav keys move nothing. `b` no longer changes the breakdown there (`o` does).
 func TestHelpNavKeys_NoteNamesTheOneExceptionCorrectly(t *testing.T) {
 	m := &model{pane: paneUsage, selectedSess: "s1"}
 	before := m.usage.group
 	m.handleKey(keyRune('b'))
-	if m.usage.group == before {
-		t.Errorf("`b` no longer cycles the usage breakdown — the nav note says it does")
+	if m.usage.group != before {
+		t.Errorf("`b` changed the usage breakdown; it pages on every pane, and `o` is the breakdown key")
 	}
 
 	// The note also claims g/G do nothing on usage. goTop has no case for it; assert
@@ -440,6 +447,16 @@ func TestHelpNavKeys_NoteNamesTheOneExceptionCorrectly(t *testing.T) {
 	if s.sessionsTbl.Cursor() == 0 {
 		t.Error("`f` did not page the sessions table, so the nav note's " +
 			"\"moves the pane's own list\" is wrong outside usage too")
+	}
+}
+
+// `s` was Usage's session toggle. Removed, it must do nothing there.
+func TestUsagePane_RemovedSKeyDoesNothing(t *testing.T) {
+	m := &model{pane: paneUsage, selectedSess: "s1"}
+	m.usage.session = "s1"
+	m.handleKey(keyRune('s'))
+	if m.pane != paneUsage || m.usage.session != "s1" {
+		t.Errorf("`s` on Usage changed pane %v or scope %q", m.pane, m.usage.session)
 	}
 }
 
@@ -492,5 +509,23 @@ func TestHelpBody_WrapsProseToTheGivenWidth(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// `s` on Events was the hide-passthru toggle (#2019 removed it: quiet rows show muted
+// instead). Pressing it now must change nothing: not the rows, the footer or the cursor.
+func TestEventsS_DoesNothing(t *testing.T) {
+	m := newTestEventsModel(t)
+	m.eventsTbl.SetCursor(2)
+	rows, footer, cur := len(m.visibleRows), m.helpView(), m.eventsTbl.Cursor()
+	m.handleKey(keyRune('s'))
+	if got := len(m.visibleRows); got != rows {
+		t.Errorf("`s` on Events changed the rows: %d, want %d", got, rows)
+	}
+	if got := m.helpView(); got != footer {
+		t.Errorf("`s` on Events changed the footer:\n got %q\nwant %q", got, footer)
+	}
+	if got := m.eventsTbl.Cursor(); got != cur {
+		t.Errorf("`s` on Events moved the cursor: %d, want %d", got, cur)
 	}
 }

@@ -1,8 +1,9 @@
 package usage
 
 // Cleared implements session.Clearer: every figure answerable by session id goes — each
-// session's own ring, and the session breakdown of the all-sessions ring and of every agent's.
-// Everything else stays, including the all-sessions and per-agent totals, which name no session.
+// session's own ring, and the session breakdown of the all-sessions ring and of every agent's and
+// project's. Everything else stays, including the all-sessions, per-agent and per-project totals,
+// which name no session.
 // They are the figures the cost ledger keeps on disk too, and a clear does not touch that.
 //
 // pending stays as well. It is keyed by request id and holds plugin names, not content: dropping
@@ -15,6 +16,9 @@ func (a *Aggregator) Cleared() {
 	dropSessionLabels(a.all)
 	for _, ring := range a.agents {
 		dropSessionLabels(ring)
+	}
+	for _, ring := range a.projects {
+		dropSessionLabels(ring.buckets)
 	}
 }
 

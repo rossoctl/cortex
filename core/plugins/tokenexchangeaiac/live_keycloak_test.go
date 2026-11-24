@@ -129,7 +129,7 @@ func TestLiveKeycloak(t *testing.T) {
 
 // liveHTTP bounds every setup call, so a stalled Keycloak fails the test
 // instead of hanging it until go test's own timeout.
-var liveHTTP = &http.Client{Timeout: 30 * time.Second}
+var liveHTTP = &http.Client{Timeout: 30 * time.Second} // timing: bounds calls to a live Keycloak
 
 func envOr(k, def string) string {
 	if v := os.Getenv(k); v != "" {

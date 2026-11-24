@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
 )
@@ -67,7 +68,7 @@ func TestPipelineKey_OpensFromTheSamePanesAsUsage(t *testing.T) {
 	// panes that are themselves key-opened surfaces. `P` from any of them would
 	// have to pick a pane to return to, and there is no good answer — so it does
 	// nothing, and that must stay true rather than becoming an accident.
-	for _, from := range []paneID{paneUsage, paneCatalog, panePluginDetail, panePipeline} {
+	for _, from := range []paneID{paneUsage, panePluginDetail, panePipeline} {
 		m := &model{
 			pane:               from,
 			client:             deadClient(),
@@ -122,51 +123,52 @@ func TestPipelineKey_EscReturnsToTheCallerAndKeepsTheConnection(t *testing.T) {
 }
 
 // The return pane is the pipeline's OWN field, not model.previousPane, which the
-// catalog also writes. Opening the catalog from the pipeline and backing out
+// plugin detail also writes. Opening a plugin from the pipeline and backing out
 // twice has to land where the operator started; sharing one field is the bug
 // usageState.returnPane was introduced to fix, arriving through a third door.
 //
 // STARTS FROM EVENTS, NOT SESSIONS, and that is the whole point of the test. A
-// pipeline sharing previousPane loses the caller to the catalog's write and then
+// pipeline sharing previousPane loses the caller to the detail's write and then
 // falls back — and the fallback is paneSessions, so starting from Sessions the
 // broken implementation reaches the right pane by luck and the test proves
 // nothing. Verified by mutation: with the shared field, the Sessions version of
 // this test passes and this one fails.
-func TestPipelineKey_ReturnPaneSurvivesTheCatalogClobbering(t *testing.T) {
+func TestPipelineKey_ReturnPaneSurvivesThePluginDetail(t *testing.T) {
 	m := &model{
 		pane:               paneEvents,
 		client:             deadClient(),
 		selectedSess:       "s1",
 		previousPane:       paneNone,
 		pipelineReturnPane: paneNone,
+		pipelineTbl:        newPipelineTable(),
+		pipeline:           &apiclient.PipelineView{Outbound: []apiclient.PipelinePlugin{{Name: "mcp-parser", Direction: "outbound", Position: 1}}},
 	}
-	m.handleKey(keyRune('P')) // events -> pipeline
-	m.handleKey(keyRune('C')) // pipeline -> catalog (writes previousPane)
-	if m.pane != paneCatalog {
-		t.Fatalf("precondition: `C` did not open the catalog (got %v)", m.pane)
+	m.handleKey(keyRune('P'))                   // events -> pipeline
+	m.handleKey(tea.KeyMsg{Type: tea.KeyEnter}) // pipeline -> plugin detail (writes previousPane)
+	if m.pane != panePluginDetail {
+		t.Fatalf("precondition: Enter did not open the plugin (got %v)", m.pane)
 	}
 
-	m.handleKey(tea.KeyMsg{Type: tea.KeyEsc}) // catalog -> pipeline
+	m.handleKey(tea.KeyMsg{Type: tea.KeyEsc}) // detail -> pipeline
 	if m.pane != panePipeline {
-		t.Fatalf("esc from the catalog landed on %v, want panePipeline", m.pane)
+		t.Fatalf("esc from the plugin detail landed on %v, want panePipeline", m.pane)
 	}
 	m.handleKey(tea.KeyMsg{Type: tea.KeyEsc}) // pipeline -> events
 	if m.pane == paneSessions {
-		t.Fatal("esc from the pipeline fell back to Sessions — the catalog clobbered the return pane")
+		t.Fatal("esc from the pipeline fell back to Sessions — the detail clobbered the return pane")
 	}
 	if m.pane != paneEvents {
 		t.Errorf("esc from the pipeline landed on %v, want paneEvents", m.pane)
 	}
 }
 
-// The catalog moves off `P` and onto `C`, which is the better mnemonic of the
-// two: `P` only ever fit by borrowing the "Plugin" in "plugin catalog", and the
-// pipeline has the stronger claim on the letter.
-func TestCatalogKey_MovedFromPToC(t *testing.T) {
+// The plugin catalog is the pipeline pane's "available" section now, so `C` opens
+// nothing, and `P` fetches /v1/plugins on every open to fill that section.
+func TestCatalogKey_FoldedIntoThePipeline(t *testing.T) {
 	onC := &model{pane: paneSessions, client: deadClient(), previousPane: paneNone}
 	onC.handleKey(keyRune('C'))
-	if onC.pane != paneCatalog {
-		t.Errorf("`C` opened pane %v, want paneCatalog", onC.pane)
+	if onC.pane != paneSessions {
+		t.Errorf("`C` opened pane %v; the catalog has no pane of its own any more", onC.pane)
 	}
 
 	onP := &model{
@@ -175,34 +177,11 @@ func TestCatalogKey_MovedFromPToC(t *testing.T) {
 		previousPane:       paneNone,
 		pipelineReturnPane: paneNone,
 	}
-	onP.handleKey(keyRune('P'))
-	if onP.pane == paneCatalog {
-		t.Error("`P` still opens the catalog; that key belongs to the pipeline now")
+	if cmd := onP.handleKey(keyRune('P')); cmd == nil {
+		t.Error("`P` returned no command; it must fetch the catalog for the available rows")
 	}
-}
-
-// The catalog's fallback for "no caller recorded" used to be the pipeline, which
-// was defensible while the pipeline was a top-level pane. It is not one any more,
-// so the fallback has to be Sessions — the only pane left that an operator can be
-// dropped into without having asked for it.
-//
-// The branch is reachable: drilling catalog → plugin detail overwrites
-// previousPane with paneCatalog and the detail's own esc clears it, so the
-// catalog backs out with nothing recorded.
-func TestCatalogEsc_FallsBackToSessionsNotThePipeline(t *testing.T) {
-	m := &model{
-		pane:               paneCatalog,
-		client:             deadClient(),
-		previousPane:       paneNone,
-		pipelineReturnPane: paneNone,
-	}
-	m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
-
-	if m.pane == panePipeline {
-		t.Fatal("esc from the catalog fell back to the pipeline, which is no longer a top-level pane")
-	}
-	if m.pane != paneSessions {
-		t.Errorf("esc from the catalog with no caller recorded landed on %v, want paneSessions", m.pane)
+	if onP.pane != panePipeline {
+		t.Errorf("`P` opened pane %v, want panePipeline", onP.pane)
 	}
 }
 
@@ -238,32 +217,15 @@ func TestTopLevelTitles_CarryNoTabStrip(t *testing.T) {
 	}
 }
 
-// A surface reached by a key is only as good as the advertisement for that key.
-// fitHintLine drops hints from the FRONT, so `[P] plugins` sits near the tail.
-//
-// THE ASSERTION IS AT 60 COLUMNS, NOT 80, and the difference matters: measured,
-// the key survives to 34 columns at the tail and to 79 third from the left, so an
-// 80-column assertion passes for BOTH placements and tests nothing. 60 is inside
-// the gap — narrow enough that only the tail placement holds, and a width a tmux
-// split or half-screen terminal actually reaches. 80 is asserted too, as the
-// floor that must never regress.
-func TestSessionsFooter_AdvertisesThePipelineKeyAtAWidthThatSurvives(t *testing.T) {
-	m := &model{pane: paneSessions}
-
-	got := m.helpView()
-	if !strings.Contains(got, "[P] plugins") {
-		t.Errorf("the sessions footer omits [P] plugins:\n  %s", got)
-	}
-	for _, w := range []int{80, 60} {
-		if fit := fitHintLine(got, w); !strings.Contains(fit, "[P]") {
-			t.Errorf("a %d-column fit drops the pipeline key:\n  %s", w, fit)
+// [P] left the sessions bar in #2019: the ? help lists it as a jump target, and it works.
+func TestSessionsFooter_PipelineKeyIsInTheHelpOnly(t *testing.T) {
+	for _, m := range []*model{{pane: paneSessions}, {pane: paneSessions, parentCtx: context.Background()}} {
+		if got := m.helpView(); strings.Contains(got, "[P]") {
+			t.Errorf("the sessions footer still offers [P]:\n  %s", got)
 		}
 	}
-
-	// The drilled-in spelling is a separate string with its own [esc] pods.
-	m.parentCtx = context.Background()
-	if got := m.helpView(); !strings.Contains(got, "[P] plugins") {
-		t.Errorf("the drilled-in sessions footer omits [P] plugins:\n  %s", got)
+	if !helpHasKey(ansi.Strip(helpBodyLines(paneSessions, 200)), "P ") {
+		t.Error("the sessions help does not list P")
 	}
 }
 
@@ -310,8 +272,8 @@ func TestHelpOverlay_DocumentsTheRemappedKeys(t *testing.T) {
 	if got := target["P"]; got != panePipeline {
 		t.Errorf("jumpTargets does not point `P` at the pipeline (got pane %v)", got)
 	}
-	if got := target["C"]; got != paneCatalog {
-		t.Errorf("jumpTargets does not point `C` at the plugin catalog (got pane %v)", got)
+	if _, ok := target["C"]; ok {
+		t.Error("jumpTargets still lists `C`; the catalog is the pipeline's available section")
 	}
 
 	desc := map[string]string{}

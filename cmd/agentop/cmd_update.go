@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -40,12 +41,14 @@ install that runs the cpex build of cortex to the default build, and says so.
   --ref=REF   install REF instead of the newest stable release, e.g.
               --ref=v0.9.0-rc.3 for a release candidate, --ref=main
   --yes, -y   do not ask; needed when there is no terminal
-  --auto      what the updater runs: install the newest release only when it is a plain release and update.wait (24h) old; never asks
+  --auto      what the updater runs: install the newest release only when it is a plain release and update.wait (6h) old; never asks
 
 Downloads nothing when agentop and cortex in ~/.local/bin are already at the
-release asked for. Run agentop doctor to check the rest of the install.
+release asked for, or when there is no --ref and agentop is not a release build
+(make dev-install, --ref=main) or agentop or cortex is a release candidate newer
+than the newest release. Run agentop doctor to check the rest of the install.
 
-Exit status: 0 already current, 1 when a download or check fails, else setup's
+Exit status: 0 already current, not a release build or a newer release candidate, 1 when a download or check fails, else setup's
 (or the installer's for --ref=main).
 `
 
@@ -110,6 +113,14 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 	if *auto {
 		return runAutoUpdate(env, stdout, stderr)
 	}
+	// A dev build ("dev") or a main-channel build ("main-<sha>") can be ahead of
+	// every release, so only an explicit --ref replaces it. The automatic update
+	// makes the same check. "" (no agentop, or no answer) still installs.
+	env.readVersions()
+	if v := env.installedVersion; *ref == "" && v != "" && !updatestatus.IsRelease(v) && !updatestatus.IsRC(v) {
+		_, _ = fmt.Fprintf(stdout, notReleaseNotice+"\n", v)
+		return 0
+	}
 	latest := ""
 	if *ref == "" {
 		latest = latestRelease()
@@ -131,14 +142,25 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stdout, "Already at %s.\n", v)
 		return 0
 	}
+	// An RC moves only forward, as in the automatic update: only --ref takes it back.
+	for _, b := range []string{"agentop", proxyBinary} {
+		if v := installedVersion(filepath.Join(env.binDir, b)); updatestatus.IsRC(v) && updatestatus.IsRelease(latest) && !updatestatus.Newer(latest, v) {
+			status(updatestatus.ResultCurrent, nil)
+			_, _ = fmt.Fprintf(stdout, rcAheadNotice+"\n", b, v, latest)
+			return 0
+		}
+	}
 	if err := cpexConfigBlocks(env); err != nil {
 		status(updatestatus.ResultFailed, err)
 		_, _ = fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
 	if err := installReleaseFn(env, *ref, updateFlags(env, *ref, yes), stdout, stderr); err != nil {
-		status(updatestatus.ResultFailed, err)
 		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == exitDeclined {
+			return exitDeclined // not a failure, so the status stays as it was
+		}
+		status(updatestatus.ResultFailed, err)
 		if errors.As(err, &exit) {
 			return exit.ExitCode()
 		}
@@ -148,6 +170,16 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 	status(updatestatus.ResultUpdated, nil)
 	return 0
 }
+
+// notReleaseNotice is what update prints, and does, for an installed build that is
+// not a release. The argument is its version.
+const notReleaseNotice = "agentop %s is not a release build, and can be newer than the newest release. Not updated.\n" +
+	"Run agentop update --ref=vX.Y.Z to install a release."
+
+// rcAheadNotice is what update prints for an installed RC that is newer than the
+// newest release. The arguments are the binary, its RC and that release.
+const rcAheadNotice = "%s %s is a release candidate, newer than the newest release %s. Not updated.\n" +
+	"Run agentop update --ref=vX.Y.Z to install a release."
 
 // installReleaseFn is what callers use, so tests can replace the installer.
 var installReleaseFn = installRelease
@@ -172,6 +204,7 @@ const cpexStatusNote = "cpex build removed; now the default cortex"
 // downloaded, checked and staged here, then handed to the staged agentop setup;
 // any other ref runs the website installer.
 func installRelease(env *setupEnv, ref string, flags []string, stdout, stderr io.Writer) error {
+	began := time.Now() // setup's ready in counts from here
 	if ref == "" {
 		// Fail closed: falling back to the installer would skip the check (D1).
 		if ref = latestRelease(); !releaseTag.MatchString(ref) {
@@ -210,6 +243,7 @@ func installRelease(env *setupEnv, ref string, flags []string, stdout, stderr io
 			c := exec.Command(filepath.Join(stage, "agentop"), args...)
 			c.Stdin, c.Stdout, c.Stderr = os.Stdin, stdout, stderr
 			c.Env = slices.DeleteFunc(os.Environ(), func(e string) bool { return strings.HasPrefix(e, installerDrewEnv+"=") })
+			c.Env = append(c.Env, callerStartedEnv+"="+strconv.FormatInt(began.Unix(), 10))
 			return c
 		}
 		run = func() (err error) {

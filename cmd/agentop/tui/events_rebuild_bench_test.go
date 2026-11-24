@@ -6,6 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
+
 	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session/timeline"
@@ -41,6 +44,37 @@ func BenchmarkRebuildEventsTable(b *testing.B) {
 	}
 }
 
+// BenchmarkRebuildEventsTableTrueColor is BenchmarkRebuildEventsTable under a color
+// profile, where the cell style hook draws inks.
+func BenchmarkRebuildEventsTableTrueColor(b *testing.B) {
+	restore := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	b.Cleanup(func() { lipgloss.SetColorProfile(restore) })
+	BenchmarkRebuildEventsTable(b)
+}
+
+// BenchmarkEventsTableView is one draw of a full page (height 40) of a 1,000-exchange
+// session, without and with color.
+func BenchmarkEventsTableView(b *testing.B) {
+	for _, bc := range []struct {
+		name    string
+		profile termenv.Profile
+	}{{"ascii", termenv.Ascii}, {"truecolor", termenv.TrueColor}} {
+		b.Run(bc.name, func(b *testing.B) {
+			restore := lipgloss.ColorProfile()
+			lipgloss.SetColorProfile(bc.profile)
+			b.Cleanup(func() { lipgloss.SetColorProfile(restore) })
+			m := rebuildBenchModel(b, 1000)
+			m.bodyHeight = 40
+			m.rebuildEventsTable()
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = m.eventsTbl.View()
+			}
+		})
+	}
+}
+
 // rebuildBenchModel is an events pane over n inference exchanges, every response priced and
 // every other one carrying an estimated tool-prune saving. Hosts cycle through ten values so
 // a search for one of them matches a tenth of the rows. Each response asks for one tool, and
@@ -52,7 +86,7 @@ func rebuildBenchModel(b *testing.B, n int) *model {
 		b.Fatal(err)
 	}
 	saved, err := json.Marshal(event.Event{CostUSD: 0.2767, Settled: true, PromptUSD: 0.2546, OutputUSD: 0.0221,
-		Avoided: []event.Saving{{Component: "tool-prune", TokensAvoided: 12_300, USD: 0.0037, Estimated: true}}})
+		Avoided: []event.Saving{{Basis: event.BasisUSD, Component: "tool-prune", TokensAvoided: 12_300, USD: 0.0037, Estimated: true}}})
 	if err != nil {
 		b.Fatal(err)
 	}

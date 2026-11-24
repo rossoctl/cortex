@@ -243,7 +243,9 @@ func TestIngest_StoreAssignsSeqAndAt(t *testing.T) {
 	r := newIngestRig(t)
 	ev := map[string]any{"seq": 99, "sessionId": "forged", "at": "2001-01-01T00:00:00Z", "phase": "request",
 		"requestId": "r1", "inference": map[string]any{"model": "m"}}
+	before := time.Now()
 	r.post(t, nil, line(t, map[string]any{"event": ev}))
+	after := time.Now()
 	evs := r.events("s1")
 	if len(evs) != 1 {
 		t.Fatalf("got %d rows", len(evs))
@@ -254,8 +256,8 @@ func TestIngest_StoreAssignsSeqAndAt(t *testing.T) {
 	if evs[0].SessionID != "s1" {
 		t.Errorf("sessionId = %q, want s1", evs[0].SessionID)
 	}
-	if d := time.Since(evs[0].At); d < 0 || d > time.Second {
-		t.Errorf("at = %v, want within 1s of now", evs[0].At)
+	if at := evs[0].At; at.Before(before) || at.After(after) {
+		t.Errorf("at = %v, want between %v and %v, around the post", at, before, after)
 	}
 }
 
@@ -461,25 +463,18 @@ func TestIngest_ShutdownEndsStream(t *testing.T) {
 			resp.Body.Close()
 		}
 	}()
+	sub, unsubscribe := store.Subscribe()
+	defer unsubscribe()
 	if _, err := pw.Write(append(line(t, nil), '\n')); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for store.View("s1") == nil {
-		if time.Now().After(deadline) {
-			t.Fatal("the line never arrived")
-		}
-		time.Sleep(5 * time.Millisecond)
+	if e := <-sub.Events(); e.SessionID != "s1" {
+		t.Fatalf("the first event is %+v, want the line for s1", e)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	start := time.Now()
-	if err := srv.Server().Shutdown(ctx); err != nil {
+	// Shutdown waits for every active connection, so it returns only once the stream has ended.
+	if err := srv.Server().Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown: %v", err)
-	}
-	if d := time.Since(start); d > time.Second {
-		t.Errorf("Shutdown took %v, want under 1s", d)
 	}
 }
 

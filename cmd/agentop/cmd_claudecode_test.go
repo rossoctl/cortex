@@ -35,7 +35,7 @@ listener:
   health_addr: 127.0.0.1:47604
 tls_bridge:
   mode: enabled
-  ca_dir: "CADIR"
+  ca_dir: 'CADIR'
   generate_ca: true
 pipeline:
   outbound:

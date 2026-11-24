@@ -157,6 +157,8 @@ type TokenExchangeAIAC struct {
 	unknown  *unknownCache
 	creds    atomic.Pointer[credentials]
 	bgCancel atomic.Pointer[context.CancelFunc]
+	// bgDone is closed when the credential wait Init starts returns.
+	bgDone chan struct{}
 
 	// now is the clock for both caches; tests replace it.
 	now func() time.Time
@@ -276,7 +278,12 @@ func (p *TokenExchangeAIAC) Init(_ context.Context) error {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	p.bgCancel.Store(&cancel)
-	go p.pollCredentials(ctx)
+	done := make(chan struct{})
+	p.bgDone = done
+	go func() {
+		defer close(done)
+		p.pollCredentials(ctx)
+	}()
 	return nil
 }
 

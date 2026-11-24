@@ -351,11 +351,10 @@ type spendDrawerTickMsg struct{ gen uint64 }
 // Optional fields rather than a narrower struct, because a figure can be genuinely
 // unavailable rather than zero. "Today" is now measurable — the durable cost ledger
 // supplies it, and applyTodayFigure sets HasToday only when the server actually
-// served the "today" window AND priced it. "Saved" is measurable now too, from
-// usage.Counts.AvoidedMicros; it was not when this struct was written, and HasSaved is
-// still a separate flag rather than a SavedUSD > 0 test, because a deployment without
-// tool-prune must show NOTHING there rather than "saved $0.00" — which would assert that
-// pruning saved nothing when the truth is that nothing pruned.
+// served the "today" window AND priced it. The strip shows no saving: the accountant's figures
+// (saved, penalty, net, usage-limit units) are in the drawer and `agentop cost`
+// (money.AccountantLines). The gross SavedUSD/TodaySavedUSD fields that sat here were set and
+// never rendered, so they were removed rather than netted.
 type spendSummary struct {
 	WindowUSD   float64
 	WindowLabel string
@@ -519,36 +518,6 @@ type spendSummary struct {
 	// question about a different span, and one figure must never wear another's qualification.
 	TodayClamped bool
 
-	// SavedUSD is the WINDOW's avoided spend, and it is the FALLBACK reading — see
-	// TodaySavedUSD, which outranks it whenever the day has a figure of its own.
-	SavedUSD float64
-	HasSaved bool
-
-	// TodaySavedUSD is the DAY's avoided spend, and HasTodaySaved reports that it exists.
-	//
-	// A TWIN of SavedUSD rather than a span discriminator on one field, which is the shape
-	// every other pair on this struct already has: TodayUnpriced/Unpriced,
-	// TodayIncomplete/Incomplete, TodayClamped/Clamped. Their common reason applies here
-	// unchanged — it is a different question about a different span, and one figure must never
-	// wear another's qualification.
-	//
-	// IT EXISTS BECAUSE THE STRIP RENDERS THE SAVING AS THE HEADLINE'S PARTNER: renderSpendBand
-	// puts it directly after the today figure on the stated grounds that "the pair is the
-	// reading: what it cost and what it would have cost". The saving was read from the 1h ring,
-	// so the pair spanned two windows and only one of them was labelled — measured on a local
-	// proxy, "$64.1765 today  saved ~$1.0291" beside a day that had really avoided $2.1891,
-	// understating the figure next to it by 2.1x.
-	//
-	// FREE TO CARRY: usage.Counts.AvoidedMicros is on the same Totals applyTodayFigure already
-	// reads CostMicros from, so this is a field off a reply in hand rather than a second request.
-	//
-	// Set only alongside HasToday, so an unpriced or ring-served day leaves it unset. That is the
-	// rule TodayDegraded states for itself: those paths publish no cost figure, so there is
-	// nothing for a saving to be the partner of, and an unpartnered saving on this line is read
-	// as the window's.
-	TodaySavedUSD float64
-	HasTodaySaved bool
-
 	// Age is how long ago the window figure was fetched, and Stale reports that it is
 	// old enough to be worth saying — see spendStaleAfter. Age is only meaningful when
 	// Stale is set; a fresh figure reports neither, because the band must not carry a
@@ -638,9 +607,9 @@ func (m *model) spendHourAndDaySummary() spendSummary {
 		// guarantee is expressed in rune counts and lipgloss.Width, and
 		// lipgloss.Width("abc\nabcdef") is 6 — it measures the WIDEST LINE. So a label
 		// carrying a newline passes the budget check and then renders as an EXTRA line.
-		// layout() reserves exactly spendBandLines rows and paneView pads to them, so a
-		// third line is not merely untidy: the view comes out taller than the terminal and
-		// the footer goes off the bottom. Control characters and DEL become U+FFFD (one
+		// The band is the one-line label of the box's top edge, so a second line is not
+		// merely untidy: the view comes out taller than the terminal and the footer goes
+		// off the bottom. Control characters and DEL become U+FFFD (one
 		// column, so the arithmetic still holds) rather than being dropped, so tampering
 		// shows.
 		WindowLabel: sanitizeLabel(snap.Window),
@@ -701,19 +670,6 @@ func (m *model) spendHourAndDaySummary() spendSummary {
 	out.Tokens = snap.Totals.Tokens
 	out.Errors = snap.Totals.Errors
 	out.CacheHitPct, out.HasCacheHit = cacheHitPct(snap.Totals)
-	// Savings, likewise outside it, and for the reason usage.Counts.AvoidedMicros gives:
-	// a saving is counted whether or not the response could be priced. A window that
-	// priced nothing and pruned something reports "cost unavailable" beside a real saved
-	// figure, and both are true.
-	//
-	// > 0 rather than != 0: the aggregate is a sum of non-negative figures, so a negative
-	// here means a broken producer, and the same defence-in-depth negativeCost applies to
-	// spend applies to this. A zero leaves HasSaved false, which is what makes the strip
-	// silent on a deployment that does not prune.
-	if av := snap.Totals.AvoidedMicros; av > 0 {
-		out.SavedUSD = float64(av) / 1e6
-		out.HasSaved = true
-	}
 	return out
 }
 
@@ -940,7 +896,7 @@ func spendTick(span spendSpan, gen uint64) tea.Cmd {
 	// too slowly is a dated figure that says so; a span never polled is a permanent em dash with no
 	// explanation.
 	d := spendSpanDefs[span].pollInterval()
-	return tea.Tick(d, func(time.Time) tea.Msg { return spendTickMsg{span: span, gen: gen} })
+	return tick(d, func(time.Time) tea.Msg { return spendTickMsg{span: span, gen: gen} })
 }
 
 // fetchSpendSpan requests one span's all-sessions total off the render loop. Returns nil
@@ -984,11 +940,11 @@ func (m *model) fetchSpendSpan(span spendSpan) tea.Cmd {
 		// units — is answered by the poll above exactly as before. Two or more units have no
 		// single number, so the per-unit figures are asked for; a server that downgrades the
 		// grouping, or a split that fails, leaves byUnit nil and the cell says money.Mixed.
-		// Not under a project scope: the narrowed reply has no currency series, so the cell
-		// says money.Mixed.
+		// Under a project scope a proxy that does not echo project= gives a narrowed reply with
+		// no currency series, so the cell says money.Mixed.
 		var byUnit map[string]int64
-		if err == nil && snap != nil && len(snap.Currencies) > 1 && project == "" {
-			if split, serr := fetchUsageScoped(ctx, client, def.window, def.resolution, agent, usage.GroupCurrency); serr == nil {
+		if err == nil && snap != nil && len(snap.Currencies) > 1 {
+			if split, serr := fetchUsageScopedProject(ctx, client, def.window, def.resolution, agent, project, usage.GroupCurrency); serr == nil {
 				byUnit = unitCosts(split)
 			}
 		}
@@ -1019,7 +975,7 @@ func (m *model) applySpendDrawerLoaded(msg spendDrawerLoadedMsg) {
 // A keypress refetches immediately — see cycleSpendAxis and cycleSpendWindow — so this only
 // governs how stale an UNTOUCHED open drawer gets.
 func spendDrawerTick(gen uint64, every time.Duration) tea.Cmd {
-	return tea.Tick(every, func(time.Time) tea.Msg {
+	return tick(every, func(time.Time) tea.Msg {
 		return spendDrawerTickMsg{gen: gen}
 	})
 }
@@ -1081,7 +1037,7 @@ func (m *model) fetchSpendDrawer() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), spendFetchTimeout)
 		defer cancel()
-		// Under a project scope the axis is ignored: the reply is narrowed to one series.
+		// A proxy that does not echo project= ignores the axis: the reply is narrowed to one series.
 		snap, err := fetchUsageScopedProject(ctx, client, window, resolution, agent, project, axis)
 		return spendDrawerLoadedMsg{snap: snap, req: req, err: err, axis: axis}
 	}
@@ -1157,22 +1113,6 @@ func (m *model) applyTodayFigure(out *spendSummary) {
 	// the arithmetic itself ran out of room. A day can be fully covered, wholly exact, read
 	// cleanly, and still be a floor — see usage.Counts.Saturated.
 	out.TodayClamped = snap.Totals.Saturated
-	// And the day's SAVING, which is not a claim about the figure above it but a second figure —
-	// the one the strip renders as its partner. Read here rather than in spendSummary's window
-	// block because it has to come off THIS reply: the window block reads the ring, and the ring
-	// is an hour.
-	//
-	// INSIDE every guard above, which is what keeps the pair honest in both directions. A day
-	// that published no cost must publish no saving either, or the saving renders next to the
-	// WINDOW's figure and reads as the window's.
-	//
-	// > 0 rather than != 0, and for the reason the window's own read gives: the aggregate is a sum
-	// of non-negative figures, so a negative one means a broken producer, and a zero must leave
-	// the flag unset so a deployment that prunes nothing says nothing rather than "saved $0.00".
-	if av := snap.Totals.AvoidedMicros; av > 0 {
-		out.TodaySavedUSD = float64(av) / 1e6
-		out.HasTodaySaved = true
-	}
 }
 
 // spanReading is one band cell's data: the figure, whether it can be shown at all, and every

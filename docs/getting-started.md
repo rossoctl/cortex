@@ -27,6 +27,16 @@ curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh -s -- --yes
 
 When setup is done, open a new terminal. The new terminal reads the new `PATH`.
 
+### Windows (preview)
+
+`install.sh` and `agentop setup` don't run on Windows yet (#1520). In PowerShell, run:
+
+```powershell
+irm https://www.rossoctl.dev/cortex/install.ps1 | iex
+```
+
+Then follow [Cortex on Windows](windows.md): the first run (`cortex --local` in its own terminal), connecting your agent, updating, uninstalling, what is not on Windows yet, and troubleshooting.
+
 ## Connect your agent
 
 Connect each agent that you use. Do this one time per agent.
@@ -69,18 +79,18 @@ Then read [Troubleshooting](troubleshooting.md).
 This is the Sessions pane at 100 columns:
 
 ```
-agentop · http://localhost:9094
+agentop · http://127.0.0.1:47601
 LAST 1H    TODAY   7 DAYS    MONTH
   $4.04   $18.80  $216.44  $703.18
 ────────────────────────────────────────────────────────────────────────────────────────────────────
- SESSION         TITLE        UPDATED           EVENTS      TOKENS        COST      SAVED~  CTX(1M)
- ctx-abc-123-4…  …pend-spans  3s ago                42       48.2k       $0.12       $0.01  ▕████ ▏
- ctx-def-567-4…  weather-ag…  18m ago               15        1.2k      <$0.01           —  ▕▏    ▏
- ctx-ghi-901-4…               42m ago                7        2.9k           —           —  ▕██   ▏
+ SESSION   TITLE              UPDATED           EVENTS      TOKENS        COST      SAVED~  CTX(1M)
+ 567-89ab  …src/append-spans  3s ago                42       48.2k       $0.12       $0.01  ████░░░
+ 890-cdef  weather-agent      18m ago               15        1.2k      <$0.01           —  ▏░░░░░░
+ 321-0fed                     42m ago                7        2.9k           —           —  ██░░░░░
  default                      1h ago                 8           —           —           —        —
 
 ● connected  2.1 events/sec   feedback: https://github.com/rossoctl/cortex/issues/new/choose
-[↑↓] nav  [↵] drill  [u] usage  [$] spend  [/] search  [p] pause  [P] plugins  [?] keys  [q] quit
+[↵] drill  [u] usage  [$] spend  [/] search  [?] keys  [q] quit
 ```
 
 - The band `LAST 1H`, `TODAY`, `7 DAYS`, `MONTH` shows what your agents spent in each time span.
@@ -125,5 +135,7 @@ To remove Cortex, run `agentop uninstall`. It asks once.
 
 Uninstall disconnects Claude Code, OpenCode, IBM Bob and Pi.
 It does not disconnect Codex. If you use Codex, run `agentop configure codex disable` first.
+
+On Windows, `agentop uninstall` is not supported yet (#1520). Remove Cortex by hand: see [Uninstall](windows.md#uninstall) in the Windows guide.
 
 For more detail, read [Remove it](laptop-service.md#remove-it).

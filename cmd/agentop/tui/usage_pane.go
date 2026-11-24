@@ -311,7 +311,7 @@ func sameBucketTimes(a, b []usage.Bucket) bool {
 
 // usageTick schedules the next poll for the given generation.
 func usageTick(gen uint64) tea.Cmd {
-	return tea.Tick(usagePollInterval, func(time.Time) tea.Msg {
+	return tick(usagePollInterval, func(time.Time) tea.Msg {
 		return usageTickMsg{gen: gen}
 	})
 }
@@ -483,8 +483,8 @@ func (m *model) renderUsage(width, height int) string {
 	case m.agentScope == "" && m.projectScope == "" && m.usage.group != "" && m.usage.group != usage.GroupNone:
 		grouping = "by " + string(m.usage.group)
 	}
-	b.WriteString(fmt.Sprintf("  USAGE — %s — %s @ %s — %s — %s\n\n",
-		scope, window, resolution, m.usage.metric, grouping))
+	b.WriteString(styleUsageHeader(fmt.Sprintf("  USAGE — %s — %s @ %s — %s — %s",
+		scope, window, resolution, m.usage.metric, grouping)) + "\n\n")
 
 	switch {
 	case m.usage.err != nil && errors.Is(m.usage.err, errUsageUnsupported):
@@ -560,8 +560,8 @@ func (m *model) renderUsage(width, height int) string {
 		b.WriteString(renderUsageSummary(m.usage.snap))
 		b.WriteString("\n")
 		if !m.usage.lastFetch.IsZero() {
-			b.WriteString(fmt.Sprintf("\n  updated %s ago (every %s)\n",
-				time.Since(m.usage.lastFetch).Truncate(time.Second), usagePollInterval))
+			b.WriteString("\n" + styleDim.Render(fmt.Sprintf("  updated %s ago (every %s)",
+				time.Since(m.usage.lastFetch).Truncate(time.Second), usagePollInterval)) + "\n")
 		}
 	}
 
@@ -570,6 +570,16 @@ func (m *model) renderUsage(width, height int) string {
 	// changed. The pane's keys live in helpView and in paneKeys (the [?]
 	// overlay), which the coverage test holds to the real pane list.
 	return b.String()
+}
+
+// styleUsageHeader colors the "  USAGE — … — …" line without changing its text: USAGE accent
+// bold, each " — " dim, the rest default ink.
+func styleUsageHeader(line string) string {
+	rest, ok := strings.CutPrefix(line, "  USAGE")
+	if !colorOn() || !ok {
+		return line
+	}
+	return "  " + styleAccentBold.Render("USAGE") + strings.ReplaceAll(rest, " — ", styleDim.Render(" — "))
 }
 
 // costUngroupedRow is the pane's form of the disclosure `agentop cost` prints at writeCostSummary:
@@ -621,6 +631,6 @@ func costUngroupedRow(snap *usage.Snapshot, scope string, windowUnits []string) 
 // usageBody is the usage pane drawn and searched. It is drawn to fit the pane, so what it
 // drew is its text, and a search highlights it after the drawing.
 func (m *model) usageBody() string {
-	m.usageDoc.setLines(strings.Split(m.renderUsage(m.width, m.bodyHeight), "\n"), 0)
+	m.usageDoc.setLines(strings.Split(m.renderUsage(m.innerWidth(), m.bodyHeight), "\n"), 0)
 	return m.usageDoc.render(m.searchQuery(paneUsage))
 }

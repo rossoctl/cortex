@@ -53,7 +53,7 @@ type cellContext struct {
 	blockIDs map[*pipeline.SessionEvent]int
 	// invs is this row's invocations, computed once in the row loop.
 	//
-	// rebuildEventsTable already needs them for the hideInactive check, and
+	// rebuildEventsTable already needs them for the quiet check, and
 	// rowAction returns ACTION and PLUGIN together — so having each of those two
 	// cells call row.invocations() ran it three times per row and discarded half of
 	// rowAction's result twice. invocations() allocates (allInvocations, plus an
@@ -154,8 +154,7 @@ type eventColumn struct {
 // rowKey is one rendered row's sort position: the column's value, plus which
 // exchange the row belongs to.
 //
-// exchange is an ARRIVAL index — a position in the session's full row list, before
-// hideInactive drops any. Each row is one exchange (#1681), so exchange is the row's own
+// exchange is an ARRIVAL index — a position in the session's full row list. Each row is one exchange (#1681), so exchange is the row's own
 // arrival index. A tool row has the index of its exchange. It is only ever compared, never
 // used to index a slice, so it stays meaningful next to a filtered `keys`.
 type rowKey struct {
@@ -496,6 +495,94 @@ func tableColumns(cols []eventColumn, sortCol eventColumnID, desc bool) []table.
 	return out
 }
 
+// eventRowKind is what an events table row shows, by row index: the hook cannot tell a tool
+// row or a block header from its cells, because hidden columns change them.
+type eventRowKind uint8
+
+const (
+	eventRowExchange eventRowKind = iota
+	eventRowTool
+	eventRowHeader
+	// eventRowQuiet is an exchange row no plugin acted on: background traffic.
+	eventRowQuiet
+)
+
+// eventCellStyle is the events table's cell style hook for the columns cols, in the order
+// tableColumns hands them to the table, the rows of kinds, and the table's rows. It reads each
+// cell's column by id, never by position or header, so a hidden or sorted column moves no ink
+// to another column.
+func eventCellStyle(cols []eventColumn, kinds []eventRowKind, rows []table.Row) table.CellStyleFunc {
+	ids := make([]eventColumnID, len(cols))
+	for i, c := range cols {
+		ids[i] = c.id
+	}
+	return dashDim(func(r int, row table.Row, col int) lipgloss.Style {
+		kind := eventRowExchange
+		if r < len(kinds) {
+			kind = kinds[r]
+		}
+		if kind == eventRowHeader {
+			return styleAccent
+		}
+		v := strings.TrimSpace(row[col])
+		// A one-cell row spans the table: the older-events row.
+		if len(row) == 1 && len(ids) > 1 {
+			return styleNone
+		}
+		// An empty cell has no text to ink, and an ink on it only adds escape bytes.
+		if col >= len(ids) || v == "" {
+			return styleNone
+		}
+		// A tool row steps back: all muted, except live state (running, ⋯) and a failed tool.
+		if kind == eventRowTool {
+			switch ids[col] {
+			case colDuration:
+				if strings.HasPrefix(v, "⋯") {
+					return styleWarn
+				}
+			case colStatus:
+				if g := statusGroup(v); g == groupWarn || g == groupError {
+					return groupStyle(g)
+				}
+			}
+			return styleMuted
+		}
+		// A quiet row steps back: all muted, except a failed STATUS. In a run of quiet rows,
+		// a DIR, ACTION, PLUGIN, METHOD or HOST that repeats the row above is dim, so the run
+		// reads as one block.
+		if kind == eventRowQuiet {
+			switch ids[col] {
+			case colStatus:
+				if statusGroup(v) == groupError {
+					return styleError
+				}
+			case colDir, colAction, colPlugin, colMethod, colHost:
+				if r > 0 && r <= len(rows) && kinds[r-1] == eventRowQuiet &&
+					col < len(rows[r-1]) && strings.TrimSpace(rows[r-1][col]) == v {
+					return styleDim
+				}
+			}
+			return styleMuted
+		}
+		switch ids[col] {
+		case colIndex, colTime, colHost, colBytes:
+			return styleMuted
+		case colDir:
+			switch strings.TrimPrefix(v, "│") {
+			case "out":
+				return styleOutbound
+			case "in":
+				return styleInbound
+			}
+		case colAction:
+			return groupStyle(actionGroup(v))
+		case colStatus:
+			return groupStyle(statusGroup(v))
+		}
+		return styleNone
+	})
+}
+
 // measureColumns evaluates each fitsContent column in cols for every row in ctxs. It returns
 // the width each needs — its widest cell, no narrower than its heading with a sort glyph and
 // no wider than its declared width — and the cells themselves, indexed like ctxs.
@@ -510,8 +597,8 @@ func tableColumns(cols []eventColumn, sortCol eventColumnID, desc bool) []table.
 // cannot widen it — the same reason every declared width leaves room for one (see
 // sortGlyphAsc).
 //
-// ctxs should be every row of the session, not only those hideInactive keeps. Measured over
-// the visible rows, hiding the one row with a saving would narrow TOKENS until the rows were
+// ctxs should be every row of the session, not only the rendered ones. Measured over the
+// rendered rows, collapsing the one row with a saving would narrow TOKENS until it was
 // shown again.
 func measureColumns(cols []eventColumn, ctxs []cellContext) (widths map[eventColumnID]int,
 	cells map[eventColumnID][]string) {
@@ -728,7 +815,7 @@ func renderColumnPicker(sel map[eventColumnID]bool, widths map[eventColumnID]int
 	}
 
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("COLUMNS"))
+	b.WriteString(renderTitle("COLUMNS"))
 	b.WriteString("\n\n")
 
 	// Bound the list to what the terminal can actually show.
@@ -824,8 +911,8 @@ func renderColumnPicker(sel map[eventColumnID]bool, widths map[eventColumnID]int
 	b.WriteString("\n")
 	// fitHintLine, so a narrow terminal drops hints from the front and keeps
 	// [q] quit rather than wrapping the line. Same treatment the footer gets.
-	b.WriteString(styleHint.Render(fitHintLine(
-		"[↑↓] move  [space]/[x] toggle  [s] sort  [r] reset  [esc]/[enter] close  [q] quit",
+	b.WriteString(renderHints(fitHintLine(
+		"[↑↓] move  [space] toggle  [s] sort  [r] reset  [esc]/[enter] close  [q] quit",
 		width-borderWidth)))
 
 	// MaxWidth as a backstop. overlayCenter is explicit that bounding the panel is

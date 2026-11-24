@@ -1299,7 +1299,7 @@ func stopIfAlive(pid int) error {
 	if pid <= 0 {
 		return nil
 	}
-	if err := stopPID(pid); err != nil && alive(pid) {
+	if err := stopPID(pid); err != nil && processAlive(pid) {
 		return err
 	}
 	return nil

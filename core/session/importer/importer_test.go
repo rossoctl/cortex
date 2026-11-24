@@ -546,7 +546,7 @@ func sumCost(t *testing.T, w *ledger.Writer) (requests, tokens, micros int64) {
 func erase(t *testing.T, a *archive.Archive, id string) {
 	t.Helper()
 	a.Deleted(id)
-	if _, err := a.AwaitDelete(id, 5*time.Second); err != nil {
+	if _, err := a.AwaitDelete(id, time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := a.Lookup(id); ok {
@@ -595,10 +595,6 @@ func TestRun_ErasedLiveSessionWithEarlierTurns(t *testing.T) {
 			e.Seq, e.SessionID = seq, "A"
 			a.Record("A", &e)
 		}
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for a.LastSeq("A") < seq && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
 	}
 	if a.LastSeq("A") < seq {
 		t.Fatal("the live events were not recorded")
@@ -693,10 +689,6 @@ func TestRun_ErasedLiveSessionComesBack(t *testing.T) {
 	live := model.SessionEvent{Seq: 1, SessionID: "A", At: start, Direction: model.Outbound,
 		Phase: model.SessionRequest, RequestID: "live"}
 	a.Record("A", &live)
-	deadline := time.Now().Add(5 * time.Second)
-	for a.LastSeq("A") == 0 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
 	if a.LastSeq("A") == 0 {
 		t.Fatal("the live event was not recorded")
 	}
@@ -861,10 +853,6 @@ func TestRun_ErasedForkDoesNotCountParentTurnAgain(t *testing.T) {
 		e.Seq, e.SessionID = uint64(i+1), "F"
 		a.Record("F", &e)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for a.LastSeq("F") < 2 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
 	if a.LastSeq("F") < 2 {
 		t.Fatal("the live events were not recorded")
 	}
@@ -955,10 +943,6 @@ func TestRun_ErasedLiveForkOfImportedParent(t *testing.T) {
 	for i, e := range forkTurn {
 		e.Seq, e.SessionID = uint64(i+1), "F"
 		a.Record("F", &e)
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for a.LastSeq("F") < 2 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
 	}
 	if a.LastSeq("F") < 2 {
 		t.Fatal("the live events were not recorded")

@@ -23,8 +23,8 @@ import (
 // ("−12.3k"), so the two must size TOKENS alike.
 var (
 	// estimatedSaving is how every saving published today arrives.
-	estimatedSaving = &event.Saving{Component: "tool-prune", TokensAvoided: 12_300, USD: 0.0037, Estimated: true}
-	countedSaving   = &event.Saving{Component: "tool-prune", TokensAvoided: 12_300, USD: 0.0037}
+	estimatedSaving = &event.Saving{Basis: event.BasisUSD, Component: "tool-prune", TokensAvoided: 12_300, USD: 0.0037, Estimated: true}
+	countedSaving   = &event.Saving{Basis: event.BasisUSD, Component: "tool-prune", TokensAvoided: 12_300, USD: 0.0037}
 )
 
 // sizingExchange is one inference exchange on host: a request, and the response carrying
@@ -192,11 +192,9 @@ func TestMeasureColumns_IgnoreTheSearchAndTheInactiveToggle(t *testing.T) {
 	}{
 		// Every row stays, and the narrow exchange's one row is marked.
 		{"search", func(m *model) { m.search = map[paneID]string{paneEvents: "narrow.example"} }, 2, 1},
-		// No plugin acted on these fixture rows, so hiding inactive rows hides all of them.
-		{"hide inactive", func(m *model) { m.hideInactive = true }, 0, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			m.search, m.hideInactive = nil, false
+			m.search = nil
 			tc.apply(m)
 			m.rebuildEventsTable()
 			if got := len(m.eventsTbl.Rows()); got != tc.rows {

@@ -169,8 +169,8 @@ func newServedTitleModel(t *testing.T, meta map[string]SessionMetadata, served m
 // sessionsColumns' comment and selectedSessionID both depend on that.
 func titleRow(t *testing.T, m *model, id string) table.Row {
 	t.Helper()
-	for _, r := range m.sessionsTbl.Rows() {
-		if r[0] == id {
+	for i, r := range m.sessionsTbl.Rows() {
+		if m.sessionRowIDs[i] == id {
 			return r
 		}
 	}
@@ -272,10 +272,10 @@ func TestSessionsColumnsFor_TitleGrowsIntoSlackOnly(t *testing.T) {
 	if got, want := width(at200, "TITLE"), sessionsTitleWidth+(200-declared); got != want {
 		t.Errorf("TITLE at 200 = %d, want %d (declared %d + all the slack)", got, want, declared)
 	}
-	// SESSION, not ID, and 14 rather than 40: main narrowed the id column to seat COST and
-	// SAVED. The property is unchanged — growth comes from slack, never from a neighbour.
-	if got := width(at200, "SESSION"); got != 14 {
-		t.Errorf("SESSION at 200 = %d, want its declared 14 — growth must come from slack, not a neighbour", got)
+	// SESSION, not ID, and 8 rather than 40: the last 8 characters of the id (#2019). The property is
+	// unchanged — growth comes from slack, never from a neighbour.
+	if got := width(at200, "SESSION"); got != sessionIDWidth {
+		t.Errorf("SESSION at 200 = %d, want its declared %d — growth must come from slack, not a neighbour", got, sessionIDWidth)
 	}
 	if got := tableWidth(at200); got != 200 {
 		t.Errorf("rendered width at 200 = %d, want exactly 200", got)
@@ -1222,7 +1222,7 @@ func TestLooksLikePath_AnyUnicodeSpaceSeparates(t *testing.T) {
 func TestTrunc_ScalesLinearly(t *testing.T) {
 	const budget = 40
 	// THE LOWEST OF FIVE MEASUREMENTS. The count is process-wide, and earlier tests in this package
-	// leave goroutines alive (bubbletea.Tick timers, apiclient stream loops that reconnect). One that
+	// leave goroutines alive (apiclient stream loops that reconnect). One that
 	// wakes during a measurement adds its allocations, which failed this test in a loaded gate run
 	// ("18 allocations, up from 8") with no change to the code. Another goroutine can only add to the
 	// count, so the lowest of several runs drops that noise and cannot hide the function's own work.
@@ -3397,7 +3397,7 @@ func TestSessionsPane_ZeroWidthFreeAndBindsToPreviousDisagreeOnPurpose(t *testin
 }
 
 // The header of a session that another session started names the topmost session above it by
-// its first 8 runes (#1991).
+// its last 8 characters, as its SESSION cell does (#1991).
 func TestSessionHeader_Under(t *testing.T) {
 	m := newTitleModel(t, map[string]SessionMetadata{"id-1": {Title: "fix the parser"}})
 	m.width = 200
@@ -3405,8 +3405,9 @@ func TestSessionHeader_Under(t *testing.T) {
 		{ID: "id-1", Title: "fix the parser", ParentSession: "abcdef0123456789"},
 		{ID: "id-2", Title: "top"},
 	}
-	if got := m.sessionHeader("id-1", "event"); !strings.Contains(got, " · event · under abcdef01") {
-		t.Errorf("header = %q, want it to contain %q", got, " · event · under abcdef01")
+	// The parent as its SESSION cell shows it: the last 8 characters.
+	if got := m.sessionHeader("id-1", "event"); !strings.Contains(got, " · event · under 23456789") {
+		t.Errorf("header = %q, want it to contain %q", got, " · event · under 23456789")
 	}
 	if got := m.sessionHeader("id-2", "event"); strings.Contains(got, " · under ") {
 		t.Errorf("header of a session with no parent = %q, has %q", got, " · under ")

@@ -179,14 +179,17 @@ func (s *Store) withPriorLocked(sum *SessionSummary, id string, sess *entry) {
 	f := p.Fold
 	sum.EventCount += f.events
 	sum.TotalTokens += f.tokens
+	// The archive's mark is the opt-out (#1923): a withheld session shows it after a restart,
+	// before its next flagged event.
+	sum.NoRecord = sum.NoRecord || f.noRecord
 	// CostSum's addition for the sums, OR for the flags: a total that clamped on either side is a
 	// bound, whichever side it was.
 	cost, avoided := sess.cost, sess.avoided
 	cost.Add(f.cost.Micros)
-	avoided.Add(f.avoided.Micros)
+	avoided.Merge(f.avoided)
 	cost.Saturated = cost.Saturated || f.cost.Saturated
-	avoided.Saturated = avoided.Saturated || f.avoided.Saturated
-	sum.CostMicros, sum.AvoidedMicros = cost.Micros, avoided.Micros
+	sum.CostMicros = cost.Micros
+	avoided.setOn(sum)
 	sum.Saturated = cost.Saturated || avoided.Saturated
 	// THE UNIT COUNTS, NOT THE RENDERED LISTS: currenciesOf renders dollars-only as nil, so a union
 	// of two rendered lists would drop "USD" from a session priced in dollars on one side only.

@@ -30,9 +30,9 @@ import (
 // A runner is not an exotic environment; it is the slowest machine this code routinely runs on
 // and therefore the one that sets the number.
 //
-// A VAR RATHER THAN A CONST only so the tests can shrink it: waiting the real deadline twice
-// would add a minute to the package for no extra coverage, and a test that asserts the logic at
-// 40ms asserts exactly the same logic. Nothing outside the tests assigns it.
+// A VAR RATHER THAN A CONST only so the tests can zero it: waiting the real deadline twice
+// would add a minute to the package for no extra coverage, and at zero the expiry logic is the
+// same. Nothing outside the tests assigns it.
 //
 // 30s is deliberately far past any queue this file can produce. `agentop observe` harvests one
 // tree per tick, `read-claude-sessions` is one process, and the realistic worst case is a
@@ -48,6 +48,9 @@ var lockTimeout = 30 * time.Second
 // cheap syscalls across a full 30s timeout — paid only by a harvest that is already
 // losing, since a lock that frees up is acquired on the next tick.
 const lockPoll = 20 * time.Millisecond
+
+// lockWait waits between attempts; tests replace it to see a retry.
+var lockWait = time.Sleep
 
 // lockMetadata takes an exclusive advisory lock covering the read-modify-write of the metadata
 // file, and returns the release.
@@ -127,7 +130,7 @@ func lockMetadata(path string) (func(), error) {
 			_ = f.Close()
 			return nil, fmt.Errorf("%w after %s", ErrLockTimeout, lockTimeout)
 		}
-		time.Sleep(lockPoll)
+		lockWait(lockPoll)
 	}
 	return func() {
 		// Unlock before close, though closing the descriptor would release it anyway: being

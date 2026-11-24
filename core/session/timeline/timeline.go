@@ -18,14 +18,21 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/core/model"
+	"github.com/rossoctl/cortex/core/session/toolpair"
 )
 
 // MainAgent is the agent id of the main conversation.
-const MainAgent = "main"
+//
+// ALIASED, NOT RESPELLED. core/session/toolpair assigns these keys and this package compares
+// against them (buildAgents' resent line, and agentLabel). Two literals that must be equal and
+// are written in two files drift in silence: the comparison simply stops matching, and every
+// subagent turn reads as a fresh agent. Taking the value from the producer makes that
+// impossible rather than unlikely.
+const MainAgent = toolpair.MainAgent
 
 // UnseparatedAgent holds subagent traffic recorded before the proxy captured Claude Code's
 // agent id header (#1459): AgentRole says "subagent" but nothing says which one.
-const UnseparatedAgent = "subagents"
+const UnseparatedAgent = toolpair.UnseparatedAgent
 
 // Kind classifies a host span.
 type Kind string

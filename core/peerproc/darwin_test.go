@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -404,4 +405,14 @@ func TestEnviron_AWithheldEnvironmentIsNotFound(t *testing.T) {
 	default:
 		t.Errorf("Environ(/bin/sleep) = %q, %v; a withheld environment must be ErrNotFound, not empty", env, err)
 	}
+}
+
+// notifyChildExit returns a wait for this test's one child to exit, leaving it unreaped.
+// Call it before starting the child. The kernel marks an exiting child a zombie and then
+// signals SIGCHLD; darwin's wait4 has no WNOWAIT.
+func notifyChildExit(t *testing.T) func(pid int32) {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, unix.SIGCHLD)
+	t.Cleanup(func() { signal.Stop(ch) })
+	return func(int32) { <-ch }
 }

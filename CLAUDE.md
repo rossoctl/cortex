@@ -263,16 +263,41 @@ tunnel rows, `subagent`), the 5-value invocation `action` vocabulary, paging, an
 guards on the two `DELETE` routes. The producer-side contract is in
 [`docs/plugin-reference.md`](docs/plugin-reference.md#emitting-session-events).
 
+**`DELETE /v1/sessions` and `DELETE /v1/sessions/{id}` do not clear the accountant's
+per-session state:** the Tracker state and `~/.cortex/accountant-state.json`, the
+per-thread billing mode in `core/accounting.Host`, and the context-guru plugin's session
+state in `~/.cortex/context-guru-state.db`. The accountant state holds session and thread
+ids, content hashes and a billing mode, no content. The context-guru state DOES
+hold content (the summary checkpoint and other text the plugin made), and its rows stay 30 days
+after their last write. The accountant
+state has no time bound while the process runs: the in-memory maps keep at most 10,000 threads,
+dropping the oldest, and the snapshot (rewritten every 60s) holds what memory holds. A snapshot
+older than 1h is not restored. Details:
+[`docs/session-api.md`](docs/session-api.md#delete-v1sessions).
+
+**Savings are the accountant's figure, and only basis `usd` is money.** `GET /v1/sessions`
+rows carry `avoidedMicros` and, omitted rather than zero like every figure there,
+`penaltyMicros`, `avoidedUnits`, `penaltyUnits`, `avoidedApiEquivalentMicros`,
+`avoidedUnknownMicros`, `pluginSpendMicros`, `pluginSpendUnits` and
+`pluginSpendUnknownMicros`. `/v1/usage` totals and ledger rows carry the same fields.
+Plugin spend is not in `costMicros`. What each sums:
+[`docs/pricing.md`](docs/pricing.md#cost-records).
+
 ## Config Hot-Reload (`:9093/reload/status`)
 
 The binary watches its config file (`/etc/authbridge/config.yaml`) via `core/reloader`
 and atomically swaps the plugin pipelines without a restart. In-flight requests finish
 on the old pipeline.
 
-- **Reloads:** any plugin list change and any plugin `config:` subtree edit.
+- **Reloads:** any plugin `config:` subtree edit, and any plugin list change except one
+  that turns accounting on (below).
 - **Needs a restart:** `mode` and every field of `listener`, `session`, `cost_ledger`,
-  `mtls`, `tls_bridge`, `spiffe`, `memory`, `stats` and `praxis`, and `update.check_every`
-  (`validateReloadable` in `core/reloader/reloader.go`).
+  `mtls`, `tls_bridge`, `spiffe`, `memory`, `stats` and `praxis`,
+  `update.check_every`, and `accounting.subscription_weights` (`validateReloadable` in
+  `core/reloader/reloader.go`). Also a reload that turns accounting ON (as resolved) when the
+  process booted with it off: under `enabled: auto` that is adding the first context
+  operator (`tool-prune`, `context-guru`). Turning it off reloads, so `on_error: off` on the
+  only operator still works (`validateAccounting`).
 - **Bad YAML stays safe:** the active pipeline keeps serving, and `/reload/status`
   shows the error with `reloads_failed` incremented.
 
@@ -296,8 +321,9 @@ re-verify them by hand after a change.
   **Always give `gofmt` a path:** a bare `gofmt -l` reads stdin, scans nothing and
   exits 0.
 - **Only `go vet` is a CI gate**, on all 7 modules (cpex code is vetted with
-  `-tags cpex` in `go-ci-cpex`). pre-commit has no Go hooks, and CI's `go fmt ./...`
-  rewrites the checkout and exits 0, so formatting drift never fails a build.
+  `-tags cpex` in `go-ci-cpex`). pre-commit runs no gofmt, vet or build hook, and CI's
+  `go fmt ./...` rewrites the checkout and exits 0, so formatting drift never fails a
+  build.
 - Run per-module commands with `GOWORK=off`, as every CI Go job but `core`'s does,
   so each module resolves its own `replace` directives.
 - If a change deletes a package or its last import of a dependency, also run
@@ -313,6 +339,33 @@ re-verify them by hand after a change.
   you change those scenes' code. CI runs `go test -race ./...`, not `-short`.
 - Log with `log/slog`. The binaries log under their own name (`cortex`,
   `cortex-envoy`). The `authbridge-lite` image runs `cortex`, so it logs as `cortex`.
+
+### Tests and time
+A test that waits on the clock passes on a quiet laptop and fails on a loaded CI
+runner. Tests wait on events:
+- **Block on the event that ends the wait**: a channel the fake closes, or a hook
+  the code calls. No `time.Sleep`, no polling loop, no `Eventually`.
+- **A hang is the failure.** No `time.After` guard beside the wait. Locally,
+  `go test -timeout 2m` ends a hung test with every goroutine's stack. CI passes no
+  `-timeout`, so there go test's 10m default ends it, or the job's limit if sooner.
+- **Assert on what happened, not how long it took.** A `time.Since(start) > d`
+  bound is a flake. To show a call does not wait for X, hold X until the call has
+  returned.
+- **Keep timers out with `time.Hour`, and make them expire with 0 or a deadline
+  already past.** A 1ns context can still be live when it is first checked. A
+  timeout that is the behaviour under test is an expired one, not a 200ms one.
+- **Drive periodic work through a seam**: inject the tick channel or the clock.
+  Existing seams to copy: `archive.WithTicks`, sessionbudget's `refreshOn`, the
+  ledger writer's `syncQueued`, evolve's `joinHook`, and agentop's
+  `readyOnFirstAnswer`.
+- **Mutation-check each fix.** Put the bug back and see the test fail or hang.
+
+The `check-test-timing` pre-commit hook flags these in every `_test.go` file, in
+CI too. It judges a duration where it is written: in a timer call's arguments, or
+where a timeout, wait or deadline is set. A duration passed through any other
+variable is out of its sight. Reporting an elapsed time in a log call is fine. A
+line that needs real time, such as a live integration test, carries
+`// timing: <reason>`.
 
 ### Python and shell
 - Python 3.12+. `python-keycloak>=7.1.1,<8` for all Keycloak admin calls. Every

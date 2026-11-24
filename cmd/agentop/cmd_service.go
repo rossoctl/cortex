@@ -88,6 +88,10 @@ var serviceReadyTimeout = 15 * time.Second
 // out.
 var serviceBootoutTimeout = 30 * time.Second
 
+// bootstrapRetryDelay is the pause before a retried launchctl bootstrap, times the
+// attempt. A var so a test of a bootstrap that always fails need not wait it out.
+var bootstrapRetryDelay = time.Second
+
 // servicePaths is everything the platform-specific bits need, gathered so tests
 // can point all of it at a temp dir instead of the real ~/Library/LaunchAgents.
 type servicePaths struct {
@@ -605,7 +609,16 @@ func serviceUninstall(p servicePaths, yes bool, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "Not changed.")
 		return exitDeclined
 	}
-	if !removeService(p, stderr) {
+	removed, stopped := removeServiceStopped(p, stderr)
+	if !removed {
+		return 1
+	}
+	// launchd still had the job when the wait ran out: removed, but not yet stopped,
+	// so not "Cortex is stopped" (the error above says why).
+	if !stopped {
+		fmt.Fprintf(stdout, "\nRemoved, but Cortex was still shutting down when uninstall stopped waiting, so it may still be running.\n"+
+			"  launchd should finish stopping it. To check:  launchctl print gui/%d/%s\n"+
+			"  The config and CA are untouched in %s\n", os.Getuid(), launchdLabel, filepath.Dir(p.configFile))
 		return 1
 	}
 	// Not "start it yourself with a backgrounded proxy": running unsupervised is no
@@ -624,18 +637,27 @@ func serviceUninstall(p servicePaths, yes bool, stdout, stderr io.Writer) int {
 // unit file could not be removed: the one failure that leaves the service looking
 // installed.
 func removeService(p servicePaths, stderr io.Writer) bool {
+	removed, _ := removeServiceStopped(p, stderr)
+	return removed
+}
+
+// removeServiceStopped is removeService that also says whether the job was seen to
+// stop. stopped is false when launchd still had it when the wait after its bootout
+// ran out, so a caller must not say Cortex is stopped.
+func removeServiceStopped(p servicePaths, stderr io.Writer) (removed, stopped bool) {
 	unloadErr, unitErr, stampErr := removeServiceReport(p)
+	stopped = !errors.Is(unloadErr, errStillShuttingDown)
 	if unloadErr != nil {
 		_, _ = fmt.Fprintf(stderr, "agentop: %v\n", unloadErr)
 	}
 	if unitErr != nil {
 		_, _ = fmt.Fprintf(stderr, "agentop: removing %s: %v\n", p.unitFile, unitErr)
-		return false
+		return false, stopped
 	}
 	if stampErr != nil {
 		_, _ = fmt.Fprintf(stderr, "agentop: could not remove %s: %v\n", p.stampFile, stampErr)
 	}
-	return true
+	return true, stopped
 }
 
 // removeServiceReport is removeService without the printing. uninstall needs the
@@ -730,8 +752,11 @@ func serviceStatus(p servicePaths, stdout io.Writer) int {
 		fmt.Fprintf(stdout, "Cortex is healthy according to %s\n", p.healthURL)
 		return 0
 	}
-	if runtime.GOOS == "linux" {
+	switch runtime.GOOS {
+	case "linux":
 		return reportUnitNotAnswering(p, unitStateOf(), stdout)
+	case "darwin":
+		return reportJobNotAnswering(p, jobStateOf(), stdout)
 	}
 	reportNotAnswering(p, stdout)
 	return 1
@@ -740,6 +765,59 @@ func serviceStatus(p servicePaths, stdout io.Writer) int {
 // unitStateOf is how status reads systemd. A var so a test can hand it a state
 // without a systemd to stop.
 var unitStateOf = systemdUnitState
+
+// jobStateOf is how status reads launchd, a var for the same reason.
+var jobStateOf = launchdJobState
+
+// reportJobNotAnswering is status's verdict on macOS when the health probe got no
+// answer: reportUnitNotAnswering's, with launchd asked instead of systemd. Before it,
+// a `service stop` read as "NOT answering … will fail", exit 1, exactly like a crash.
+//
+// As there, a stopped, disabled job is the one case that is not a failure, and the
+// only one that exits 0, and each case names what launchd reports rather than how the
+// job got there.
+func reportJobNotAnswering(p servicePaths, s launchdState, stdout io.Writer) int {
+	switch {
+	case !s.known:
+		reportNotAnswering(p, stdout)
+		return 1
+	case !s.session:
+		// "you", not "nobody": the console may be another user's. And no promise that it
+		// starts at the next login, since a `service stop` disabled it, and whether it
+		// did cannot be asked without the session.
+		fmt.Fprintf(stdout, "Cortex is not running: you are not logged in to this Mac's desktop, and it runs only in your desktop session.\n"+
+			"  It starts at your next login at the screen, or at boot with automatic login, unless `agentop service stop` stopped it.\n"+
+			"  An SSH login does not start it.\n")
+		return 1
+	case !s.loaded && s.disabled:
+		fmt.Fprintf(stdout, "Cortex is stopped, and stays stopped across logins and reboots until you start it.\n"+
+			"  Claude Code and OpenCode fail until it runs again:  agentop service start\n")
+		return 0
+	case !s.loaded:
+		// Booted out but not disabled, so the next login loads it again: `launchctl
+		// bootout` by hand, since `service stop` disables it too.
+		fmt.Fprintf(stdout, "Cortex is stopped, but not disabled, so it starts again at the next login.\n"+
+			"  Claude Code and OpenCode fail until it runs again:  agentop service start\n")
+		return 1
+	case s.state != "" && s.state != "running":
+		// Loaded, and launchd is not running it. It restarts a job on its own, after
+		// ThrottleInterval, unless it is holding starts back: "pending spawn, domain in
+		// on-demand-only mode", for a while after every login, and sometimes for hours.
+		fmt.Fprintf(stdout, "Cortex is NOT running: launchd has its job loaded but not running (state = %s).\n", s.state)
+		printHolderLines(p, stdout)
+		fmt.Fprintf(stdout, "  launchd may be holding its start back, as it does for a while after login. To start it now:\n"+
+			"    agentop service restart\n"+
+			"  Claude Code and OpenCode will fail meanwhile. Last log lines:\n")
+		for _, line := range lastLines(p.logFile, 5) {
+			fmt.Fprintf(stdout, "    %s\n", line)
+		}
+		return 1
+	}
+	// Running but silent: the supervisor is up and the proxy under it is not
+	// answering, crashing or still starting.
+	reportNotAnswering(p, stdout)
+	return 1
+}
 
 // reportUnitNotAnswering is status's verdict on Linux when the health probe got no
 // answer. Without asking systemd why, every case read as "NOT answering … Claude

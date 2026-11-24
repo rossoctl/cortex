@@ -11,7 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 )
 
 // fakeLaunchctl puts a launchctl on PATH that behaves like a restricted sandbox: it
@@ -98,7 +99,7 @@ func TestServiceInstall_RestrictedEnvironment(t *testing.T) {
 	}
 	fakeLaunchctl(t, "#!/bin/sh\necho 'Could not print domain: 125' >&2\nexit 125\n")
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testhome.Set(t, home)
 	cfgDir := filepath.Join(home, ".cortex")
 	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -138,7 +139,7 @@ func TestLoginHome(t *testing.T) {
 		t.Skip("no dscl")
 	}
 	// A bogus $HOME must not change the answer: that independence is the whole point.
-	t.Setenv("HOME", "/tmp/definitely-not-my-home")
+	testhome.Set(t, "/tmp/definitely-not-my-home")
 	got := loginHome()
 	if got == "" {
 		t.Skip("could not read the user record here")
@@ -199,24 +200,17 @@ func TestReportSessionInterruption(t *testing.T) {
 		}
 		defer ln.Close() //nolint:errcheck
 
-		accepted := make(chan net.Conn, 1)
-		go func() {
-			c, aerr := ln.Accept()
-			if aerr == nil {
-				accepted <- c
-			}
-		}()
 		client, err := net.Dial("tcp", ln.Addr().String())
 		if err != nil {
 			t.Fatalf("cannot dial the listener we just opened: %v", err)
 		}
 		defer client.Close() //nolint:errcheck
-		select {
-		case c := <-accepted:
-			defer c.Close() //nolint:errcheck
-		case <-time.After(2 * time.Second):
-			t.Fatal("our own listener did not accept in 2s")
+		// The connection is already in the accept queue, so this returns at once.
+		c, err := ln.Accept()
+		if err != nil {
+			t.Fatalf("our own listener did not accept: %v", err)
 		}
+		defer c.Close() //nolint:errcheck
 
 		var out strings.Builder
 		reportSessionInterruption(servicePaths{forwardAddr: ln.Addr().String()}, &out)

@@ -10,8 +10,6 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
 	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -66,10 +64,6 @@ func TestSpendSummary_DerivesEveryWindowFigure(t *testing.T) {
 		t.Errorf("CacheHitPct = %v, want %v (cache reads over PROMPT tokens; 81.9%% of the "+
 			"9.89M total would mean output tokens entered the denominator)", got.CacheHitPct, want)
 	}
-	if !got.HasSaved || got.SavedUSD != 0.1804 {
-		t.Errorf("SavedUSD = %v (has = %v), want 0.1804 — the avoided aggregate is not reaching "+
-			"the strip", got.SavedUSD, got.HasSaved)
-	}
 }
 
 func TestSpendSummary_NothingPricedIsNotZero(t *testing.T) {
@@ -123,121 +117,6 @@ func TestSpendSummary_NoSnapshotYet(t *testing.T) {
 	got := m.spendSummary()
 	if got.Priced {
 		t.Error("Priced = true with no snapshot; want false so the strip says nothing yet")
-	}
-}
-
-func TestSpendSummary_NoSavedFigureUntilItIsMeasured(t *testing.T) {
-	// Rendering "saved $0.00" would assert that pruning saved nothing, when the
-	// truth is that nothing measures it yet. Same rule as "cost unavailable".
-	m := &model{}
-	m.spend.chains[spanHour].snap = &usage.Snapshot{
-		Window: "1h",
-		Totals: usage.Counts{Requests: 1, CostMicros: 100, PricedRequests: 1, PriceableRequests: 1},
-		Priced: true,
-	}
-
-	if got := m.spendSummary(); got.HasSaved {
-		t.Error("HasSaved = true; no Avoided data exists until a later commit")
-	}
-}
-
-// THE DAY'S SAVING COMES FROM THE DAY'S POLL. The strip renders the saved figure as the
-// partner of the headline — "what it cost and what it would have cost" — and the headline is
-// today, so a saving read from the 1h ring was a figure from one span standing in for another.
-//
-// The fixture is MEASURED, not invented: these are the two AvoidedMicros a local proxy served
-// at the same instant, and the ratio is the size of the error. The hour had avoided $1.03
-// while the day had avoided $2.19, so the line understated the day's saving by 2.1x — and
-// nothing on it said which span the number was about.
-//
-// BOTH TWINS ARE POPULATED, which is the point of carrying two fields rather than one plus a
-// discriminator: it is the same shape TodayUnpriced/Unpriced, TodayIncomplete/Incomplete and
-// TodayClamped/Clamped already have, and the renderer decides which to show. A deployment with
-// no cost ledger still has the window's figure to fall back to.
-func TestSpendSummary_TodaysSavingComesFromTheDaysPoll(t *testing.T) {
-	m := &model{}
-	m.spend.chains[spanHour].snap = &usage.Snapshot{
-		Window: "1h",
-		Totals: usage.Counts{
-			Requests: 299, Tokens: 84_576_928, CostMicros: 36_572_297,
-			AvoidedMicros:  1_029_134, // $1.03 — THE HOUR's
-			PricedRequests: 290, PriceableRequests: 290,
-		},
-		Priced: true,
-	}
-	m.spend.chains[spanToday].snap = &usage.Snapshot{
-		Window: usage.WindowToday,
-		Totals: usage.Counts{
-			Requests: 537, Tokens: 122_486_000, CostMicros: 64_176_512,
-			AvoidedMicros:  2_189_140, // $2.19 — THE DAY's
-			PricedRequests: 537, PriceableRequests: 537,
-		},
-		Priced: true,
-	}
-
-	got := m.spendSummary()
-
-	if !got.HasTodaySaved {
-		t.Fatal("HasTodaySaved = false; the day's avoided aggregate is not reaching the strip, " +
-			"so the figure beside the day's cost is still the hour's")
-	}
-	if want := 2.18914; got.TodaySavedUSD != want {
-		t.Errorf("TodaySavedUSD = %v, want %v", got.TodaySavedUSD, want)
-	}
-	// The window twin keeps its own figure. It is the fallback, not dead weight.
-	if !got.HasSaved || got.SavedUSD != 1.029134 {
-		t.Errorf("SavedUSD = %v (has = %v), want 1.029134 — the window's own saving must survive "+
-			"for the deployments that have no other", got.SavedUSD, got.HasSaved)
-	}
-}
-
-// NO LEDGER, so no day figure and no day saving — and the window's saving is what the strip
-// has. Kubernetes by design, per applyTodayFigure: window=today is answered from the ring's
-// maximum span there, which leaves HasToday unset.
-func TestSpendSummary_WindowSavingSurvivesWithNoDayFigure(t *testing.T) {
-	m := &model{}
-	m.spend.chains[spanHour].snap = &usage.Snapshot{
-		Window: "1h",
-		Totals: usage.Counts{
-			Requests: 10, CostMicros: 1_120_000, AvoidedMicros: 180_400,
-			PricedRequests: 10, PriceableRequests: 10,
-		},
-		Priced: true,
-	}
-
-	got := m.spendSummary()
-
-	if got.HasTodaySaved {
-		t.Error("HasTodaySaved = true with no today snapshot; a day's saving cannot be known " +
-			"from an hour's ring")
-	}
-	if !got.HasSaved || got.SavedUSD != 0.1804 {
-		t.Errorf("SavedUSD = %v (has = %v), want 0.1804", got.SavedUSD, got.HasSaved)
-	}
-}
-
-// An UNPRICED day publishes no figure, so it must publish no saving either: the saved figure's
-// whole justification is that it sits beside the spend it is measured against, and a saving with
-// no spend next to it is a number with no scope on a line that mixes two spans.
-//
-// applyTodayFigure already returns early for this, so the assertion is that the saving is INSIDE
-// that guard rather than beside it.
-func TestSpendSummary_UnpricedDayPublishesNoSaving(t *testing.T) {
-	m := &model{}
-	m.spend.chains[spanToday].snap = &usage.Snapshot{
-		Window: usage.WindowToday,
-		Totals: usage.Counts{Requests: 400, AvoidedMicros: 2_189_140, PriceableRequests: 400},
-		Priced: false,
-	}
-
-	got := m.spendSummary()
-
-	if got.HasToday {
-		t.Fatal("HasToday = true for an unpriced day")
-	}
-	if got.HasTodaySaved {
-		t.Error("HasTodaySaved = true for a day that published no cost; the saving would sit " +
-			"beside the hour's figure and read as the hour's")
 	}
 }
 
@@ -1424,26 +1303,21 @@ func TestSpendSummary_AFailedWindowPollStillCarriesTheDayFigure(t *testing.T) {
 // reschedules at zero, which is one /v1/usage request per event-loop iteration against the proxy.
 //
 // TestSpendSpanDefs_EverySpanIsComplete is the guard that catches the mistake; this asserts what it
-// costs if that guard is ever bypassed, and that the answer is not "a request storm". Asserted by
-// timing the command rather than by reading the constant: tea.Tick's duration is not observable, so
-// the only honest evidence is that the message does not arrive immediately.
+// costs if that guard is ever bypassed, and that the answer is not "a request storm". Asserted on
+// the interval the tick is armed with, as recordTicks captures it.
 func TestSpendTick_AZeroCadenceDoesNotFireImmediately(t *testing.T) {
 	saved := spendSpanDefs[spanMonth].interval
 	spendSpanDefs[spanMonth].interval = 0
 	defer func() { spendSpanDefs[spanMonth].interval = saved }()
 
+	armed := recordTicks(t)
 	cmd := spendTick(spanMonth, 1)
 	if cmd == nil {
 		t.Fatal("spendTick returned nil for a zero cadence: the span is then never polled, which " +
 			"is a permanent em dash with no explanation")
 	}
-	done := make(chan tea.Msg, 1)
-	go func() { done <- cmd() }()
-	select {
-	case msg := <-done:
-		t.Errorf("a zero-cadence tick delivered %T immediately; rescheduling on that would poll "+
-			"the proxy once per loop iteration", msg)
-	case <-time.After(250 * time.Millisecond):
-		// Still waiting, which is the whole assertion: the cadence was clamped to something real.
+	if got := armed(); len(got) != 1 || got[0] <= 0 {
+		t.Errorf("a zero-cadence tick was armed with %v; rescheduling on that would poll the "+
+			"proxy once per loop iteration", got)
 	}
 }

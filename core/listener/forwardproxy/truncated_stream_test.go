@@ -223,7 +223,7 @@ func TestIdleReader_CutSurfacesSentinel(t *testing.T) {
 	}
 
 	// Idle cut: nothing arrives, the timer closes the body.
-	idle := idleReader(pr, 20*time.Millisecond)
+	idle := idleReader(pr, time.Nanosecond)
 	if _, err := idle.Read(make([]byte, 4)); !errors.Is(err, errIdleCut) {
 		t.Errorf("read error after the idle cutoff = %v, want errIdleCut", err)
 	}

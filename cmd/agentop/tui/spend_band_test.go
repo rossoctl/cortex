@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 
 	"github.com/rossoctl/cortex/core/cost/usage"
@@ -735,10 +736,10 @@ func TestBandFixtureProbes_DoNotCrossMatch(t *testing.T) {
 //
 // THE PADDING HALF OF THIS TEST IS GONE WITH padLeft. A one-line band pads nothing — each cell is
 // exactly its own contents — so there is no second function to agree with a measurement. What
-// replaced that agreement is render() against renderMuting(): the styled form must occupy the same
+// replaced that agreement is render() against renderInk(): the styled form must occupy the same
 // columns as the plain one, or the fit is computed on one band and drawn from another. Asserted
 // below with a mute that emits real escape sequences, since an identity function would pass for a
-// renderMuting that counted them.
+// renderInk that counted them.
 func TestBandCell_MeasuresInDisplayColumns(t *testing.T) {
 	restore := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.TrueColor)
@@ -777,13 +778,14 @@ func TestBandCell_MeasuresInDisplayColumns(t *testing.T) {
 			}
 			// THE STYLED CELL OCCUPIES THE SAME COLUMNS, which is what lets the drop enumeration
 			// run over the plain form and the screen be drawn from the muted one.
-			plain, dressed := tc.cell.render(), tc.cell.renderMuting(mute)
+			plain := tc.cell.render()
+			dressed := tc.cell.renderInk(bandInk{label: mute, value: func(s string) string { return s }})
 			if got, want := lipgloss.Width(dressed), lipgloss.Width(plain); got != want {
-				t.Errorf("renderMuting renders %d columns against render's %d — muting a label must "+
+				t.Errorf("renderInk renders %d columns against render's %d — muting a label must "+
 					"not move a figure", got, want)
 			}
 			if dressed == plain {
-				t.Error("renderMuting returned the plain cell, so the styling assertion is vacuous")
+				t.Error("renderInk returned the plain cell, so the styling assertion is vacuous")
 			}
 		})
 	}
@@ -1155,7 +1157,7 @@ func TestSpendBandNeedsScopeMarker_EveryPaneIsClassified(t *testing.T) {
 	// its own header, and a user who scoped it to one session chose that.
 	manySessions := map[paneID]bool{
 		paneSessions: true, panePipeline: true, panePluginDetail: true,
-		paneCatalog: true, paneUsage: true, paneAgents: true,
+		paneUsage: true, paneAgents: true,
 		paneNamespaces: true, panePods: true,
 	}
 
@@ -1171,6 +1173,125 @@ func TestSpendBandNeedsScopeMarker_EveryPaneIsClassified(t *testing.T) {
 		m := &model{pane: p, selectedSess: "s1", timeline: timelineState{session: "s1"}}
 		if got := m.spendBandNeedsScopeMarker(); got != singleSession[p] {
 			t.Errorf("pane %v: spendBandNeedsScopeMarker() = %v, want %v", p, got, singleSession[p])
+		}
+	}
+}
+
+// THE STYLED BAND IS THE PLAIN BAND IN COLOR (#2015): amounts bold, a foreign unit word muted,
+// markers, em dashes and separators dim, labels muted, and not one column moved.
+func TestSpendBand_StyledTextAndWidth(t *testing.T) {
+	withProfile(t, termenv.TrueColor)
+	s := withSpan(bandSummary(), spanHour, func(r *spanReading) {
+		r.Incomplete, r.Unpriced = 1, 1
+	})
+	s = withSpan(s, spanToday, func(r *spanReading) {
+		r.USD, r.Units = 7.8, []string{"Bobcoins"}
+	})
+	s = withSpan(s, span7d, func(r *spanReading) { r.Unanswerable = true })
+
+	for _, w := range []int{80, 100, 140} {
+		plain := renderSpendBand(s, w, true)[0]
+		styled, _ := renderSpendBandStyled(s, w, true)
+		if got := ansi.Strip(styled[0]); got != plain {
+			t.Errorf("width %d: styled band reads %q, want the plain %q", w, got, plain)
+		}
+		if lipgloss.Width(styled[0]) != lipgloss.Width(plain) {
+			t.Errorf("width %d: styled band is %d columns, plain is %d", w, lipgloss.Width(styled[0]), lipgloss.Width(plain))
+		}
+	}
+
+	plain := renderSpendBand(s, 140, true)[0]
+	styled, _ := renderSpendBandStyled(s, 140, true)
+	for _, want := range []struct{ name, part, plain string }{
+		{"amount bold", styleBold.Render("$703.18"), "$703.18"},
+		{"Bobcoins amount bold", styleBold.Render("7.80"), "7.80 Bobcoins"},
+		{"Bobcoins unit muted", styleMuted.Render(" Bobcoins"), "7.80 Bobcoins"},
+		{"inexact marker dim", styleDim.Render("~"), "~$4.04"},
+		{"partial marker dim", styleDim.Render("+"), "$4.04+"},
+		{"em dash dim", styleDim.Render("—"), "—"},
+		{"separator dim", styleDim.Render(" · "), " · "},
+		{"label muted", styleMuted.Render("THIS MONTH"), "THIS MONTH"},
+		{"scope marker muted", styleMuted.Render(allSessionsMarker), allSessionsMarker},
+	} {
+		if !strings.Contains(plain, want.plain) {
+			t.Fatalf("%s: the plain band %q has no %q, so the case asserts nothing", want.name, plain, want.plain)
+		}
+		if !strings.Contains(styled[0], want.part) {
+			t.Errorf("%s: styled band %q does not contain %q", want.name, styled[0], want.part)
+		}
+	}
+}
+
+// warnFg is the escape sequence that sets the colorWarn foreground under the current profile.
+func warnFg() string {
+	r := lipgloss.NewStyle().Foreground(colorWarn).Render("x")
+	return r[:strings.Index(r, "x")]
+}
+
+// A FOREIGN UNIT IS NOT A WARNING (#2019): its amount is bold like dollars, and the unit word
+// steps back.
+func TestStyleBandValue_BobcoinsBoldNotWarn(t *testing.T) {
+	withProfile(t, termenv.TrueColor)
+	got := styleBandValue("12.40 Bobcoins")
+	for _, part := range []string{styleBold.Render("12.40"), styleMuted.Render(" Bobcoins")} {
+		if !strings.Contains(got, part) {
+			t.Errorf("styleBandValue = %q, want it to contain %q", got, part)
+		}
+	}
+	if strings.Contains(got, warnFg()) {
+		t.Errorf("styleBandValue = %q carries the warn ink", got)
+	}
+	if s := ansi.Strip(got); s != "12.40 Bobcoins" {
+		t.Errorf("plain text = %q, want 12.40 Bobcoins", s)
+	}
+
+	got = styleBandValue("~12.40 Bobcoins+")
+	for _, part := range []string{styleDim.Render("~"), styleBold.Render("12.40"), styleMuted.Render(" Bobcoins"), styleDim.Render("+")} {
+		if !strings.Contains(got, part) {
+			t.Errorf("styleBandValue(marked) = %q, want it to contain %q", got, part)
+		}
+	}
+	if s := ansi.Strip(got); s != "~12.40 Bobcoins+" {
+		t.Errorf("plain text = %q, want ~12.40 Bobcoins+", s)
+	}
+}
+
+// No money figure anywhere is drawn in the warn ink: the band, the drawer and the Usage cost view.
+func TestNoCurrencyUsesWarn(t *testing.T) {
+	withProfile(t, termenv.TrueColor)
+	warn := warnFg()
+
+	s := withSpan(bandSummary(), spanToday, func(r *spanReading) {
+		r.USD, r.Units = 7.8, []string{"Bobcoins"}
+	})
+	band, _ := renderSpendBandStyled(s, 140, true)
+
+	snap := &usage.Snapshot{
+		Group:            usage.GroupEndpoint,
+		Currencies:       []string{"Bobcoins"},
+		SeriesCurrencies: map[string][]string{"api.us-east.bob.ibm.com": {"Bobcoins"}},
+		Buckets: []usage.Bucket{{
+			Counts: usage.Counts{Requests: 3, PricedRequests: 3, CostMicros: 7_800_000},
+			Series: map[string]usage.Counts{"api.us-east.bob.ibm.com": {Requests: 3, PricedRequests: 3, CostMicros: 7_800_000}},
+		}},
+	}
+	drawer := styleDrawerLines(renderSpendDrawer(snap, nil, usage.GroupEndpoint, "1h", 140))
+
+	m := fitModel(t, paneUsage, 120, 40, nil)
+	m.usage.snap = costChartSnapshot([]string{"Bobcoins"})
+	m.usage.metric = metricCost
+	usageView := m.renderUsage(m.width, m.bodyHeight)
+
+	for name, out := range map[string]string{
+		"band":   strings.Join(band, "\n"),
+		"drawer": strings.Join(drawer, "\n"),
+		"usage":  usageView,
+	} {
+		if !strings.Contains(ansi.Strip(out), "Bobcoins") {
+			t.Fatalf("%s holds no Bobcoins figure, so the case asserts nothing:\n%s", name, ansi.Strip(out))
+		}
+		if strings.Contains(out, warn) {
+			t.Errorf("%s draws something in the warn ink:\n%q", name, out)
 		}
 	}
 }

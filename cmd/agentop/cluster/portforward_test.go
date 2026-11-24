@@ -2,10 +2,12 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
-	"time"
 )
 
 func TestFreeLocalPortReturnsUsablePort(t *testing.T) {
@@ -30,25 +32,38 @@ func TestWaitForAcceptReturnsWhenListenerOpens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("freeLocalPort: %v", err)
 	}
-	// Open a listener on the port after a short delay; waitForAccept
-	// should return nil once the dial succeeds.
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
-		if err == nil {
-			defer l.Close()
-			// Accept one connection from waitForAccept and close.
-			c, _ := l.Accept()
-			if c != nil {
-				c.Close()
-			}
-			time.Sleep(100 * time.Millisecond) // give waitForAccept room to return
+	// waitForAccept dials a port nothing listens on yet, and returns nil once the
+	// listener below opens after that refused dial.
+	saved := dialAccept
+	t.Cleanup(func() { dialAccept = saved })
+	refused := make(chan struct{})
+	var once sync.Once
+	var connected atomic.Bool
+	dialAccept = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		c, err := saved(ctx, network, addr)
+		if err != nil {
+			once.Do(func() { close(refused) })
+		} else {
+			connected.Store(true)
 		}
-	}()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := waitForAccept(ctx, port); err != nil {
+		return c, err
+	}
+	// The dialing goroutine has returned before dialAccept is restored.
+	ctx, cancel := context.WithCancel(t.Context())
+	done, returned := make(chan error, 1), make(chan struct{})
+	go func() { defer close(returned); done <- waitForAccept(ctx, port) }()
+	t.Cleanup(func() { cancel(); <-returned })
+	<-refused
+	l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err != nil {
+		t.Fatalf("listen on %d: %v", port, err)
+	}
+	defer l.Close()
+	if err := <-done; err != nil {
 		t.Fatalf("waitForAccept: %v", err)
+	}
+	if !connected.Load() {
+		t.Fatal("waitForAccept returned nil without a dial that connected")
 	}
 }
 
@@ -57,12 +72,11 @@ func TestWaitForAcceptRespectsContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("freeLocalPort: %v", err)
 	}
-	// No listener — waitForAccept should return ctx.Err() once we cancel.
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	// 100ms context deadline wins over the dialer's 250ms timeout — DialContext respects ctx.
-	defer cancel()
-	if err := waitForAccept(ctx, port); err == nil {
-		t.Fatal("want context-deadline error, got nil")
+	// No listener, and a context already done: waitForAccept returns ctx.Err().
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := waitForAccept(ctx, port); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 }
 

@@ -37,11 +37,11 @@ const (
 	ModeStrict
 )
 
-// peekTimeout caps how long we wait for the first byte. Slow clients
-// that don't send anything would otherwise hold a goroutine
+// defaultPeekTimeout caps how long we wait for the first byte. Slow
+// clients that don't send anything would otherwise hold a goroutine
 // indefinitely. The deadline is removed once the byte arrives so
 // it doesn't affect downstream IO.
-const peekTimeout = 5 * time.Second
+const defaultPeekTimeout = 5 * time.Second
 
 // Listener wraps a net.Listener and dispatches each accepted
 // connection through tls.Server when the first byte indicates a TLS
@@ -51,6 +51,8 @@ type Listener struct {
 	inner     net.Listener
 	tlsConfig *tls.Config
 	mode      Mode
+	// peekTimeout is how long dispatch waits for the first byte.
+	peekTimeout time.Duration
 	// onPlainRejected, when set, is called with the rejected conn
 	// before it's closed (strict mode). Hook for metrics counters
 	// without coupling tlssniff to the metrics package.
@@ -61,7 +63,7 @@ type Listener struct {
 // the *tls.Config to use when wrapping accepted conns as TLS servers.
 // mode controls plain-byte fallback behavior.
 func New(inner net.Listener, cfg *tls.Config, mode Mode) *Listener {
-	return &Listener{inner: inner, tlsConfig: cfg, mode: mode}
+	return &Listener{inner: inner, tlsConfig: cfg, mode: mode, peekTimeout: defaultPeekTimeout}
 }
 
 // SetOnPlainRejected installs a callback for strict-mode rejections.
@@ -103,7 +105,7 @@ func (l *Listener) Accept() (net.Conn, error) {
 //   - returns the conn unchanged (non-TLS byte, permissive)
 //   - closes the conn and returns ok=false (non-TLS byte, strict)
 func (l *Listener) dispatch(conn net.Conn) (net.Conn, bool) {
-	if err := conn.SetReadDeadline(time.Now().Add(peekTimeout)); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(l.peekTimeout)); err != nil {
 		conn.Close()
 		return nil, false
 	}
