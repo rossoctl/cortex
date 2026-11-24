@@ -1,0 +1,134 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 872 598" width="872" height="598" font-size="14" role="img" aria-label="The agentop Agents pane. It has an All agents row and one row for each coding agent, with its count of sessions, the time it was last seen, and its cost today.">
+<style>
+text{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;white-space:pre}
+g.st{opacity:0}
+.rv{visibility:hidden}
+.cur{fill:#58a6ff}
+@keyframes blink{0%,49%{opacity:1}50%,100%{opacity:0.15}}
+@keyframes st0{0.0000%,100%{opacity:1}}
+g.st0{animation:st0 1s linear infinite}
+@media (prefers-reduced-motion:reduce){
+g.st,.rv,.cur,clipPath rect{animation:none!important}
+g.st{opacity:0}
+g.st.final{opacity:1}
+.rv{visibility:visible}
+.cur{visibility:hidden}
+clipPath rect{width:100000px}
+}
+</style>
+<rect width="872" height="598" rx="8" fill="#0d1117"/>
+<path d="M0 8a8 8 0 0 1 8-8h856a8 8 0 0 1 8 8v22H0z" fill="#161b22"/>
+<circle cx="18" cy="15" r="5" fill="#ff5f57"/>
+<circle cx="36" cy="15" r="5" fill="#febc2e"/>
+<circle cx="54" cy="15" r="5" fill="#28c840"/>
+<text x="436" y="19.0" fill="#6e7681" font-size="12" text-anchor="middle">cortex</text>
+<defs>
+<g id="r0"><text y="58.0"><tspan x="16.0" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">agentop</tspan><tspan x="74.8" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#4b5563"> · </tspan><tspan x="100.0" textLength="176.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">http://127.0.0.1:9094</tspan><tspan x="276.4" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#4b5563"> · </tspan><tspan x="301.6" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="600">agents</tspan><tspan x="352.0" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#4b5563"> · </tspan><tspan x="377.2" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="600">today</tspan></text>
+</g>
+<g id="r1"><text y="76.0"><tspan x="16.0" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#4b5563">╭─ </tspan><tspan x="41.2" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">LAST 1H</tspan><tspan x="108.4" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">~</tspan><tspan x="116.8" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="600">$15.03</tspan><tspan x="167.2" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#4b5563"> · </tspan><tspan x="192.4" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">TODAY</tspan><tspan x="242.8" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">~</tspan><tspan x="251.2" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="600">$15.03</tspan><tspan x="301.6" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#4b5563"> · </tspan><tspan x="326.8" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">7 DAYS</tspan><tspan x="385.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">~</tspan><tspan x="394.0" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="600">$15.03</tspan><tspan x="444.4" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#4b5563"> · </tspan><tspan x="469.6" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">THIS MONTH</tspan><tspan x="562.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">~</tspan><tspan x="570.4" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="600">$15.03</tspan><tspan x="620.8" textLength="235.2" lengthAdjust="spacingAndGlyphs" fill="#4b5563"> ──────────────────────────╮</tspan></text>
+</g>
+<g id="r2"><text y="94.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="32.8" textLength="285.6" lengthAdjust="spacingAndGlyphs" fill="#9ca3af" font-weight="600">AGENT                             </tspan><tspan x="335.2" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#9ca3af" font-weight="600">SESSIONS</tspan><tspan x="419.2" textLength="100.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af" font-weight="600">LAST SEEN   </tspan><tspan x="536.8" textLength="100.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af" font-weight="600">COST TODAY  </tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r3"><rect x="24.4" y="99.0" width="622.1" height="18.0" fill="#303050"/>
+<text y="112.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="24.4" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">▌</tspan><tspan x="32.8" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="600">All agents</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r4"><rect x="24.4" y="117.0" width="622.1" height="18.0" fill="#15151c"/>
+<text y="130.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="32.8" textLength="92.4" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="600">claude-code</tspan><tspan x="125.2" textLength="294.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">                         3         </tspan><tspan x="419.2" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">just now</tspan><tspan x="536.8" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="600">$15.03</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r5"><text y="148.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r6"><text y="166.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r7"><text y="184.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r8"><text y="202.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r9"><text y="220.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r10"><text y="238.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r11"><text y="256.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r12"><text y="274.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r13"><text y="292.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r14"><text y="310.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r15"><text y="328.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r16"><text y="346.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r17"><text y="364.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r18"><text y="382.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r19"><text y="400.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r20"><text y="418.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r21"><text y="436.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r22"><text y="454.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r23"><text y="472.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r24"><text y="490.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r25"><text y="508.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r26"><text y="526.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r27"><text y="544.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r28"><text y="562.0"><tspan x="16.0" textLength="840.0" lengthAdjust="spacingAndGlyphs" fill="#4b5563">╰──────────────────────────────────────────────────────────────────────────────────────────────────╯</tspan></text>
+</g>
+<g id="r29"><rect x="16.0" y="567.0" width="17.3" height="18.0" fill="#1f2837"/>
+<rect x="32.8" y="567.0" width="42.5" height="18.0" fill="#4b5563"/>
+<rect x="74.8" y="567.0" width="59.3" height="18.0" fill="#1f2837"/>
+<rect x="133.6" y="567.0" width="25.7" height="18.0" fill="#4b5563"/>
+<rect x="158.8" y="567.0" width="67.7" height="18.0" fill="#1f2837"/>
+<rect x="226.0" y="567.0" width="25.7" height="18.0" fill="#4b5563"/>
+<rect x="251.2" y="567.0" width="67.7" height="18.0" fill="#1f2837"/>
+<rect x="318.4" y="567.0" width="25.7" height="18.0" fill="#4b5563"/>
+<rect x="343.6" y="567.0" width="76.1" height="18.0" fill="#1f2837"/>
+<rect x="419.2" y="567.0" width="25.7" height="18.0" fill="#4b5563"/>
+<rect x="444.4" y="567.0" width="59.3" height="18.0" fill="#1f2837"/>
+<rect x="503.2" y="567.0" width="25.7" height="18.0" fill="#4b5563"/>
+<rect x="528.4" y="567.0" width="328.1" height="18.0" fill="#1f2837"/>
+<text y="580.0"><tspan x="16.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">… </tspan><tspan x="32.8" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#f9fafb"> esc </tspan><tspan x="74.8" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af"> back  </tspan><tspan x="133.6" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#f9fafb"> w </tspan><tspan x="158.8" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#9ca3af"> today  </tspan><tspan x="226.0" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#f9fafb"> $ </tspan><tspan x="251.2" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#9ca3af"> spend  </tspan><tspan x="318.4" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#f9fafb"> / </tspan><tspan x="343.6" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#9ca3af"> search  </tspan><tspan x="419.2" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#f9fafb"> ? </tspan><tspan x="444.4" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af"> keys  </tspan><tspan x="503.2" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#f9fafb"> q </tspan><tspan x="528.4" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af"> quit</tspan><tspan x="620.8" textLength="92.4" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">● connected</tspan><tspan x="730.0" textLength="126.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">12.4 events/sec</tspan></text>
+</g>
+</defs>
+<g class="st st0 final lbl-agents">
+<use href="#r0"/>
+<use href="#r1"/>
+<use href="#r2"/>
+<use href="#r3"/>
+<use href="#r4"/>
+<use href="#r5"/>
+<use href="#r6"/>
+<use href="#r7"/>
+<use href="#r8"/>
+<use href="#r9"/>
+<use href="#r10"/>
+<use href="#r11"/>
+<use href="#r12"/>
+<use href="#r13"/>
+<use href="#r14"/>
+<use href="#r15"/>
+<use href="#r16"/>
+<use href="#r17"/>
+<use href="#r18"/>
+<use href="#r19"/>
+<use href="#r20"/>
+<use href="#r21"/>
+<use href="#r22"/>
+<use href="#r23"/>
+<use href="#r24"/>
+<use href="#r25"/>
+<use href="#r26"/>
+<use href="#r27"/>
+<use href="#r28"/>
+<use href="#r29"/>
+</g>
+</svg>

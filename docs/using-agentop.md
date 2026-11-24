@@ -3,11 +3,30 @@
 `agentop` shows the traffic that Cortex sees: sessions, events, tokens and cost.
 This guide is a first tour for a laptop user.
 For every flag and key, read the [agentop reference](../cmd/agentop/README.md).
+The screens on this page come from agentop with sample data.
+
+## Contents
+
+- [What you can do with agentop](#what-you-can-do-with-agentop)
+- [Open it](#open-it)
+- [The screen](#the-screen)
+- [See where the time went (Timeline)](#see-where-the-time-went-timeline)
+- [Read what your agent sent (Events and Detail)](#read-what-your-agent-sent-events-and-detail)
+- [See what your agents spent](#see-what-your-agents-spent)
+- [See charts (Usage)](#see-charts-usage)
+- [Change the inference server](#change-the-inference-server)
+- [Search](#search)
+- [See and change the plugins](#see-and-change-the-plugins)
+- [Erase history](#erase-history)
+- [Keys](#keys)
+- [Everyday commands](#everyday-commands)
 
 ## What you can do with agentop
 
-| Task | Key | Section |
+| Task | Key or command | Section |
 |---|---|---|
+| Connect a coding agent to Cortex | `agentop configure <agent> enable` | [Everyday commands](#everyday-commands) |
+| Watch the sessions of your agents, live | `agentop observe` | [Open it](#open-it) |
 | See where the time of a session went: model, tools, subagents, retries, waiting on you | `T` | [Timeline](#see-where-the-time-went-timeline) |
 | Read each request and response that your agent sent and received | `Enter` | [Events and Detail](#read-what-your-agent-sent-events-and-detail) |
 | See what your agents spent, by model, endpoint, agent or project | `$`, `A` | [Spend](#see-what-your-agents-spent) |
@@ -16,6 +35,7 @@ For every flag and key, read the [agentop reference](../cmd/agentop/README.md).
 | Find text in any pane | `/` | [Search](#search) |
 | See, add and change the plugins that run | `P` | [Plugins](#see-and-change-the-plugins) |
 | Erase sessions, in memory and on disk | `x` | [Erase history](#erase-history) |
+| Add the sessions that your agent ran before you installed Cortex | `agentop import` | [Everyday commands](#everyday-commands) |
 
 ## Open it
 
@@ -33,29 +53,16 @@ Press `Enter` on `All agents` to see all sessions.
 
 ## The screen
 
-This is the Sessions pane at 100 columns:
+This is the Sessions pane:
 
-```
-agentop · http://127.0.0.1:47601
-LAST 1H    TODAY   7 DAYS    MONTH
-  $4.04   $18.80  $216.44  $703.18
-────────────────────────────────────────────────────────────────────────────────────────────────────
- SESSION   TITLE              UPDATED           EVENTS      TOKENS        COST      SAVED~  CTX(1M)
- 567-89ab  …src/append-spans  3s ago                42       48.2k       $0.12       $0.01  ████░░░
- 890-cdef  weather-agent      18m ago               15        1.2k      <$0.01           —  ▏░░░░░░
- 321-0fed                     42m ago                7        2.9k           —           —  ██░░░░░
- default                      1h ago                 8           —           —           —        —
-
-● connected  2.1 events/sec   feedback: https://github.com/rossoctl/cortex/issues/new/choose
-[↵] drill  [u] usage  [$] spend  [/] search  [?] keys  [q] quit
-```
+![The Sessions pane: the spend band, and one row for each session](assets/agentop/sessions.svg)
 
 The band at the top shows what your agents spent in each period:
 
 - `LAST 1H` shows the spend in the last hour.
 - `TODAY` shows the spend since local midnight.
 - `7 DAYS` shows the spend in the last seven days.
-- `MONTH` shows the spend since the first day of the month.
+- `THIS MONTH` shows the spend since the first day of the month.
 - A `—` in the band means that this deployment cannot answer for that period.
 
 The table has one row for each session:
@@ -84,6 +91,8 @@ For more detail, read [Panes](../cmd/agentop/README.md#panes) and [How CTX is de
 
 Highlight a session and press `T`.
 The timeline shows the session on one time axis:
+
+![The Timeline pane: a row for the main agent, a row for each subagent, and a row for each host](assets/agentop/timeline.svg)
 
 - One row for the main agent, and one row under it for each subagent.
 - One row for each host that the session sent requests to, with the busiest host first.
@@ -127,13 +136,12 @@ For more detail, read the Timeline entry in [Panes](../cmd/agentop/README.md#pan
 
 Press `Enter` on a session to open its Events pane.
 Most rows are one exchange: one request and its response.
+A tool call that the agent ran is a row under the model request that asked for it.
 
-```
- #   TIME          DIR   ACTION    PLUGIN             METHOD            STATUS   DURATION              BYTES              TOKENS                COST   HOST
- 1   14:23:07.41   in    allow     jwt-validation                          200      118ms       ↑1.4kB ↓842B                                           weather-agent
- 2   14:23:07.71   out   observe   inference-parser   claude-sonnet-5      200      1.20s   ↑118.6kB ↓12.4kB   681.3k(−9.9k)→412   $0.2767(−$0.0037)   api.anthropic.com
- 3   14:23:09.01   out   modify    token-exchange     tools/call           503       96ms              ↑318B                                           github-tool-mcp
-```
+![The Events pane: one row for each event, with a Bash tool call under its model request](assets/agentop/events.svg)
+
+When the terminal is too narrow for all columns, the footer shows `→ N more columns`.
+Press `c` to select the columns, for example `STATUS`, `DURATION`, `TOKENS` and `COST`.
 
 ### What each row is
 
@@ -162,6 +170,9 @@ Some details:
 
 Press `Enter` on an event to open the Detail pane.
 It shows the full request and the full response.
+On a tool row, it opens at the tool call, with the output of the tool below it:
+
+![The Detail pane: a Bash tool call, its command, and the test output that it returned](assets/agentop/tool-call.svg)
 
 - `Tab` moves to the other half: request or response.
 - `Enter` folds or opens the section at the cursor.
@@ -170,8 +181,12 @@ It shows the full request and the full response.
 ## See what your agents spent
 
 - The band at the top shows the spend for each period.
+![The spend breakdown: the spend for each price tier, and the spend for each model](assets/agentop/spend.svg)
+
 - `$` opens the spend breakdown. In the breakdown, `a` changes the axis (model, endpoint or agent), and `w` changes the period.
 - `A` opens the Agents pane. It has one row for each agent, with its sessions and its spend. `Enter` on an agent shows only the sessions of that agent. When the sessions record a project, `Enter` opens the agent into its projects.
+
+![The Agents pane: an All agents row, and one row for each coding agent with its sessions and its cost today](assets/agentop/agents.svg)
 
 To get the same data in a shell, run `agentop cost`.
 For example, `agentop cost --window month --by agent`.
@@ -202,10 +217,15 @@ Read [Inference servers](inference-servers.md) and [Choosing an agent's server](
 
 Press `/` and type the text.
 Each match is highlighted, and the rows stay in the pane.
+
+![A search for the text dark on the Sessions pane, with the matching row highlighted](assets/agentop/search.svg)
+
 `n` goes to the next match, and `N` goes to the previous match.
 On the Events pane, press `Tab` after `/` to search the details of each row.
 
 ## See and change the plugins
+
+![The Pipeline pane: the plugins that run, in order](assets/agentop/pipeline.svg)
 
 - `P` opens the Pipeline pane. It shows the plugins that run, in order.
 - On the Pipeline pane, `e` opens the pipeline in `$EDITOR`. When you save, agentop shows the change, and `y` applies it. Cortex loads the new pipeline with no restart.

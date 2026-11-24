@@ -28,6 +28,7 @@ agentop observe                         # in another terminal: watch it live
 ```
 
 **Next: [Getting started](./docs/getting-started.md)**. It shows what you should see, how to read the screen, and how to undo it.
+Then read **[Using agentop](./docs/using-agentop.md)**: each task, with a screen and its keys.
 
 Setup asks once before changing anything. If something looks wrong, `agentop doctor`
 names the fix. A service install [updates itself](./docs/laptop-service.md#automatic-updates);
@@ -67,6 +68,10 @@ After the `add`, you can also switch in `agentop observe`: press `A` for the
 agents, then `S` on one.
 
 Guides: [inference servers](./docs/inference-servers.md) · [pricing](./docs/pricing.md)
+
+**All that agentop can do, with a screen and the keys for each task:
+[Using agentop](./docs/using-agentop.md).** It shows the timeline, the events and
+their details, spend by model and by agent, search, and the plugins that run.
 
 ## How it works
 
