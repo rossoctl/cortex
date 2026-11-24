@@ -167,6 +167,32 @@ func TestSettleCost_KeepsSpendAtZeroPromptTotal(t *testing.T) {
 	}
 }
 
+// A STREAM CUT MID-BODY must not drop a completed spend either: forwardproxy's
+// classifyBrokenStream resets pctx.StatusCode to 0 on a stream that broke before its final usage
+// event, specifically so the outcome is not misread as a 200 — but a context-guru call already
+// billed on that request is not undone by the break (review finding: StatusCode alone dropped
+// this, where the broader-but-wrong ReportedOps check above had not). pctx.MarkResponseDelivered
+// is what every listener calls before bytes reach the client, ahead of where a break can zero
+// StatusCode, so it is what keeps this case asking.
+func TestSettleCost_KeepsSpendOnAStreamCutMidBody(t *testing.T) {
+	spend := event.SpendRecord{Operator: "context-guru.extract_llm", Model: "m", USD: 0.02, Basis: event.BasisUSD}
+	p := NewInferenceParser()
+	acc := &countingAccountant{extras: accounting.Extras{Spends: []event.SpendRecord{spend}}}
+	p.acct = acc
+	pctx := &pipeline.Context{Path: "/v1/messages", ResponseHeaders: http.Header{}}
+	pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "m"}
+	pctx.MarkResponseDelivered()
+	pctx.StatusCode = 0 // classifyBrokenStream's own reset, after delivery began
+	p.settleCost(pctx)
+	if acc.calls != 1 {
+		t.Fatalf("Savings called %d times, want 1 for a response that was delivered then broke", acc.calls)
+	}
+	ev, ok := publishedCost(t, pctx)
+	if !ok || len(ev.Spends) != 1 || ev.Spends[0] != spend {
+		t.Errorf("record = %+v ok=%v, want the accountant's spend kept on a broken stream", ev, ok)
+	}
+}
+
 // A STRUCTURAL OP REPORTED BEFORE THE RESPONSE must not trigger an early ask: an op such as a
 // tool-prune removal reports during OnRequest, so it is already on pctx.ReportedOps() at the
 // very first settle pass, before pctx.StatusCode is ever set. An earlier version of the gate
