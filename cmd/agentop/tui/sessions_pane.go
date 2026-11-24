@@ -234,6 +234,7 @@ func newSessionsTable() table.Model {
 // search matches, and keeps the cursor on the previously-selected session if still
 // present.
 func (m *model) rebuildSessionsTable() {
+	defer m.applyTitleScroll() // a poll must not put the static cell back between two ticks
 	// The FULL id of the previously-selected row, read out of band. Taken from the rendered
 	// cell it was a truncated string compared against other truncated strings, which happened
 	// to work and would have stopped working the moment two ids shared a prefix — at 72
