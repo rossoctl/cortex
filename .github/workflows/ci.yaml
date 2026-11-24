@@ -126,6 +126,8 @@ jobs:
       # failure, as AGENTOP_SYSTEMD_TESTS=required does on Linux. They need a desktop
       # session to load a launch agent into, and GitHub's macOS runners have one: they
       # log the runner user in automatically at boot.
+      # Not tui/...: it has no macOS-specific code, the Linux agentop job runs it with
+      # -race, and here it took about 5 of this job's 10 minutes.
       - name: Build and test cmd/agentop
         working-directory: cmd/agentop
         env:
@@ -133,7 +135,7 @@ jobs:
           AGENTOP_LAUNCHD_TESTS: required
         run: |
           go build ./...
-          go test -race ./...
+          go test -race $(go list ./... | grep -v '/cmd/agentop/tui')
 
   # Windows (#1520): core and the laptop proxy must keep building, and the session archive and
   # cost ledger must keep writing where a directory is flushed only through a write handle and
