@@ -19,6 +19,7 @@
 package contextguru
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -512,12 +513,20 @@ func warnOnRetiredKeepAliveKey(raw json.RawMessage) {
 	}
 }
 
-// injectDefaultCacheStrategy appends `cache: {strategy: auto}` to engine's own YAML, but only
+// injectDefaultCacheStrategy adds `cache: {strategy: auto}` to engine's own config, but only
 // when the operator wrote no top-level cache: key there at all. This is what keeps keep-alive on
 // by default on every install now that keep_alive: (which used to carry that default) is
 // retired. It never touches engine bytes that already name a cache: key, however they wrote it
 // -- an operator who names a strategy themselves, or hand-tunes cache.keepalive_* directly with
 // no strategy named, is left alone either way; only "no cache: key at all" gets this default.
+//
+// RE-MARSHALS THE WHOLE DOCUMENT rather than appending text, because p.cfg.Engine decodes from
+// JSON (Configure's own json.RawMessage field), and `{"preset":"xhigh"}\ncache:\n  strategy:
+// auto\n` is not one YAML document: a flow mapping that is the whole first line cannot be
+// followed by more top-level block-mapping keys. yaml.Unmarshal into doc below still succeeds on
+// that combined text (it reads the first document and stops), which is exactly why this went
+// unnoticed -- LoadBytes got no error, just a cache.strategy of "" (review finding: keep-alive
+// off for every config that sets engine at all, including the plain preset case).
 func injectDefaultCacheStrategy(engine []byte) []byte {
 	var doc map[string]yaml.Node
 	if err := yaml.Unmarshal(engine, &doc); err != nil {
@@ -526,8 +535,16 @@ func injectDefaultCacheStrategy(engine []byte) []byte {
 	if _, present := doc["cache"]; present {
 		return engine
 	}
-	out := append([]byte{}, engine...)
-	return append(out, []byte("\ncache:\n  strategy: "+cgconfig.DefaultStrategy+"\n")...)
+	var cache yaml.Node
+	if err := cache.Encode(map[string]string{"strategy": cgconfig.DefaultStrategy}); err != nil {
+		return engine // cgconfig.DefaultStrategy is a constant string; this does not fail in practice
+	}
+	doc["cache"] = cache
+	out, err := yaml.Marshal(doc)
+	if err != nil {
+		return engine // same: a map of yaml.Node values this package built itself
+	}
+	return out
 }
 
 // Init attaches the store's disk copy and starts its flusher. It runs in Init and not in
@@ -597,11 +614,7 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 	window, exact := p.windowFor(ctx, pctx)
 	// HeadTTL1h/HeadTTLMinBytes are cache.strategy: 1-hour-head's whole effect (cachePolicy):
 	// without them here, that strategy resolved a policy nothing read, and OnRequest asked for
-	// the plain 5-minute tier regardless (review finding). OneHourFirst, the 1-hour-always/
-	// -on-wait strategies' own effect (p.kaPol.OneHourAlways/OneHourOnWait), is not wired here:
-	// the decision it needs (keepalive.Keeper's own oneHourFirstThread) is unexported, so this
-	// plugin has no way to ask it. Those two strategies still resolve a policy; they still do
-	// nothing at the request's own cache breakpoints until the library exports that decision.
+	// the plain 5-minute tier regardless (review finding).
 	res := apply.BodyOpts(ctx, p.pipe, p.store, apply.Opts{
 		Provider:        provider,
 		Body:            pctx.Body,
@@ -612,6 +625,7 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 		CacheMode:       p.cfg.CacheMode,
 		HeadTTL1h:       p.kaPol.HeadTTL1h,
 		HeadTTLMinBytes: p.kaPol.HeadTTLMinBytes,
+		OneHourFirst:    p.oneHourFirstFor(provider, pctx.Host),
 	})
 	if res.Trace.Session != "" {
 		p.cgSessions.set(sid, res.Trace.Session)
@@ -674,16 +688,18 @@ func stampDryRun(ops []accountant.Operation, dryRun bool) {
 func reportResult(pctx *pipeline.Context, res apply.Result) (out []byte, changed bool, ops []accountant.Operation) {
 	threadParent, _ := res.Trace.Thread.InheritsFrom()
 	pctx.SetAccountingThread(res.Trace.Thread.ID, threadParent)
-	// res.Changed itself misses a head-TTL relabel (cache.strategy: 1-hour-head) on a request
-	// that has a messages array: apply.BodyOpts folds the relabel into Changed on its two early
-	// returns (no messages, or no restore plan to splice), but the full-pipeline path at the
-	// bottom overwrites Changed from the message rewrite alone, dropping the tools/system edit
-	// res.Body already carries (review finding, reproduced — Trace.HeadTTL1h true, Changed
-	// false, with the relabelled bytes sitting unread in res.Body). Trace.HeadTTL1h is
-	// authoritative here regardless of which path set Changed, so ORing it in recovers exactly
-	// the one case this library gap drops; it is already true, so this is a no-op, on every path
-	// that already counted it.
-	out, changed = res.Body, res.Changed || res.Trace.HeadTTL1h
+	// res.Changed itself misses a head-TTL relabel (cache.strategy: 1-hour-head, or a
+	// 1-hour-always/-on-wait OneHourFirst relabel) on a request that has a messages array:
+	// apply.BodyOpts folds the relabel into Changed on its two early returns (no messages, or no
+	// restore plan to splice), but the full-pipeline path at the bottom overwrites Changed from
+	// the message rewrite alone, dropping the tools/system edit res.Body already carries (review
+	// finding, reproduced — Trace.HeadTTL1h true, Changed false, with the relabelled bytes
+	// sitting unread in res.Body). Trace.HeadTTL1h is authoritative here regardless of which path
+	// set Changed, so ORing it in recovers exactly the one case this library gap drops — guarded
+	// by a byte comparison, because a body already at ttl "1h" sets Trace.HeadTTL1h too (apply's
+	// own doc: "count it as head all the same") with nothing actually rewritten (review
+	// suggestion), and reporting that as a change would call SetBody on identical bytes.
+	out, changed = res.Body, res.Changed || (res.Trace.HeadTTL1h && !bytes.Equal(res.Body, pctx.Body))
 	if changed && len(out) > 0 {
 		ops = append(ops, res.Trace.Ops...)
 		// The tools and system changes apply makes report no op of their own; they are found
@@ -831,6 +847,26 @@ func providerFor(path string) bschemas.ModelProvider {
 		return bschemas.Anthropic
 	}
 	return bschemas.OpenAI
+}
+
+// oneHourFirstFor is apply.Opts.OneHourFirst, the 1-hour-always/-on-wait strategies' own effect
+// (p.kaPol.OneHourAlways/OneHourOnWait; 1-hour-head is HeadTTL1h above, a different strategy).
+// nil when there is no keeper: apply.go's own doc says nil never relabels, the same contract
+// context-guru-proxy's keepalive.Handler.oneHourFirstFor relies on.
+//
+// keepalive.Keeper.OneHourFirst takes a tenant id this single-process plugin has no equivalent
+// of (one process, one deployment, not the proxy's multi-tenant registry) and a route this
+// plugin does not resolve either (the proxy's own cost-routing concept) -- both passed "", which
+// OneHourFirst's own doc does not require non-empty. endpoint is the request's host, closed over
+// once per request rather than threaded through apply.Opts a second way.
+func (p *ContextGuru) oneHourFirstFor(provider bschemas.ModelProvider, endpoint string) func(session, threadID, model string, toolsDeclared bool) bool {
+	if p.keeper == nil || (!p.kaPol.OneHourOnWait && !p.kaPol.OneHourAlways) {
+		return nil
+	}
+	mode := keepalive.OneHourMode{Always: p.kaPol.OneHourAlways, RebuildTokens: int64(p.kaPol.OneHourRebuildTokens)}
+	return func(session, threadID, model string, toolsDeclared bool) bool {
+		return p.keeper.OneHourFirst("", session, threadID, provider, endpoint, "", model, toolsDeclared, mode)
+	}
 }
 
 // modelsFor is the engine's model spec for one request: the static model, and the request's own

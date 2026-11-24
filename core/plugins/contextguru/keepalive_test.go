@@ -233,6 +233,31 @@ func TestKeepAliveOnByDefault(t *testing.T) {
 	}
 }
 
+// injectDefaultCacheStrategy must reach a non-empty engine too, not just the all-defaults case
+// TestKeepAliveOnByDefault pins: p.cfg.Engine decodes from JSON (Configure's json.RawMessage),
+// so appending raw YAML text after it used to produce `{"preset":"xhigh"}\ncache:\n  strategy:
+// auto\n` -- not one YAML document, since a flow mapping that is the whole first line cannot
+// take more top-level keys after it. yaml.Unmarshal read that combined text without error (just
+// the first document, silently dropping the appended cache: block), so keep-alive went off for
+// every config that named an engine: at all, including the plain preset case (review finding).
+func TestKeepAliveOnByDefaultWithANonEmptyEngine(t *testing.T) {
+	for _, cfg := range []string{
+		`{"engine":{"preset":"xhigh"}}`,
+		`{"engine":{"preset":"balanced"}}`,
+	} {
+		p := configured(t, cfg)
+		if p.keeper == nil || p.disp == nil || !p.kaPol.On() {
+			t.Fatalf("%s: no keeper built, want keep-alive on by default", cfg)
+		}
+	}
+	// An explicit cache.strategy: auto is the same as none at all -- just proving the "already
+	// has a cache: key" branch of injectDefaultCacheStrategy still works, same as before.
+	p := configured(t, `{"engine":{"preset":"xhigh","cache":{"strategy":"auto"}}}`)
+	if p.keeper == nil || p.disp == nil || !p.kaPol.On() {
+		t.Fatal("explicit cache.strategy: auto: no keeper built")
+	}
+}
+
 // An explicit engine.cache.keepalive: false, with no cache.strategy named, must stay off: the
 // operator wrote a cache: key, so injectDefaultCacheStrategy's "no cache: key at all" condition
 // is false and it adds no cache.strategy: auto default on top of it (review finding — an earlier

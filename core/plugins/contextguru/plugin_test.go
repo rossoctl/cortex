@@ -136,6 +136,59 @@ func TestOnRequest_HeadTTL1hStrategyRelabelsAnExistingHeadBreakpoint(t *testing.
 	}
 }
 
+// A body already at ttl "1h" sets Trace.HeadTTL1h too (apply's own doc: "count it as head all
+// the same"), with nothing actually rewritten — reportResult's byte comparison must not read
+// that as a change (review suggestion: an earlier version called SetBody on identical bytes).
+func TestOnRequest_HeadTTL1hStrategyIsANoOpWhenAlreadyRelabelled(t *testing.T) {
+	p := configured(t, `{"engine":{"cache":{"strategy":"1-hour-head","head_ttl_min_bytes":1}}}`)
+	body, _ := json.Marshal(map[string]any{
+		"model": "claude-sonnet-4-5",
+		"tools": []map[string]any{
+			{"name": "Read", "description": "read a file", "input_schema": map[string]any{"type": "object"},
+				"cache_control": map[string]any{"type": "ephemeral", "ttl": "1h"}},
+		},
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	pctx := inferencePctx("/v1/messages", body)
+	if act := invokeReq(p, pctx); act.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", act.Type)
+	}
+	if pctx.BodyMutated() {
+		t.Fatal("expected no SetBody: the body was already at ttl 1h")
+	}
+}
+
+// cache.strategy: 1-hour-always's whole effect is apply.Opts.OneHourFirst asking
+// keepalive.Keeper.OneHourFirst, which is exported as of context-guru v0.7.7 (review finding: an
+// earlier pass left this unwired on the belief that the decision was unexported, which stopped
+// being true once the dependency bumped). Without it wired, the strategy resolves a policy
+// nothing asks, and the tools mark below stays unrelabelled.
+func TestOnRequest_OneHourAlwaysStrategyRelabelsEveryExistingMark(t *testing.T) {
+	p := configured(t, `{"engine":{"cache":{"strategy":"1-hour-always"}}}`)
+	if err := p.Init(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Shutdown(t.Context()) })
+	body, _ := json.Marshal(map[string]any{
+		"model": "claude-sonnet-4-5",
+		"tools": []map[string]any{
+			{"name": "Read", "description": "read a file", "input_schema": map[string]any{"type": "object"},
+				"cache_control": map[string]any{"type": "ephemeral"}},
+		},
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	pctx := inferencePctx("/v1/messages", body)
+	if act := invokeReq(p, pctx); act.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", act.Type)
+	}
+	if !pctx.BodyMutated() {
+		t.Fatal("expected the tools breakpoint to be relabelled (SetBody)")
+	}
+	if got := string(pctx.Body); !strings.Contains(got, `"ttl":"1h"`) {
+		t.Fatalf("tools cache_control ttl not relabelled to 1h: %s", got)
+	}
+}
+
 func TestOnRequest_CompactsLargeToolOutput(t *testing.T) {
 	p := configured(t, collapseEngine)
 	body := chatBody(bigToolOutput())
