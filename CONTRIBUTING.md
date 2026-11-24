@@ -331,6 +331,9 @@ GitHub's Latest badge, which a prerelease never has. Then:
    it Latest, unless a higher stable release exists: a patch to an older line leaves
    Latest where it is.
 
+All of this holds only for a tag whose commit has this gate: see the first point under
+"Things to know".
+
 That usually takes a few minutes after the tag build finishes.
 
 If a smoke test fails, the release stays a prerelease and reaches nobody:
@@ -343,16 +346,23 @@ If a smoke test fails, the release stays a prerelease and reaches nobody:
 
 Things to know:
 
+- **A tag is gated only if its commit has the gate.** A tag push runs the
+  `release-binaries.yaml` in the tagged commit. On a commit from before the gate
+  (#2037), that file publishes an ordinary release. It goes to everyone at once,
+  untested on either platform, and takes Latest because it was created last, even from a
+  lower version, so after their wait auto-updaters move installs to it, back a version
+  if need be. The promote workflow then finds a full release and leaves it alone. This
+  covers two cases:
+  - a stable tag on a candidate's commit from before the gate;
+  - a backport from a branch cut before it, such as `release-0.6` or `release-0.7`.
+
+  Tag a newer commit instead, or first cherry-pick the gate and the macOS smoke test
+  (#2036) onto the branch. If a backport has already taken Latest, mark the right release
+  Latest again, as in [Stopping a bad release](#stopping-a-bad-release).
 - **The auto-updater's wait counts from publication, not promotion.** `update.wait`, 6
   hours by default, is measured from the upload of the release's `checksums.txt`. A
   release promoted more than 6 hours after it was published goes to auto-updaters at
   their next check.
-- **A release on a commit from before the macOS smoke test is promoted on Linux alone.**
-  The smoke tests run the scripts in the release's own commit, and where that commit has
-  no `scripts/release_smoke_test_macos.sh`, the macOS run skips its test, passes and
-  says so in a notice. That covers a release tagged on an older candidate's commit, and
-  a backport to an older line. If macOS matters for such a release, tag it from a newer
-  commit.
 - **Only a release that the tag build creates is tested first.** A release that already
   exists keeps its flags. Flagging a live release would give Latest back to the release
   before it, and the auto-updater follows Latest both ways, so it would take installs
@@ -403,7 +413,9 @@ curl -fsSL https://www.rossoctl.dev/cortex/install.sh \
 ```
 
 To release a candidate, tag the same commit `v0.9.0`. That release is tested before it
-is Latest, like any other ([see above](#a-release-is-tested-before-it-is-latest)).
+is Latest, like any other ([see above](#a-release-is-tested-before-it-is-latest)), but
+only if the candidate was tagged after the gate merged. One tagged before it is
+published untested, as the first point under "Things to know" there says.
 
 Things to know:
 

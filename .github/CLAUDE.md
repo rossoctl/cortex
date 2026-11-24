@@ -85,7 +85,10 @@ it, `release-promote.yaml` (`scripts/release_promote.sh`) clears the flag. It al
 Latest, unless a higher stable version exists. The promote workflow finds that release
 run from the end of each smoke run's title, `, release run <id>`: a run started by
 `workflow_run` records it nowhere else, so the smoke workflows' `run-name:` lines are
-part of the contract. Only a release the publish step **creates** is staged. An existing
-one keeps its flags, because the auto-updater follows Latest both ways, and flagging a
+part of the contract. A tag push runs the `release-binaries.yaml` in the tagged commit, so
+only a tag on a commit that has this step is staged at all: one on an older commit, such
+as a backport from `release-0.6` or `release-0.7`, publishes an ordinary release that
+takes Latest. Only a release the publish step **creates** is staged. An existing one
+keeps its flags, because the auto-updater follows Latest both ways, and flagging a
 live release would take installs back a version. CONTRIBUTING's "A release is tested
 before it is Latest" is the maintainer-facing version.
