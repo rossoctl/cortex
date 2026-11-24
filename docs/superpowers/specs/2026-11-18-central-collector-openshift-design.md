@@ -251,3 +251,12 @@ Decisions taken in the design conversation:
    is publicly trusted (checked).
 3. Test on the cluster above (user). The builder needs an `oc login` session with edit rights in
    `cortex-central`.
+
+## Amendment 2026-11-24: the Cortex receiver takes no token
+
+The Cortex receiver (4318) no longer has `bearertokenauth/cortex`, so a default Cortex install
+pushes with no token and no setup. A token a Cortex proxy sends is ignored. Anyone who can reach
+the Route can write Cortex series under any `machine` name. The collector still sets `proxy` and
+allow-lists the labels, so such a push cannot add a label or pose as context-guru. The context-guru
+receiver (4319) keeps its bearer token, and Secret `collector-tokens` now needs only
+`context-guru.txt`. The token sections above describe the stack before this amendment.
