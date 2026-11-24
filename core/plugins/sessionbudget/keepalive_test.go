@@ -30,42 +30,22 @@ func subscribe(t *testing.T, p *SessionBudget) *accounting.Host {
 	return h
 }
 
-func waitWrites(t *testing.T, p *SessionBudget, id string) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		p.mu.RLock()
-		c := p.cache[id]
-		done := c != nil && c.pendingWrites == 0
-		p.mu.RUnlock()
-		if done {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatal("accumulate did not finish")
-}
-
-// A keep-alive ping counts against its session like a response: its tokens by kind, and a call,
-// locally and in Redis.
+// A keep-alive ping counts against its session like a response: its tokens by kind, and a call.
+// The local counters move before Ping returns (count updates them before it starts the Redis
+// write), so no wait is needed. The same delta goes to accumulate, whose Redis write
+// TestAccumulate_WritesToStore covers.
 func TestKeepAlivePing_CountsTokensAndACall(t *testing.T) {
 	p := newTestPlugin(1_000_000_000, 0, 0)
 	h := subscribe(t, p)
 	if _, ok := h.Ping("sess-1", nil, "api.anthropic.com", ping("sess-1"), accounting.PingInfo{Status: 200}); !ok {
 		t.Fatal("ping refused")
 	}
-	waitWrites(t, p, "sess-1")
-
 	p.mu.RLock()
 	c := *p.cache["sess-1"]
 	p.mu.RUnlock()
 	if c.tokens != 1835 || c.inputTokens != 10 || c.cacheReadTokens != 1800 || c.cacheWriteTokens != 20 ||
 		c.outputTokens != 5 || c.calls != 1 {
 		t.Errorf("counters = %+v, want 1835 tokens (10/1800/20/5) and 1 call", c)
-	}
-	fields, _ := p.store.HashGet(context.Background(), p.redisKey("sess-1"))
-	if fields["tokens"] != "1835" || fields["calls"] != "1" {
-		t.Errorf("redis = %v, want tokens 1835, calls 1", fields)
 	}
 }
 
@@ -76,7 +56,6 @@ func TestKeepAlivePing_NextRequestHitsTheLimit(t *testing.T) {
 	if _, ok := h.Ping("sess-1", nil, "api.anthropic.com", ping("sess-1"), accounting.PingInfo{Status: 200}); !ok {
 		t.Fatal("ping refused")
 	}
-	waitWrites(t, p, "sess-1")
 	if a := p.OnRequest(context.Background(), makePctx("sess-1", 0)); a.Type == pipeline.Continue {
 		t.Error("a request over the token limit after a ping was let through")
 	}
