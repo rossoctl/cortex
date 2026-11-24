@@ -1,0 +1,926 @@
+{
+  "uid": "central-fleet",
+  "title": "Fleet overview",
+  "description": "Do we save money, and is the fleet healthy? Tokens are the same for every proxy. Money is each proxy's own rate table.",
+  "tags": [
+    "central",
+    "fleet"
+  ],
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "refresh": "1m",
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "timezone": "browser",
+  "templating": {
+    "list": [
+      {
+        "name": "proxy",
+        "label": "Proxy",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "central-prom"
+        },
+        "query": {
+          "query": "label_values(llm_proxy_info, proxy)",
+          "refId": "v"
+        },
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "machine",
+        "label": "Machine",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "central-prom"
+        },
+        "query": {
+          "query": "label_values(llm_proxy_info{proxy=~\"$proxy\"}, machine)",
+          "refId": "v"
+        },
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "NET SAVED",
+      "description": "Saved minus added over the selected range, cache effects included: a keep-alive rescue is saved, a cache break is added. This is the number that says whether the proxy pays. Beside it, the net as a share of the baseline: what the traffic would have cost without the proxy, which is spend (actual plus estimated) plus net saved. The exact baseline counter (llm_savings_baseline_usd_total) is not built yet.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "central-prom"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 8,
+        "h": 6
+      },
+      "targets": [
+        {
+          "expr": "(((sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]))) or (sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]))) * 0) - ((sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]))) or (sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]))) * 0))",
+          "refId": "A",
+          "instant": true,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "central-prom"
+          }
+        },
+        {
+          "expr": "(((sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]))) or (sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]))) * 0) - ((sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]))) or (sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]))) * 0)) / ((sum((increase(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) and last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[30d] offset $__range)) or (increase(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) >= last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) or last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) + (((sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]))) or (sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]))) * 0) - ((sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]))) or (sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]))) * 0))) > 0)",
+          "refId": "B",
+          "instant": true,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "central-prom"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "noValue": "no data",
+          "decimals": 2,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#73BF69"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "net saved"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "of baseline"
+              },
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "text": {
+          "valueSize": 56,
+          "titleSize": 14
+        }
+      }
+    },
+    {
+      "id": 14,
+      "type": "table",
+      "title": "Net saved by source",
+      "description": "Where NET SAVED comes from, as context-guru's dashboard splits it. Context rewrite: every operator that rewrites the request (its content, its tool declarations, its model), net of its own model calls and of the cache breaks the changes cause. Cache management: the keep-alive (its rescues, net of its pings), the prefix-cache split, the 1h head TTL and the breakpoints the proxy adds. Of baseline: each net as a share of what the traffic would have cost without the proxy (spend plus net saved); the two sources add up to the Total. For proxy=\"context-guru\", the split is right only for builds with rossoctl/context-guru#1362: an older build pushes the keep-alive, head-TTL and breakpoint operators as component=\"other\", which counts under Context rewrite. The Total is right for every build.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "central-prom"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 8,
+        "h": 6
+      },
+      "targets": [
+        {
+          "expr": "label_replace((((sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd)_total\",direction=~\"saved|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd)_total\",direction=~\"saved|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd)_total\",direction=~\"saved|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd)_total\",direction=~\"saved|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd)_total\",direction=~\"saved|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range]))) or (sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd)_total\",direction=~\"added|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd)_total\",direction=~\"added|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd)_total\",direction=~\"added|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd)_total\",direction=~\"added|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd)_total\",direction=~\"added|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range]))) * 0) - ((sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd)_total\",direction=~\"added|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd)_total\",direction=~\"added|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd)_total\",direction=~\"added|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd)_total\",direction=~\"added|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd)_total\",direction=~\"added|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range]))) or (sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd)_total\",direction=~\"saved|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd)_total\",direction=~\"saved|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd)_total\",direction=~\"saved|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd)_total\",direction=~\"saved|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd)_total\",direction=~\"saved|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range]))) * 0)), \"source\", \"Context rewrite\", \"\", \"\") or label_replace((((sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range]))) or (sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range]))) * 0) - ((sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range]))) or (sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range]))) * 0)), \"source\", \"Cache management\", \"\", \"\") or label_replace((((sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]))) or (sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]))) * 0) - ((sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]))) or (sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]))) * 0)), \"source\", \"Total\", \"\", \"\")",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "central-prom"
+          },
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "expr": "label_replace((((sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd)_total\",direction=~\"saved|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd)_total\",direction=~\"saved|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd)_total\",direction=~\"saved|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd)_total\",direction=~\"saved|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd)_total\",direction=~\"saved|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range]))) or (sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd)_total\",direction=~\"added|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd)_total\",direction=~\"added|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd)_total\",direction=~\"added|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd)_total\",direction=~\"added|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd)_total\",direction=~\"added|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range]))) * 0) - ((sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd)_total\",direction=~\"added|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd)_total\",direction=~\"added|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd)_total\",direction=~\"added|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd)_total\",direction=~\"added|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd)_total\",direction=~\"added|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range]))) or (sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd)_total\",direction=~\"saved|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd)_total\",direction=~\"saved|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd)_total\",direction=~\"saved|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd)_total\",direction=~\"saved|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd)_total\",direction=~\"saved|\",effect=~\"break|\",component!~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint\"}[$__range]))) * 0)) / ((sum((increase(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) and last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[30d] offset $__range)) or (increase(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) >= last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) or last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) + (((sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]))) or (sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]))) * 0) - ((sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]))) or (sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]))) * 0))) > 0), \"source\", \"Context rewrite\", \"\", \"\") or label_replace((((sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range]))) or (sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range]))) * 0) - ((sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range]))) or (sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\",effect!=\"break\",component=~\"keeper|cachesplit|cacheinject|headttl|tailbreakpoint|\"}[$__range]))) * 0)) / ((sum((increase(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) and last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[30d] offset $__range)) or (increase(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) >= last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) or last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) + (((sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]))) or (sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]))) * 0) - ((sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]))) or (sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]))) * 0))) > 0), \"source\", \"Cache management\", \"\", \"\") or label_replace((((sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]))) or (sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]))) * 0) - ((sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]))) or (sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]))) * 0)) / ((sum((increase(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) and last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[30d] offset $__range)) or (increase(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) >= last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) or last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) + (((sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]))) or (sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]))) * 0) - ((sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]))) or (sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]))) * 0))) > 0), \"source\", \"Total\", \"\", \"\")",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "central-prom"
+          },
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "source",
+            "mode": "outer"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "Value #A": "Net saved",
+              "Value #B": "Of baseline"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "source"
+              }
+            ]
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Net saved"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#F2495C",
+                      "value": null
+                    },
+                    {
+                      "color": "#73BF69",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Of baseline"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#F2495C",
+                      "value": null
+                    },
+                    {
+                      "color": "#73BF69",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Gross saved",
+      "description": "Cost the proxy removed, before what it cost to do so: the operations' saving, the cache effects that lowered the bill (a keep-alive rescue, a split) and the interaction.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "central-prom"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 4,
+        "h": 3
+      },
+      "targets": [
+        {
+          "expr": "sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]))",
+          "refId": "A",
+          "instant": true,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "central-prom"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "noValue": "no data",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Added cost",
+      "description": "What the proxy's own work cost: its model calls, its keep-alive pings, the cache writes it caused, and the cache effects that raised the bill (a break, a breakpoint premium).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "central-prom"
+      },
+      "gridPos": {
+        "x": 20,
+        "y": 0,
+        "w": 4,
+        "h": 3
+      },
+      "targets": [
+        {
+          "expr": "sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]))",
+          "refId": "A",
+          "instant": true,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "central-prom"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "noValue": "no data",
+          "decimals": 2,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#FF9830"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Spend",
+      "description": "What the providers billed over the selected range: actual (a configured or confirmed rate) plus estimated (a bundled/fallback rate, when no pricing.endpoints entry matches the gateway). Each proxy prices with its own rate table.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "central-prom"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 3,
+        "w": 8,
+        "h": 3
+      },
+      "targets": [
+        {
+          "expr": "sum((increase(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) and last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[30d] offset $__range)) or (increase(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) >= last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) or last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))",
+          "refId": "A",
+          "instant": true,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "central-prom"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "noValue": "no data",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Net saved per day",
+      "description": "One bar per UTC day, for 30 days whatever the dashboard range. Today's bar is the total so far. A bar below zero is a day the proxy cost more than it saved.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "central-prom"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 6,
+        "w": 24,
+        "h": 7
+      },
+      "targets": [
+        {
+          "expr": "(((sum(increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[1d] anchored offset -1d))) or (sum(increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[1d] anchored offset -1d))) * 0) - ((sum(increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[1d] anchored offset -1d))) or (sum(increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[1d] anchored offset -1d))) * 0))",
+          "legendFormat": "net",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "central-prom"
+          },
+          "interval": "1d"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "custom": {
+            "stacking": {
+              "mode": "none"
+            },
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "lineWidth": 0,
+            "barAlignment": -1,
+            "gradientMode": "scheme"
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#F2495C",
+                "value": null
+              },
+              {
+                "color": "#73BF69",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": false
+        }
+      },
+      "timeFrom": "30d"
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Saved vs added (USD)",
+      "description": "Both sides of the net, cache effects included: saved above zero, added below. Each bar is the dollars in that bar's time span. The span grows with the dashboard range and is at least 5 minutes.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "central-prom"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__interval] anchored) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[30d] offset $__interval)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__interval] anchored) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__interval])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__interval]))",
+          "legendFormat": "saved",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "central-prom"
+          },
+          "interval": "5m"
+        },
+        {
+          "expr": "-sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__interval] anchored) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[30d] offset $__interval)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__interval] anchored) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__interval])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__interval]))",
+          "legendFormat": "added",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "central-prom"
+          },
+          "interval": "5m"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "custom": {
+            "stacking": {
+              "mode": "normal"
+            },
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "lineWidth": 0,
+            "barAlignment": -1
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "saved"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#73BF69"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "added"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#FF9830"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "bargauge",
+      "title": "Net saved by machine",
+      "description": "The 8 best machines over the selected range. The full list is on the Machine comparison dashboard.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "central-prom"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "topk(8, (((sum by (machine)((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]))) or (sum by (machine)((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]))) * 0) - ((sum by (machine)((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__range]))) or (sum by (machine)((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[30d] offset $__range)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__range]))) * 0)))",
+          "legendFormat": "{{machine}}",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "central-prom"
+          },
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "custom": {
+            "stacking": {
+              "mode": "none"
+            }
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#F2495C",
+                "value": null
+              },
+              {
+                "color": "#73BF69",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "showUnfilled": true,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Machines reporting",
+      "description": "Machines that pushed in the last few minutes. llm_proxy_info is always 1, so an idle machine still counts.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "central-prom"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 5,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "count(count by (machine) (llm_proxy_info{proxy=~\"$proxy\", machine=~\"$machine\"}))",
+          "refId": "A",
+          "instant": true,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "central-prom"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "no data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "Silent machines",
+      "description": "Machines that pushed in the last day and have pushed nothing for a few minutes. The alert MachineSilent fires after 15.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "central-prom"
+      },
+      "gridPos": {
+        "x": 5,
+        "y": 21,
+        "w": 5,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "count(max by (proxy, machine) (max_over_time(llm_proxy_info{proxy=~\"$proxy\", machine=~\"$machine\"}[1d])) unless max by (proxy, machine) (llm_proxy_info{proxy=~\"$proxy\", machine=~\"$machine\"})) or vector(0)",
+          "refId": "A",
+          "instant": true,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "central-prom"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "no data",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#FADE2A"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "5xx error rate",
+      "description": "Server errors only. A 4xx is usually the client's own request.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "central-prom"
+      },
+      "gridPos": {
+        "x": 10,
+        "y": 21,
+        "w": 5,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "sum((increase(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\",status_class=\"5xx\"}[$__range]) and last_over_time(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\",status_class=\"5xx\"}[30d] offset $__range)) or (increase(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\",status_class=\"5xx\"}[$__range]) >= last_over_time(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\",status_class=\"5xx\"}[$__range])) or last_over_time(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\",status_class=\"5xx\"}[$__range])) / ((sum((increase(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) and last_over_time(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[30d] offset $__range)) or (increase(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) >= last_over_time(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) or last_over_time(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) > 0)",
+          "refId": "A",
+          "instant": true,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "central-prom"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "noValue": "no data",
+          "decimals": 2,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#73BF69"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Requests per minute",
+      "description": "Requests per minute over the last 5 minutes, summed across the selected proxies and machines. A request counts when it finishes, whatever its status (2xx, 4xx, 5xx). Policy denials count; tunnelled traffic does not.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "central-prom"
+      },
+      "gridPos": {
+        "x": 15,
+        "y": 21,
+        "w": 5,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[5m])) * 60",
+          "refId": "A",
+          "instant": true,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "central-prom"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "no data",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "Alerts firing",
+      "description": "Alerts that Prometheus has in the firing state. The list is in Alertmanager.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "central-prom"
+      },
+      "gridPos": {
+        "x": 20,
+        "y": 21,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "count(ALERTS{alertstate=\"firing\"}) or vector(0)",
+          "refId": "A",
+          "instant": true,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "central-prom"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "no data",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#73BF69"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    }
+  ]
+}
