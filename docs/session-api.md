@@ -417,8 +417,9 @@ forwarded conversation, both masked. A keeper entry is released at its hold
 deadline, if no request or reload releases it first:
 
 - on a thread with a 5-minute cache, `(max_pings + 1) × idle_seconds`: 12 minutes with no
-  particular wait, 16 waiting on a person, 24 waiting on background work, or 36 waiting on its
-  own tool call, since the engine's wait plan (on by default) raises max_pings for the wait;
+  particular wait, 16 waiting on a person, or 36 waiting on its own tool call, since the
+  engine's wait plan (on by default) raises max_pings for the wait (its background-wait count
+  never applies here, since Cortex gives it no open-task data);
 - on a thread billed at the 1-hour tier, the engine's 1-hour schedule: 118 minutes
   at its defaults, and never more than 236 minutes.
 

@@ -273,9 +273,10 @@ credential and the thread's last request body (the whole forwarded conversation)
 and a ping re-sends that body. The context-guru state DOES
 hold content (the summary checkpoint and other text the plugin made), and its rows stay 30 days
 after their last write. A keeper entry goes at `(max_pings + 1) × idle_seconds` on a 5-minute cache: 12 minutes with no
-particular wait, 16 waiting on a person, 24 waiting on background work, or 36 waiting on its own
-tool call, since the engine's wait plan (on by default) raises max_pings for the wait (base 2,
-up to 8 for a tool wait). And at 118 minutes (never more than 236) on a thread
+particular wait, 16 waiting on a person, or 36 waiting on its own tool call, since the engine's
+wait plan (on by default) raises max_pings for the wait (base 2, up to 8 for a tool wait; its
+background-wait count never applies here, since Cortex gives it no open-task data). And at 118
+minutes (never more than 236) on a thread
 billed at the 1-hour tier. The rest has no time bound while the process runs: the in-memory
 maps keep at most 10,000 threads, dropping the oldest, and the snapshot (rewritten every 60s)
 holds what memory holds, except that it leaves out the threads seen longest ago once the file

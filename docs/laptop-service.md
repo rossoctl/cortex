@@ -706,8 +706,9 @@ Neither erases the savings accountant's own per-session state: ids, content hash
 billing mode, no content, in memory and in `~/.cortex/accountant-state.json`. Nor does either
 erase the keep-alive keeper's entries, which hold the caller's credential and the thread's last
 request body (the whole conversation), both masked. A keeper entry goes within 12 minutes with
-no particular wait, 16 waiting on a person, 24 waiting on background work, or 36 waiting on its
-own tool call (the engine's wait plan raises the ping count for the wait), or within 118 minutes
+no particular wait, 16 waiting on a person, or 36 waiting on its own tool call (the engine's
+wait plan raises the ping count for the wait; its background-wait count never applies here,
+since Cortex gives it no open-task data), or within 118 minutes
 (never more than 236) on a thread billed at the 1-hour tier. The rest stays until newer sessions push it out (at most 10,000 threads are
 kept), and a state file older than 1 hour is not read at startup (see
 [session-api.md](session-api.md#delete-v1sessions)).
