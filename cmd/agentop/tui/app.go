@@ -707,9 +707,11 @@ type model struct {
 
 	// titleScroll scrolls the selected row's TITLE cell; see sessions_title_scroll.go.
 	titleScroll titleScroll
-	eventsTbl   table.Model
-	pipelineTbl table.Model
-	detailVp    viewport.Model
+	// noTitleScroll keeps every TITLE cell static. See WithoutTitleScroll.
+	noTitleScroll bool
+	eventsTbl     table.Model
+	pipelineTbl   table.Model
+	detailVp      viewport.Model
 	// detailDoc is detailVp's text, searched — see searchdoc.go. Shared by message detail
 	// and plugin detail, as the viewport is.
 	detailDoc   searchDoc
@@ -976,6 +978,12 @@ type Option func(*model)
 // shift here every session would read as days old and render as an absolute date.
 func WithClock(fn func() time.Time) Option {
 	return func(m *model) { m.now = fn }
+}
+
+// WithoutTitleScroll keeps the selected row's TITLE cell static. No production caller: the
+// README demo needs the same frame on each run, and its pump waits for the ticks to stop.
+func WithoutTitleScroll() Option {
+	return func(m *model) { m.noTitleScroll = true }
 }
 
 // clock is the instant event timestamps are measured against. See model.now.

@@ -107,7 +107,7 @@ func (m *model) armTitleScroll() tea.Cmd {
 			m.rebuildSessionsTable() // puts the static cell back on the row that the cursor left
 		}
 	}
-	if ts.running || id == "" {
+	if ts.running || id == "" || m.noTitleScroll {
 		return nil
 	}
 	if _, _, _, _, ok := m.titleScrollTarget(); !ok {

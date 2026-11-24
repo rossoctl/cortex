@@ -280,7 +280,7 @@ func NewCapturer(f Fixture, cols, rows int, ledgerDir string, start time.Duratio
 
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancel = cancel
-	c.m = tui.New(ctx, apiclient.New(c.ts.URL), tui.WithClock(c.now))
+	c.m = tui.New(ctx, apiclient.New(c.ts.URL), tui.WithClock(c.now), tui.WithoutTitleScroll())
 	c.pump(c.m.Init())
 	c.resize()
 
