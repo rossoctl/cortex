@@ -8,20 +8,18 @@
 #   2. which labels exist. Only machine, preset, service_version and proxy are kept (metrics spec
 #      5.6). A sender cannot add a label.
 #
-# AUTHENTICATION IS ON. Each receiver requires `Authorization: Bearer <token>`. There is one token for
-# each proxy kind, shared by every install of that kind, read from /etc/otelcol/tokens/<kind>.txt
-# (Secret `collector-tokens`). The collector reads the files once, at start: after a token change, run
-# `oc rollout restart deploy/otel-collector`. A token proves "a Cortex install" (or "a context-guru
-# install"), not which one: `machine` is still the sender's claim. Tokens for each install, binding a
-# token to a machine and mutual TLS are tracked in rossoctl/context-guru#1130.
+# AUTHENTICATION: the Cortex receiver (4318) takes a push with no token, so a default Cortex
+# install pushes with no setup. A token it sends is ignored. Anyone who can reach the Route can
+# write Cortex series under any `machine` name: `machine` is the sender's claim, as it was with
+# the shared token. The context-guru receiver (4319) still requires `Authorization: Bearer
+# <token>`, read from /etc/otelcol/tokens/context-guru.txt (Secret `collector-tokens`) once, at
+# start: after a token change, run `oc rollout restart deploy/otel-collector`. Tokens for each
+# install, binding a token to a machine and mutual TLS are tracked in rossoctl/context-guru#1130.
 #
 # TLS is terminated in front of this, by the OpenShift router (edge Routes). The receivers listen on
 # plain HTTP inside the cluster. See README.md.
 
 extensions:
-  bearertokenauth/cortex:
-    scheme: Bearer
-    filename: /etc/otelcol/tokens/cortex.txt
   bearertokenauth/contextguru:
     scheme: Bearer
     filename: /etc/otelcol/tokens/context-guru.txt
@@ -33,8 +31,6 @@ receivers:
     protocols:
       http:
         endpoint: 0.0.0.0:4318
-        auth:
-          authenticator: bearertokenauth/cortex
   otlp/contextguru:
     protocols:
       http:
@@ -98,7 +94,7 @@ exporters:
     metrics_endpoint: http://prometheus:9090/api/v1/otlp/v1/metrics
 
 service:
-  extensions: [health_check, bearertokenauth/cortex, bearertokenauth/contextguru]
+  extensions: [health_check, bearertokenauth/contextguru]
   pipelines:
     metrics/cortex:
       receivers: [otlp/cortex]

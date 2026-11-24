@@ -2,14 +2,16 @@
 # Smoke test for a deployed central stack. Run after `oc apply -k`, logged in to the cluster, in the
 # stack's namespace.
 #
-#   CORTEX_TOKEN=... CG_TOKEN=... sh deploy/central/smoke.sh <collector-host>
+#   CG_TOKEN=... sh deploy/central/smoke.sh <collector-host>
 #
-# The tokens come from the environment, not argv, so they do not show in `ps`.
+# The token comes from the environment, not argv, so it does not show in `ps`. The Cortex path
+# takes no token.
 #
 # It pushes one OTLP/JSON counter through each Route, with a forged `proxy` and an extra resource
 # attribute, and checks:
-#   1. a push with the right token is accepted (2xx), on both paths;
-#   2. a push with no token, or a wrong one, gets 401;
+#   1. a Cortex push is accepted (2xx) with no token and with any token; a context-guru push is
+#      accepted with the right token;
+#   2. a context-guru push with no token, or a wrong one, gets 401;
 #   3. a plain-http push is not accepted;
 #   4. Prometheus stores the counter with proxy="cortex" / proxy="context-guru" (not the forged
 #      value), machine set from service.instance.id, and no extra label;
@@ -21,7 +23,6 @@
 set -eu
 
 host="${1:?usage: smoke.sh <collector-host>}"
-: "${CORTEX_TOKEN:?set CORTEX_TOKEN}"
 : "${CG_TOKEN:?set CG_TOKEN}"
 
 fail=0
@@ -31,7 +32,6 @@ bad()  { printf 'FAIL  %s\n' "$1"; fail=1; }
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 umask 077
-printf 'Authorization: Bearer %s\n' "$CORTEX_TOKEN" > "$work/h-cortex"
 printf 'Authorization: Bearer %s\n' "$CG_TOKEN" > "$work/h-cg"
 printf 'Authorization: Bearer %s\n' "wrong-$(date +%s)" > "$work/h-wrong"
 
@@ -87,17 +87,16 @@ push() {
 expect_2xx() { case "$2" in 2??) pass "$1 ($2)";; *) bad "$1: got $2, want 2xx";; esac; }
 expect_401() { if [ "$2" = 401 ]; then pass "$1 (401)"; else bad "$1: got $2, want 401"; fi; }
 
-code=$(push https /cortex "$work/h-cortex" "$run_id-cortex");     expect_2xx "cortex push with token" "$code"
+code=$(push https /cortex - "$run_id-cortex");                   expect_2xx "cortex push with no token" "$code"
+code=$(push https /cortex "$work/h-wrong" "$run_id-cortex-tok"); expect_2xx "cortex push with a token (ignored)" "$code"
 code=$(push https /context-guru "$work/h-cg" "$run_id-cg");       expect_2xx "context-guru push with token" "$code"
 
-code=$(push https /cortex - "$run_id-none")
-expect_401 "cortex push with no token" "$code"
-code=$(push https /cortex "$work/h-wrong" "$run_id-wrong")
-expect_401 "cortex push with a wrong token" "$code"
-code=$(push https /context-guru "$work/h-cortex" "$run_id-cross")
-expect_401 "context-guru push with the cortex token" "$code"
+code=$(push https /context-guru - "$run_id-none")
+expect_401 "context-guru push with no token" "$code"
+code=$(push https /context-guru "$work/h-wrong" "$run_id-wrong")
+expect_401 "context-guru push with a wrong token" "$code"
 
-code=$(push http /cortex "$work/h-cortex" "$run_id-http")
+code=$(push http /cortex - "$run_id-http")
 case "$code" in 2??) bad "plain-http push was accepted ($code)";; *) pass "plain-http push not accepted ($code)";; esac
 
 # query <promql>: the JSON result vector, from inside the Prometheus pod (it has no Route).
@@ -138,11 +137,11 @@ print("PASS  series " + sys.argv[2] + " stored with proxy=" + want + ", labels "
 check_series "$run_id-cortex" cortex
 check_series "$run_id-cg" context-guru
 
-code=$(push https /cortex "$work/h-cortex" "$run_id-dp" dp)
+code=$(push https /cortex - "$run_id-dp" dp)
 expect_2xx "cortex push with a data-point-level forged proxy/machine" "$code"
 check_series "$run_id-dp" cortex
 
-out=$(query "count(smoke_test_total{machine=~\"$run_id-(none|wrong|cross|http)\"})")
+out=$(query "count(smoke_test_total{machine=~\"$run_id-(none|wrong|http)\"})")
 if printf '%s' "$out" | python3 -I -c 'import json,sys; sys.exit(0 if not json.load(sys.stdin)["data"]["result"] else 1)'; then
   pass "refused pushes stored nothing"
 else
