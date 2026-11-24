@@ -245,3 +245,93 @@ func TestIsBlockList(t *testing.T) {
 		t.Error("bare key followed by another key misdetected as a block list")
 	}
 }
+
+const contextGuruConfig = `pipeline:
+  outbound:
+    plugins:
+      - name: inference-parser
+      - name: context-guru
+        on_error: enforce
+        config:
+          engine:
+            preset: xhigh
+            components:
+              summarize:
+                remove: [keep-me]
+              toolfilter:
+                # The prune list.
+                remove: []
+              other:
+                remove: [keep-me-too]
+      - name: tool-prune
+        config:
+          remove: [OldTool]
+`
+
+// TestPatchConfig_ContextGuruPath: with a context-guru entry, only its
+// toolfilter remove: line changes. A remove: of another component, and
+// tool-prune's list, stay. A second run is a no-op.
+func TestPatchConfig_ContextGuruPath(t *testing.T) {
+	p := writeConfig(t, contextGuruConfig)
+	changed, err := PatchConfig(p, []string{"NotebookEdit", "WebSearch"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected the file to change")
+	}
+	out, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Replace(contextGuruConfig,
+		"                remove: []\n", "                remove: [NotebookEdit, WebSearch]\n", 1)
+	if string(out) != want {
+		t.Errorf("more than the toolfilter remove line changed:\n%s", out)
+	}
+	changed, err = PatchConfig(p, []string{"NotebookEdit", "WebSearch"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Error("a second run with the same candidates changed the file")
+	}
+}
+
+// TestPatchConfig_FallsBackToToolPrune: a config with no context-guru entry
+// keeps the tool-prune path.
+func TestPatchConfig_FallsBackToToolPrune(t *testing.T) {
+	p := writeConfig(t, sampleConfig)
+	if _, err := PatchConfig(p, []string{"WebSearch"}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := strings.Replace(sampleConfig, "          remove: []\n", "          remove: [WebSearch]\n", 1); string(out) != want {
+		t.Errorf("tool-prune remove line not patched alone:\n%s", out)
+	}
+}
+
+// TestPatchConfig_ContextGuruWithoutRemoveKey: a context-guru entry with no
+// toolfilter remove: line is an error with the hand fix. The tool-prune list
+// is not changed in its place, because context-guru reads the other list.
+func TestPatchConfig_ContextGuruWithoutRemoveKey(t *testing.T) {
+	for name, body := range map[string]string{
+		"no toolfilter":    "pipeline:\n  outbound:\n    plugins:\n      - name: context-guru\n        config:\n          engine:\n            preset: xhigh\n      - name: tool-prune\n        config:\n          remove: []\n",
+		"remove elsewhere": "pipeline:\n  outbound:\n    plugins:\n      - name: context-guru\n        config:\n          engine:\n            components:\n              toolfilter:\n                defer: auto\n              other:\n                remove: []\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := writeConfig(t, body)
+			_, err := PatchConfig(p, []string{"WebSearch"})
+			want := "context-guru entry in " + p + " has no remove: key under engine.components.toolfilter — add remove: [] there and re-run"
+			if err == nil || err.Error() != want {
+				t.Fatalf("err = %v, want %q", err, want)
+			}
+			if out, _ := os.ReadFile(p); string(out) != body {
+				t.Errorf("the file changed:\n%s", out)
+			}
+		})
+	}
+}
