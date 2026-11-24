@@ -21,7 +21,7 @@ import (
 
 func outboundCfg(praxis bool) *config.Config {
 	cfg := praxisCfg(praxis)
-	cfg.Pipeline.Outbound.Plugins = []config.PluginEntry{{Name: "inference-parser"}, {Name: "tool-prune"}}
+	cfg.Pipeline.Outbound.Plugins = []config.PluginEntry{{Name: "inference-parser"}, {Name: "sparc"}}
 	return cfg
 }
 
@@ -35,7 +35,7 @@ func TestOutboundEntries_PraxisSkipsPlugins(t *testing.T) {
 	if !strings.Contains(buf.String(), "level=WARN") {
 		t.Errorf("log %q is not at Warn", buf.String())
 	}
-	for _, name := range []string{"inference-parser", "tool-prune"} {
+	for _, name := range []string{"inference-parser", "sparc"} {
 		if !strings.Contains(buf.String(), name) {
 			t.Errorf("log %q does not name %s", buf.String(), name)
 		}
@@ -46,7 +46,7 @@ func TestOutboundEntries_PraxisSkipsPlugins(t *testing.T) {
 
 	buf.Reset()
 	got := outboundEntries(outboundCfg(false), log)
-	if len(got) != 2 || !slices.Equal([]string{got[0].Name, got[1].Name}, []string{"inference-parser", "tool-prune"}) {
+	if len(got) != 2 || !slices.Equal([]string{got[0].Name, got[1].Name}, []string{"inference-parser", "sparc"}) {
 		t.Fatalf("direct mode got %v", got)
 	}
 	if buf.Len() != 0 {
@@ -195,5 +195,35 @@ func TestOutboundEntries_WarnsDeprecatedCpexOnLocalInstall(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), "deprecated") {
 		t.Errorf("praxis mode logged the deprecation: %q", buf.String())
+	}
+}
+
+func TestWarnDeprecatedToolPrune(t *testing.T) {
+	withPrune := praxisCfg(false)
+	withPrune.Pipeline.Outbound.Plugins = []config.PluginEntry{{Name: "tool-prune"}, {Name: "context-guru"}}
+	withoutPrune := praxisCfg(false)
+	withoutPrune.Pipeline.Outbound.Plugins = []config.PluginEntry{{Name: "context-guru"}}
+	praxis := praxisCfg(true)
+	praxis.Pipeline.Outbound.Plugins = withPrune.Pipeline.Outbound.Plugins
+
+	cg := []string{"tool-prune", "context-guru"}
+	for _, tc := range []struct {
+		name       string
+		cfg        *config.Config
+		registered []string
+		want       int
+	}{
+		{"tool-prune listed, context-guru registered", withPrune, cg, 1},
+		{"no tool-prune in the list", withoutPrune, cg, 0},
+		{"context-guru not registered", withPrune, []string{"tool-prune"}, 0},
+		{"praxis mode", praxis, cg, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			warnDeprecatedToolPrune(tc.cfg, tc.registered, slog.New(slog.NewTextHandler(&buf, nil)))
+			if n := strings.Count(buf.String(), deprecatedToolPruneWarning); n != tc.want {
+				t.Errorf("logged the warning %d times, want %d: %q", n, tc.want, buf.String())
+			}
+		})
 	}
 }
