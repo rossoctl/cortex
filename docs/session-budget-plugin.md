@@ -63,7 +63,7 @@ pipeline:
 | `max_cache_write_tokens` | 0 | Per-kind ceiling on prompt tokens written to cache. 0 = no limit. |
 | `max_output_tokens` | 0 | Per-kind ceiling on generated completion tokens. 0 = no limit. |
 | `max_reasoning_tokens` | 0 | Per-kind ceiling on reasoning-only output tokens (subset of output). 0 = no limit. See note below — this limit was inert on Anthropic traffic until recently. |
-| `max_calls` | 0 | LLM/inference call cap (from `inference-parser`); MCP, A2A, and other outbound traffic do not count. 0 = no limit. See note below on enforcement scope. |
+| `max_calls` | 0 | LLM/inference call cap (from `inference-parser`, plus one per context-guru keep-alive ping); MCP, A2A, and other outbound traffic do not count. 0 = no limit. See note below on enforcement scope. |
 | `max_duration_seconds` | 0 | Session lifetime cap (0 = no limit) |
 | `on_exceed` | `deny` | `deny` (403), `observe` (log only), or `pause` (webhook) |
 | `pause_webhook` | — | URL to POST on breach (required when `on_exceed=pause`) |
@@ -90,7 +90,8 @@ OpenAI-format endpoints were never affected: that path has always read
 `completion_tokens_details.reasoning_tokens`.
 
 **`max_calls` enforcement scope.** Only inference calls surfaced by
-`inference-parser` increment the counter, but the limit check runs on
+`inference-parser` and context-guru keep-alive pings (where accounting
+is on) increment the counter, but the limit check runs on
 every outbound request. Once the LLM counter crosses `max_calls`, the
 next outbound of any kind (MCP tool call, A2A message, etc.) is the one
 that gets the 403.

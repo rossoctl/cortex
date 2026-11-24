@@ -51,7 +51,7 @@ type config struct {
 	MaxCacheWriteTokens    int64  `json:"max_cache_write_tokens" description:"Per-kind ceiling for prompt tokens written to cache. 0 = no limit."`
 	MaxOutputTokens        int64  `json:"max_output_tokens" description:"Per-kind ceiling for generated completion tokens. 0 = no limit."`
 	MaxReasoningTokens     int64  `json:"max_reasoning_tokens" description:"Per-kind ceiling for reasoning-only output tokens (subset of output). 0 = no limit."`
-	MaxCalls               int64  `json:"max_calls" description:"Max LLM/inference calls per session. Only inference-parser output increments this counter; MCP tool calls and other outbound traffic do not. Once the limit is reached, all subsequent outbound requests (including MCP tool calls) are blocked until the session resets. 0 = no limit."`
+	MaxCalls               int64  `json:"max_calls" description:"Max LLM/inference calls per session. Only inference-parser output and context-guru keep-alive pings (where accounting is on) increment this counter; MCP tool calls and other outbound traffic do not. Once the limit is reached, all subsequent outbound requests (including MCP tool calls) are blocked until the session resets. 0 = no limit."`
 	MaxDurationSeconds     int64  `json:"max_duration_seconds" description:"Wall-clock session lifetime in seconds. 0 = no limit."`
 	OnExceed               string `json:"on_exceed" description:"Action on breach: deny, observe (shadow), or pause (HITL webhook approval)." default:"deny" enum:"deny,observe,pause"`
 	PauseWebhook           string `json:"pause_webhook" description:"URL to POST for approval when on_exceed=pause. Required when on_exceed=pause."`
