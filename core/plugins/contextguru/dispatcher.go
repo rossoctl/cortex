@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/rossoctl/context-guru/dispatch"
+	"github.com/rossoctl/context-guru/tooldefer"
 	"github.com/rossoctl/cortex/core/cost/pricing"
 )
 
@@ -41,6 +42,15 @@ type cortexDispatcher struct {
 type heldTarget struct {
 	scheme, host string
 	auth         []heldHeader
+	// authBeta is the oauth-* subset of the request's own Anthropic-Beta header
+	// (tooldefer.AuthBetas), held alongside the credential so Do can set it on a call this
+	// dispatcher makes on that credential's behalf. cheapmodel.Anthropic's own headers
+	// (anthropicHeaders) carry no Anthropic-Beta at all: on a Claude subscription (OAuth) token,
+	// direct api.anthropic.com traffic can need an oauth-* beta to authenticate, and without it
+	// the incoming-model call 401s — fails open (the summarizer does nothing that turn), but
+	// silently (review finding). authBeta has no credential in it: AuthBetas keeps only the
+	// oauth-* values, which name a capability, not a secret.
+	authBeta string
 }
 
 // newCortexDispatcher copies c and overrides CheckRedirect unconditionally, so refusing a
@@ -91,6 +101,7 @@ func (d *cortexDispatcher) hold(scheme, host string, reqHeaders http.Header) dis
 			auth = append(auth, heldHeader{name: name, val: b})
 		}
 	}
+	authBeta := tooldefer.AuthBetas(reqHeaders.Values("Anthropic-Beta"))
 	if scheme == "" {
 		scheme = "https"
 	}
@@ -98,7 +109,7 @@ func (d *cortexDispatcher) hold(scheme, host string, reqHeaders http.Header) dis
 	defer d.mu.Unlock()
 	d.next++
 	ref := dispatch.Ref("cortex:" + strconv.FormatUint(d.next, 10))
-	d.held[ref] = heldTarget{scheme: scheme, host: host, auth: auth}
+	d.held[ref] = heldTarget{scheme: scheme, host: host, auth: auth, authBeta: authBeta}
 	return ref
 }
 
@@ -158,6 +169,14 @@ func (d *cortexDispatcher) Do(ctx context.Context, req dispatch.Request) (dispat
 	hreq.GetBody = func() (io.ReadCloser, error) { return newWipeReader(req.Body), nil }
 	for name, vs := range req.Header {
 		hreq.Header[name] = append([]string(nil), vs...)
+	}
+	// Fill in the request's own oauth-* Anthropic-Beta, when the caller set none: cheapmodel's
+	// own headers (anthropicHeaders) never set one, so without this a Claude subscription (OAuth)
+	// token's incoming-model calls can 401 for a missing beta the direct client always sent
+	// (review finding). A caller that DID set one (tooldefer.RunProbeBeta's own beta argument)
+	// is left alone — its choice is deliberate, not an oversight to fill.
+	if h.authBeta != "" && hreq.Header.Get("Anthropic-Beta") == "" {
+		hreq.Header.Set("Anthropic-Beta", h.authBeta)
 	}
 	if d.sentinel != "" {
 		hreq.Header.Set(sentinelHeader, d.sentinel)

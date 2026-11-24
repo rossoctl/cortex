@@ -41,6 +41,7 @@ import (
 
 	bschemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/rossoctl/context-guru/apply"
+	"github.com/rossoctl/context-guru/cheapmodel"
 	cgcomponents "github.com/rossoctl/context-guru/components"
 	_ "github.com/rossoctl/context-guru/components/offload"  // register offload components
 	_ "github.com/rossoctl/context-guru/components/reformat" // register reformat components
@@ -157,7 +158,7 @@ type contextGuruConfig struct {
 // context-guru-proxy has no equivalent knob either -- it hardcodes its own routes
 // (/openai, /anthropic, /healthz, /stats, /expand) the same way, because the whole point of
 // that binary is to always run the engine on them. See gated.
-var inferencePaths = []string{"/v1/chat/completions", "/v1/completions", "/v1/messages"}
+var inferencePaths = []string{"/v1/chat/completions", "/v1/completions", "/v1/messages", "/v1/responses"}
 
 // validCacheModes are apply.Opts.CacheMode's only legal values ("" counts as "auto" and is not
 // listed here, since Configure treats an absent key as unset, not as the literal string).
@@ -294,6 +295,12 @@ type ContextGuru struct {
 	// accounted through it (ping.go).
 	acct *accounting.Host
 
+	// holds sends the engine's calls on an Anthropic request's own credential, and stash keeps
+	// the last forwarded body the summarizer's prefix ask appends to; see incoming_anthropic.go.
+	// Separate from disp, which belongs to the keep-alive.
+	holds *credHolds
+	stash *sentStash
+
 	// windows resolves a model's context window; see windows.go.
 	windows models.Resolver
 	// cgSessions maps a Cortex session id to the session key the engine derived for it
@@ -386,10 +393,15 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 	}
 	p.cfg = decoded
 
-	// Engine config: default to the balanced preset when none is supplied. injectDefaultCacheStrategy
-	// then fills `cache: {strategy: auto}` ONLY when the operator's own engine: YAML has no cache:
-	// key at all -- keep-alive stays on by default on every install, same as before keep_alive:
-	// was retired, but through the engine's own strategy table rather than a second copy of it.
+	// Engine config: default to the xhigh preset when none is supplied. xhigh includes the
+	// model-calling components (cache_aware_summarizer, extract_llm, extract_llm_sweep). They act
+	// only where a model client resolves (a model: block, or the request's own model), and each
+	// call they make is reported as a KindSpend op (cgModel, meteredDispatcher).
+	//
+	// injectDefaultCacheStrategy then fills `cache: {strategy: auto}` ONLY when the operator's
+	// own engine: YAML has no cache: key at all -- keep-alive stays on by default on every
+	// install, same as before keep_alive: was retired, but through the engine's own strategy
+	// table rather than a second copy of it.
 	//
 	// engine: with no value, or every child commented out, decodes to the JSON literal "null"
 	// (len 4), not an empty json.RawMessage -- treated the same as an absent engine: key here,
@@ -399,12 +411,19 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 	// see and would not expect).
 	engine := p.cfg.Engine
 	if len(bytes.TrimSpace(engine)) == 0 || bytes.Equal(bytes.TrimSpace(engine), []byte("null")) {
-		engine = []byte("preset: balanced")
+		engine = []byte("preset: xhigh")
 	}
 	engine = injectDefaultCacheStrategy(engine)
 	cfg, err := cgconfig.LoadBytes(engine)
 	if err != nil {
 		return fmt.Errorf("context-guru engine config: %w", err)
+	}
+	// marker_mode: full needs the expand loop: re-sending upstream with the stashed content when
+	// the model calls context_guru_expand. Cortex cannot replace a streamed response with that
+	// second call's answer yet (OnResponse is a pass-through). So the cap is applied HERE, whatever
+	// the preset says, because every offloader defaults to full the moment it is on.
+	if err := cfg.CapMarkerMode("summary"); err != nil {
+		return fmt.Errorf("context-guru config: %w", err)
 	}
 	pipe, err := cfg.Build(logEmitter{}) // log what the engine does per request/component
 	if err != nil {
@@ -506,6 +525,17 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 			}
 		}
 	}
+	// The incoming-model holds for Anthropic requests (incoming_anthropic.go). Built here, once
+	// nothing above can fail, so a failed Configure leaves the old holds in place. A second
+	// Configure on one instance releases the first one's holds.
+	if p.holds != nil {
+		p.holds.releaseAll()
+		p.holds.d.Close()
+	}
+	hd := newCortexDispatcher(newPingClient(p.localInstall))
+	hd.sentinel = p.sentinel
+	hd.rates = func() pricing.Resolver { return p.rates }
+	p.holds, p.stash = newCredHolds(hd), newSentStash()
 	slog.Info("context-guru configured",
 		"paths", inferencePaths, "modelConfigured", p.static != nil,
 		"engineBytes", len(engine), "stateDB", p.statePath)
@@ -585,13 +615,19 @@ func injectDefaultCacheStrategy(engine []byte) []byte {
 // Init attaches the store's disk copy and starts its flusher. It runs in Init and not in
 // Configure so the flusher is under the pipeline's Start/unwind/Stop contract: a pipeline that a
 // failed build or reload drops is never started, and so holds no flusher. Init also starts the
-// keep-alive sweep, when the resolved cache policy has it on. It FAILS OPEN and never returns an error.
+// keep-alive sweep, when the resolved cache policy has it on, and the incoming-model
+// credential-hold sweep (held, not a nil/zero holds: Configure always builds one, see
+// newCredHolds there). Each releases a hold idle past its own TTL on a timer, not only when a
+// later request happens to ask for one. It FAILS OPEN and never returns an error.
 func (p *ContextGuru) Init(context.Context) error {
 	if old := p.stateDisk.Swap(attachStateDB(p.store, p.stateDB, p.statePath)); old != nil {
 		_ = old.Close()
 	}
 	if p.keeper != nil {
 		p.keeper.Start()
+	}
+	if p.holds != nil {
+		p.holds.startSweep()
 	}
 	return nil
 }
@@ -643,20 +679,42 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 		slog.Debug("context-guru skipped request with no session identity", "path", pipeline.SanitizeLogValue(pctx.Path))
 		return cont
 	}
-	provider := providerFor(pctx.Path)
-	models := p.modelsFor(pctx, provider)
+	provider, api := dialectFor(pctx.Path)
+	models := p.modelsFor(pctx, provider, api)
 	before := len(pctx.Body)
 	window, exact := p.windowFor(ctx, pctx)
+	var asker cgcomponents.PrefixAsker
+	if cli, ok := models.Incoming.(cheapmodel.Anthropic); ok {
+		cli.MaxTokens = cheapmodel.PrefixAskMaxTokens
+		asker = prefixAsker{stash: p.stash, cli: cli}
+		if !isSubagent(pctx) {
+			// The body as this plugin received it, kept on THIS request's own pctx, not in a
+			// map keyed by session (review finding): Claude Code sends one-shot calls (title,
+			// permission monitor) under the same session id as the main turn, so two requests
+			// on one session can overlap in flight. A session-keyed map let the later Store
+			// win regardless of which request it belonged to, so OnFinish could pair one
+			// request's received body with a DIFFERENT, concurrent request's forwarded body —
+			// silent context loss once the summarizer spliced the mismatched pair into the
+			// conversation. pctx is single-threaded per request (SetState's doc), so keying on
+			// it instead makes the pairing exact by construction. SetBody replaces pctx.Body
+			// rather than writing into it, so this snapshot is unaffected by what BodyOpts
+			// does below. OnFinish reads it back and stashes it beside the body that went
+			// upstream.
+			pipeline.SetState(pctx, pendingBodyStateKey, &pendingBody{body: pctx.Body})
+		}
+	}
 	// HeadTTL1h/HeadTTLMinBytes are cache.strategy: 1-hour-head's whole effect (cachePolicy):
 	// without them here, that strategy resolved a policy nothing read, and OnRequest asked for
 	// the plain 5-minute tier regardless (review finding).
 	res := apply.BodyOpts(ctx, p.pipe, p.store, apply.Opts{
 		Provider:        provider,
 		Body:            pctx.Body,
+		API:             api,
 		Session:         sid,
 		Models:          models,
 		Window:          window,
 		WindowExact:     exact,
+		PrefixAsk:       asker,
 		CacheMode:       p.cfg.CacheMode,
 		HeadTTL1h:       p.kaPol.HeadTTL1h,
 		HeadTTLMinBytes: p.kaPol.HeadTTLMinBytes,
@@ -759,8 +817,10 @@ func (p *ContextGuru) selfCall(pctx *pipeline.Context) bool {
 	return pctx.Headers != nil && p.sentinel != "" && pctx.Headers.Get(sentinelHeader) == p.sentinel
 }
 
-// Shutdown stops the sweep and releases every held credential before returning: on a hot-reload
-// this instance is the old one, and its holds must not outlive it.
+// Shutdown stops both sweeps and releases every held credential before returning: on a
+// hot-reload this instance is the old one, and its holds must not outlive it. The hold sweep is
+// stopped before releaseAll, so the sweep goroutine's own release of an expired hold cannot race
+// this one releasing the same hold a second time.
 func (p *ContextGuru) Shutdown(context.Context) error {
 	p.stopMu.Lock()
 	p.stopped.Store(true)
@@ -770,6 +830,11 @@ func (p *ContextGuru) Shutdown(context.Context) error {
 	}
 	if p.disp != nil {
 		p.disp.Close()
+	}
+	if p.holds != nil {
+		p.holds.stopSweep()
+		p.holds.releaseAll()
+		p.holds.d.Close()
 	}
 	if d := p.stateDisk.Swap(nil); d != nil {
 		_ = d.Close()
@@ -805,7 +870,7 @@ func (p *ContextGuru) OnFinish(_ context.Context, pctx *pipeline.Context) {
 	sid := sessionID(pctx)
 	arrived := pipeline.GetState[kaArrived](pctx, kaArrivedStateKey)
 	// Depart this request's arrival on every path that does not reach Record — the early returns
-	// below, and a panic in recordBilled or recordFor, which the pipeline's
+	// below, and a panic in recordBilled, stashSent or recordFor, which the pipeline's
 	// dispatchFinish recovers (without this the arrival would stay open until a restart). Not unconditional:
 	// Record departs for itself, and a second Depart would release a CONCURRENT request's count
 	// on the same thread. `recorded` is set immediately before Record.
@@ -830,6 +895,7 @@ func (p *ContextGuru) OnFinish(_ context.Context, pctx *pipeline.Context) {
 	}
 	if sid != "" {
 		p.recordBilled(pctx, sid)
+		p.stashSent(pctx, sid)
 	}
 	if p.keeper == nil || pipeline.GetState[kaShadow](pctx, kaShadowStateKey) != nil {
 		return
@@ -875,13 +941,17 @@ func (p *ContextGuru) staticModelFor(pctx *pipeline.Context) cgcomponents.Model 
 	return m
 }
 
-// providerFor maps the request path to the bifrost provider dialect the engine
-// parses the body as.
-func providerFor(path string) bschemas.ModelProvider {
-	if strings.HasSuffix(path, "/v1/messages") {
-		return bschemas.Anthropic
+// dialectFor maps the request path to the bifrost provider the engine parses the body as, and
+// the wire envelope within it: OpenAI's Responses API ("responses") is a different body shape
+// (instructions + input) from Chat Completions, which apply.Opts.API selects.
+func dialectFor(path string) (bschemas.ModelProvider, string) {
+	switch {
+	case strings.HasSuffix(path, "/v1/messages"):
+		return bschemas.Anthropic, ""
+	case strings.HasSuffix(path, "/v1/responses"):
+		return bschemas.OpenAI, "responses"
 	}
-	return bschemas.OpenAI
+	return bschemas.OpenAI, ""
 }
 
 // oneHourFirstFor is apply.Opts.OneHourFirst, the 1-hour-always/-on-wait strategies' own effect
@@ -917,9 +987,9 @@ func (p *ContextGuru) oneHourFirstFor(pctx *pipeline.Context, provider bschemas.
 }
 
 // modelsFor is the engine's model spec for one request: the static model, and the request's own
-// model as the incoming one (incomingModel; OpenAI only). An absent client stays a nil
-// interface, never a typed nil: the engine checks the interface.
-//
+// model as the incoming one. On Anthropic that is cheapmodel.Anthropic on the caller's held
+// credential (incoming_anthropic.go); on OpenAI chat completions it is incomingModel. An absent
+// client stays a nil interface, never a typed nil: the engine checks the interface.
 // modelsFor builds the static and incoming models for this request, UNLESS the plugin runs
 // under on_error: observe, when it builds neither.
 //
@@ -927,19 +997,25 @@ func (p *ContextGuru) oneHourFirstFor(pctx *pipeline.Context, provider bschemas.
 // effect". The keep-alive keeper already holds this line (OnRequest: "UNDER on_error: observe
 // NOTHING IS HELD... that ping is real, billed spend — the opposite of a shadow run"). Before
 // this, the engine's own model-calling components (cache_aware_summarizer, extract_llm,
-// extract_llm_sweep) did not: cgModel.Complete always sends the real HTTP
+// extract_llm_sweep) did not: cgModel.Complete and meteredDispatcher always send the real HTTP
 // call, and dryRun only changes how the resulting op is REPORTED (Projected, left out of every
 // total) — the call itself, and its cost on the caller's own credential, already happened.
 // Returning an empty ModelSpec here makes every model.source: incoming or
 // model: component degrade to deterministic/no-op under observe, the same way the keeper
 // degrades to no ping: observe measures what the DETERMINISTIC reducers would do, at the cost
-// of not previewing what the model-backed ones would add.
-func (p *ContextGuru) modelsFor(pctx *pipeline.Context, provider bschemas.ModelProvider) cgcomponents.ModelSpec {
+// of not previewing what the model-backed ones would add. It also means anthropicIncoming is
+// never called under observe, so no credential hold is taken for a mode that is supposed to
+// hold nothing.
+func (p *ContextGuru) modelsFor(pctx *pipeline.Context, provider bschemas.ModelProvider, api string) cgcomponents.ModelSpec {
 	if pctx.Observing() {
 		return cgcomponents.ModelSpec{}
 	}
 	spec := cgcomponents.ModelSpec{Static: p.staticModelFor(pctx)}
-	if m := p.incomingModel(pctx, provider); m != nil {
+	if provider == bschemas.Anthropic {
+		if m, ok := p.anthropicIncoming(pctx); ok {
+			spec.Incoming = m
+		}
+	} else if m := p.incomingModel(pctx, provider, api); m != nil {
 		spec.Incoming = m
 	}
 	return spec
@@ -947,12 +1023,14 @@ func (p *ContextGuru) modelsFor(pctx *pipeline.Context, provider bschemas.ModelP
 
 // incomingModel reconstructs the agent's own model client from the live request
 // (base URL + token-exchanged Authorization + the request's model), so an engine
-// component with model.source: incoming reuses it. OpenAI-dialect only (llmclient
-// speaks /v1/chat/completions); returns nil for anthropic or when the pieces
-// aren't present, in which case the engine falls back to the static model or
-// degrades to deterministic.
-func (p *ContextGuru) incomingModel(pctx *pipeline.Context, provider bschemas.ModelProvider) cgcomponents.Model {
-	if provider != bschemas.OpenAI || pctx.Host == "" {
+// component with model.source: incoming reuses it. OpenAI chat-completions dialect
+// only (llmclient speaks /v1/chat/completions, not the Responses API's
+// instructions+input shape). It returns nil for anthropic (modelsFor uses
+// anthropicIncoming there), for api == "responses", or when the pieces aren't
+// present. Then the engine falls back to the static model or degrades to
+// deterministic.
+func (p *ContextGuru) incomingModel(pctx *pipeline.Context, provider bschemas.ModelProvider, api string) cgcomponents.Model {
+	if provider != bschemas.OpenAI || api == "responses" || pctx.Host == "" {
 		return nil
 	}
 	model := modelFromBody(pctx.Body)

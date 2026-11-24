@@ -703,13 +703,18 @@ curl -X DELETE http://localhost:47601/v1/sessions/<id>
 ```
 
 Neither erases the savings accountant's own per-session state: ids, content hashes and the
-billing mode, no content, in memory and in `~/.cortex/accountant-state.json`. Nor does either
-erase the keep-alive keeper's entries, which hold the caller's credential and the thread's last
-request body (the whole conversation), both masked. A keeper entry goes within 12 minutes with
-no particular wait, 16 waiting on a person, or 36 waiting on its own tool call (the engine's
-wait plan raises the ping count for the wait; its background-wait count never applies here,
-since Cortex gives it no open-task data), or within 118 minutes
-(never more than 236) on a thread billed at the 1-hour tier. The rest stays until newer sessions push it out (at most 10,000 threads are
+billing mode, no content, in memory and in `~/.cortex/accountant-state.json`, plus the
+keep-alive keeper's entries, which hold the caller's credential and the thread's last request
+body (the whole conversation), both masked, context-guru's incoming-model credential holds, and
+its forwarded-body stash. A keeper entry goes within 12 minutes with no particular wait, 16
+waiting on a person, or 36 waiting on its own tool call (the engine's wait plan raises the ping
+count for the wait; its background-wait count never applies here, since Cortex gives it no
+open-task data), or within 118 minutes (never more than 236) on a thread billed at the 1-hour
+tier. The incoming-model holds (one per distinct host+credential, shared across every session
+on it) are masked too, and go within 2h10m of their last use, on a timer, whether or not a later
+request arrives. The forwarded-body stash DOES hold content — the last body sent upstream, for up
+to 16 sessions and 96 MiB total — evicted only when a newer session's body needs the room, not on
+a timer. The rest stays until newer sessions push it out (at most 10,000 threads are
 kept), and a state file older than 1 hour is not read at startup (see
 [session-api.md](session-api.md#delete-v1sessions)).
 
