@@ -73,6 +73,7 @@ type FixtureSession struct {
 type Fixture struct {
 	Sessions []FixtureSession `yaml:"sessions"`
 	Replay   *Replay          `yaml:"replay"`
+	Pipeline []FixturePlugin  `yaml:"pipeline"`
 }
 
 // Replay is one recorded session, scrubbed to what the timeline reads, replayed into
@@ -270,16 +271,23 @@ func NewCapturer(f Fixture, cols, rows int, ledgerDir string, start time.Duratio
 		return nil, fmt.Errorf("ledger flush: %w", err)
 	}
 
-	srv := sessionapi.New(":0", c.store,
+	opts, err := pipelineOptions(f.Pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("fixture pipeline: %w", err)
+	}
+	srv := sessionapi.New(":0", c.store, append([]sessionapi.Option{
 		sessionapi.WithHeartbeatInterval(time.Hour),
 		sessionapi.WithUsage(c.usage),
 		sessionapi.WithCostLedger(c.ledger),
 		sessionapi.WithClock(c.now),
-	)
+	}, opts...)...)
 	c.ts = httptest.NewServer(srv.Server().Handler)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancel = cancel
+	// Settings is agentop's process-wide view state, and keys such as w change it. Reset
+	// it, or a capture starts with the choices of the capture before it in this process.
+	tui.Settings = tui.UserSettings{}
 	c.m = tui.New(ctx, apiclient.New(c.ts.URL), tui.WithClock(c.now), tui.WithoutTitleScroll())
 	c.pump(c.m.Init())
 	c.resize()

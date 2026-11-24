@@ -10,7 +10,7 @@ holds the repo-level pieces; this file is the index.
 | Install Cortex, see it work, and undo it | [Getting started](getting-started.md) |
 | Install and run Cortex on Windows (preview) | [Cortex on Windows](windows.md) |
 | Route your agent through Cortex | [Claude Code](agents/claude-code.md), [Codex](agents/codex.md), [OpenCode](agents/opencode.md), [IBM Bob](agents/bob.md), [Pi](agents/pi.md), [any other agent](agents/any-agent.md) |
-| Read the `agentop` screen | [Using agentop](using-agentop.md) |
+| See what agentop can do, with a screen for each task | [Using agentop](using-agentop.md) |
 | Fix a problem | [Troubleshooting](troubleshooting.md) |
 
 ## Use Cortex every day
@@ -108,7 +108,7 @@ Per-plugin reference docs: [a2a-parser](a2a-parser-plugin.md),
 - [`proposals/`](proposals/) — design records for work that has since shipped.
   They are kept for the reasoning, not as current documentation; each carries a
   status line pointing at the doc that describes present behaviour.
-- `assets/` — images used by the root README.
+- `assets/` — images used by the root README. `assets/agentop/` holds the screens of [Using agentop](using-agentop.md), made by `scripts/readme-demo`.
 
 Dated implementation plans and design specs live in
 [`docs/superpowers/`](../docs/superpowers/).

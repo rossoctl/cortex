@@ -57,6 +57,9 @@ type Beat struct {
 	// beat's At to this one's and sharing its hold, so a replay plays as motion rather
 	// than as a slideshow. Keys go with the first frame only.
 	Frames int `yaml:"frames"`
+	// Alt describes the screen for a reader who cannot see it. Only stills.yaml uses
+	// it: each of its beats is one still image.
+	Alt string `yaml:"alt"`
 }
 
 // Act is one narrative segment.

@@ -173,7 +173,7 @@ What used to live under `authbridge/` is the repo root.
 | `praxis/` | Rust workspace for praxis mode: `cortex-praxis-filters` and the `cortex-gateway` binary. Outside `go.work`. See #1714 |
 | `docs/` | Plugin and framework reference ([`docs/README.md`](docs/README.md) is the index). `docs/superpowers/{plans,specs}/` holds dated design records and is **still written to** |
 | `scripts/` | `install.sh` (laptop installer), `keycloak_sync.py` (scope mappings from `routes.yaml`), `profile-tags/` (build-tag profiles), `hooks/commit-msg`, `dev/` |
-| `deploy/` | `proxy-init/` (iptables init container), `sparc-service/`, `lineage-attach/` |
+| `deploy/` | `proxy-init/` (iptables init container), `sparc-service/`, `lineage-attach/`, `central/` (the central metrics stack on OpenShift: collector, Prometheus, Alertmanager, Grafana) |
 | `tests/` | Python tests |
 
 ## AuthBridge Binaries
@@ -297,8 +297,12 @@ rows carry `avoidedMicros` and, omitted rather than zero like every figure there
 `pluginSpendUnknownMicros`. `/v1/usage` totals and ledger rows carry the same fields plus
 `keepAlivePings` and the pings' spend by the thread's billing basis (`keepAliveMicros` on an API
 key, `keepAliveUnits` and `keepAliveApiEquivalentMicros` on a subscription,
-`keepAliveUnknownMicros` otherwise): a keep-alive ping is in no request, token, cost or
-latency figure. Plugin spend is not in `costMicros`. What each sums:
+`keepAliveUnknownMicros` otherwise): a keep-alive ping is in no request, token, `costMicros` or
+latency figure. `/v1/sessions` rows carry the session's `keepAlive*` figures and `keepAlivePings`
+too (`Host.AddPingListener` → `session.Store.AddKeepAlive`, not an event, not activity).
+agentop shows spend as `costMicros + keepAliveMicros` (`money.SpendMicros`) and every net
+saving minus the pings of its basis (`money.NetMicros`), and `session-budget` counts each
+ping's tokens and call. Plugin spend is not in `costMicros`. What each sums:
 [`docs/pricing.md`](docs/pricing.md#cost-records).
 
 **Two config blocks drive the accountant.** `accounting:` (`enabled: auto|true|false`,

@@ -82,6 +82,12 @@ type entry struct {
 	// avoided is the running total of the events' savings and plugin spends (event.Figures),
 	// by the same rules as cost.
 	avoided figureSum
+	// keepAlive is the running total of the keep-alive pings' spend on this session (only the
+	// KeepAlive* fields of event.Figures), and keepAlivePings how many there were. NOT OVER
+	// Events: a ping is not an event (Store.AddKeepAlive), so a trim does not touch them, and
+	// avoided keeps its invariant of equalling the sum over Events.
+	keepAlive      figureSum
+	keepAlivePings int64
 	// units counts the priced events behind cost by the unit they were priced in, "" for USD.
 	// Maintained with cost, on append and on trim, and read by SessionSummary.Currencies — a
 	// count rather than a set because a trim has to know when the LAST event in a unit leaves.
@@ -345,6 +351,29 @@ func (s *Store) MarkNoRecord(sessionID string) {
 			w.Withhold(sessionID)
 		}
 	}
+}
+
+// AddKeepAlive adds one context-guru keep-alive ping's spend to sessionID's totals:
+// SessionSummary.KeepAlive*. Only the KeepAlive* fields of f are read. A ping is NOT AN EVENT OF
+// THE SESSION: it is not agent activity, so this appends nothing, publishes nothing, reaches no
+// Recorder (core/accounting.Host writes the ping to the cost recorders itself) and leaves
+// UpdatedAt and the active session alone — refreshing them would keep an idle session alive on
+// its own pings, the idle the keeper measures. A session the store does not hold (expired,
+// evicted, never seen) is not created for a ping: the spend is dropped here and stays in the
+// ledger and /v1/usage.
+func (s *Store) AddKeepAlive(sessionID string, f event.Figures) {
+	k := event.Figures{
+		KeepAliveMicros: f.KeepAliveMicros, KeepAliveUnits: f.KeepAliveUnits,
+		KeepAliveAPIEquivalentMicros: f.KeepAliveAPIEquivalentMicros, KeepAliveUnknownMicros: f.KeepAliveUnknownMicros,
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess := s.sessions[sessionID]
+	if sess == nil {
+		return
+	}
+	sess.keepAlive.Add(k)
+	sess.keepAlivePings++
 }
 
 // Withholder is optionally implemented by a Recorder that keeps a session's events (the

@@ -14,6 +14,15 @@ on:
     branches:
       - main
 
+# Cancel a PR run that a newer push to the same PR replaced: its head is stale, and it would
+# otherwise hold one of the org's shared runner slots until it finished. Push, tag and dispatch runs
+# group on ref plus commit, so each has a group of its own and nothing on main or a tag is dropped or
+# cancelled (with a shared group GitHub drops a queued run when a newer one queues). Same convention as
+# rossoctl/context-guru#1363.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || format('{0}-{1}', github.ref, github.sha) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -117,6 +126,8 @@ jobs:
       # failure, as AGENTOP_SYSTEMD_TESTS=required does on Linux. They need a desktop
       # session to load a launch agent into, and GitHub's macOS runners have one: they
       # log the runner user in automatically at boot.
+      # Not tui/...: it has no macOS-specific code, the Linux agentop job runs it with
+      # -race, and here it took about 5 of this job's 10 minutes.
       - name: Build and test cmd/agentop
         working-directory: cmd/agentop
         env:
@@ -124,7 +135,7 @@ jobs:
           AGENTOP_LAUNCHD_TESTS: required
         run: |
           go build ./...
-          go test -race ./...
+          go test -race $(go list ./... | grep -v '/cmd/agentop/tui')
 
   # Windows (#1520): core and the laptop proxy must keep building, and the session archive and
   # cost ledger must keep writing where a directory is flushed only through a write handle and
@@ -628,6 +639,18 @@ jobs:
       - name: Run release_notes.sh tests
         run: sh scripts/release_notes_test.sh
 
+  # release_promote.sh runs once per stable release, after its smoke tests, so a
+  # regression would otherwise surface as a release that never becomes Latest.
+  release-promote-script:
+    name: release_promote.sh tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run release_promote.sh tests
+        run: sh scripts/release_promote_test.sh
+
   # check-gateway-linkage.sh runs only at release time, so without this job a
   # regression in it would show only on a release.
   gateway-linkage-script:
@@ -639,6 +662,19 @@ jobs:
 
       - name: Run check-gateway-linkage.sh tests
         run: sh scripts/check-gateway-linkage_test.sh
+
+  # Static checks of the central metrics stack (deploy/central): Prometheus rules and their unit
+  # tests, the collector config, the generated dashboards, and the Kustomize render through
+  # kubeconform. The live smoke test needs the cluster and is not run here.
+  central-stack:
+    name: Central metrics stack checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run deploy/central/check.sh
+        run: sh deploy/central/check.sh
 
   # `go mod tidy -diff` on every module in the repo. GOWORK=off so
   # replace directives resolve as they do in build.yaml and

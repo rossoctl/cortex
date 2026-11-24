@@ -84,7 +84,16 @@ knowing by name:
   milli-units, and their API-equivalent dollars, which are not money),
   `avoidedUnknownMicros` for savings whose billing mode is unknown, and
   `pluginSpendMicros`, `pluginSpendUnits`, `pluginSpendUnknownMicros` for the
-  operators' own model calls, which are not in `costMicros`. The billing mode
+  operators' own model calls, which are not in `costMicros`.
+  `keepAliveMicros`, `keepAliveUnits`, `keepAliveApiEquivalentMicros`,
+  `keepAliveUnknownMicros` and `keepAlivePings` are the context-guru keep-alive
+  pings on the session's threads, split by basis as `/v1/usage` splits them. A
+  ping is not an event of the session: it is in no `eventCount`, `totalTokens`
+  or `costMicros`, and it does not refresh `updatedAt` or make the session
+  active. agentop's COST column shows `costMicros + keepAliveMicros`, and its
+  SAVED column is net of `keepAliveMicros`. These figures are the resident
+  session's own: the archive keeps events, so a session's pings from before a
+  restart are not in them. The billing mode
   comes from the shape of the client's credential: a JWT-shaped bearer counts as
   a subscription login, and an opaque bearer, a Gemini key or no credential as
   unknown. See [`pricing.md`](pricing.md#cost-records).

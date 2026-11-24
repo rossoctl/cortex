@@ -3030,7 +3030,8 @@ func TestRunCost_APenaltyWithNoSavingSaysSo(t *testing.T) {
 
 // The accountant's figures (design §5.7a, §5.9): saved, penalty and a net that may be negative;
 // subscription savings in usage-limit units with their API equivalent labelled; an unknown figure
-// apart; and the plugins' own model calls and keep-alive pings as spend outside the total.
+// apart; the plugins' own model calls as spend outside the total; and the keep-alive pings on an
+// API key IN the total ($4.17 + $0.02) and off the net (0.01 - 0.03 - 0.02).
 func TestRunCost_ReportsTheAccountantsFigures(t *testing.T) {
 	srv := fakeUsageServer(t, `{"window":"today","totals":{"requests":10,"costMicros":4170000,`+
 		`"avoidedMicros":10000,"penaltyMicros":30000,"avoidedUnits":4500,"penaltyUnits":500,`+
@@ -3043,14 +3044,38 @@ func TestRunCost_ReportsTheAccountantsFigures(t *testing.T) {
 	}
 	got := out.String()
 	for _, want := range []string{
-		"~$0.01", "penalty $0.03", "net -$0.02",
+		"~$0.01", "penalty $0.03   keep-alive $0.02   net -$0.04",
 		"usage-limit units", "4.5 saved", "API equivalent net $1.00",
 		"unknown billing", "$0.20 net, not in any total",
-		"plugin model calls", "$0.04", "keep-alive", "3 pings", "spend, not in the total above",
-		"$4.17",
+		"plugin model calls", "$0.04", "spend, not in the total above",
+		"keep-alive", "3 pings", "the API-key part is in the total above and off the net saving",
+		"$4.19",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// A window with only keep-alive pings (an idle hour) has no priced request, and still a charge:
+// the headline shows it, so the keep-alive line's "in the total above" is true, and the
+// "no priceable traffic" note, which sits beside "cost unavailable", is not printed.
+func TestRunCost_APingOnlyWindowShowsItsCharge(t *testing.T) {
+	srv := fakeUsageServer(t, `{"window":"1h","totals":{"requests":0,"keepAliveMicros":20000,"keepAlivePings":3},"priced":false}`)
+	defer srv.Close()
+	var out, errOut strings.Builder
+	if code := runCost([]string{"--endpoint", srv.URL, "--window", "1h"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d; stderr = %s", code, errOut.String())
+	}
+	got := out.String()
+	for _, want := range []string{"$0.02", "3 pings", "in the total above"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q:\n%s", want, got)
+		}
+	}
+	for _, bad := range []string{"cost unavailable", "no priceable traffic"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("output says %q for a window with a charge:\n%s", bad, got)
 		}
 	}
 }

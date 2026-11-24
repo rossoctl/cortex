@@ -747,7 +747,7 @@ presence.
 | column | what it sums |
 |---|---|
 | `avoidedMicros` | the `usd` of applied savings with basis `usd`. Gross, as before the accountant |
-| `penaltyMicros` | their `penaltyUsd`. Net saved is `avoidedMicros − penaltyMicros`, and may be negative; nothing floors it |
+| `penaltyMicros` | their `penaltyUsd`. Net saved is `avoidedMicros − penaltyMicros − keepAliveMicros`, and may be negative; nothing floors it. The keeper's `rescue` is in `avoidedMicros`, so the pings that earned it come off the net |
 | `avoidedUnits`, `penaltyUnits` | the `units`/`penaltyUnits` of `subscriptionEquivalent` savings, in milli-units |
 | `avoidedApiEquivalentMicros` | net of its penalty (`usd − penaltyUsd`), for the savings with basis `subscriptionEquivalent`: shown beside `avoidedUnits`/`penaltyUnits` as "API equivalent net", never in a money total. **May be negative** when the penalty exceeds the saving, the same way `avoidedUnits − penaltyUnits` can; nothing floors it |
 | `avoidedUnknownMicros` | net of its penalty (`usd − penaltyUsd`), for savings with basis `unknown`: shown, never added. **May be negative**, for the same reason |
@@ -755,19 +755,26 @@ presence.
 | `keepAliveMicros`, `keepAliveUnits`, `keepAliveApiEquivalentMicros`, `keepAliveUnknownMicros` | a `purpose: keep-alive` record's cost by its `basis`, like `pluginSpend*`: `keepAliveMicros` is the `usd` pings' `cost_usd` (money); `keepAliveUnits` the `subscriptionEquivalent` pings' `units`, in milli-units, with their `cost_usd` in `keepAliveApiEquivalentMicros` (shown as "API equivalent", never in a money total); `keepAliveUnknownMicros` the `unknown` pings' `cost_usd` (shown, never added). The metrics push books ping dollars on the same rule: only for an API key |
 | `keepAlivePings` | the number of keep-alive pings, of every basis. A ping is in no other column: not `requests`, not `costMicros`, not the tokens, the coverage counters or the latency mean |
 
-**Spend in all**, in money, is `costMicros + pluginSpendMicros + keepAliveMicros`. The
+**Spend in all**, in money, is `costMicros + pluginSpendMicros + keepAliveMicros`. agentop's cost
+headline, its breakdown rows and the TUI's spend figures show `costMicros + keepAliveMicros`: a
+keep-alive ping is billed on the caller's credential like a request. The plugins' model calls stay on
+their own line. The subscription nets (`avoidedUnits − penaltyUnits − keepAliveUnits`, and the API
+equivalent net of `keepAliveApiEquivalentMicros`) and the unknown-billing net subtract the pings of
+their own basis the same way. The
 subscription and unknown-billing parts of the plugin and keep-alive spend are beside it, never in
 it: `pluginSpendUnits` and `keepAliveUnits` in usage-limit units, `pluginSpendUnknownMicros` and
 `keepAliveUnknownMicros` in dollars that may or may not have been charged.
 
-**Budgets do not see plugin or keep-alive spend.** `session-budget` counts the tokens and calls
-of the requests that pass through the pipeline, and `litellm-budget-track` reads those requests'
-own cost. A keep-alive ping and a context operator's model call are sent by the context-guru
-plugin itself, not through the pipeline (see
-[context-guru-plugin.md](context-guru-plugin.md#where-its-own-model-calls-go)), and their spend is
-written to the ledger and the usage aggregator directly (pings) or into `spends[]` (model calls),
-never into the session store's figures. So neither counts toward a session budget or a
-`daily_total_usd`: a budget limits the agent's own requests.
+**`session-budget` counts keep-alive pings; no budget counts plugin model calls.** A keep-alive
+ping and a context operator's model call are sent by the context-guru plugin itself, not through
+the pipeline (see [context-guru-plugin.md](context-guru-plugin.md#where-its-own-model-calls-go)).
+Where accounting is on, `core/accounting.Host.Ping` hands each ping to its listeners:
+`session-budget` adds the ping's tokens by kind and one call to the session's counters, so a ping
+can bring a session to its limit and the session's next request is refused; and the session store
+adds its spend to the session's `keepAlive*` figures. `litellm-budget-track` reads the cost of the
+requests that pass through the pipeline, so it does not see a ping (the gateway, when the ping goes
+through it, counts it itself), and no budget counts a model call's `spends[]` or applies a
+`daily_total_usd` to either.
 
 A ledger row written before these columns existed reads them as 0. A saving recorded before the
 accountant has no `basis`; it was priced in dollars, so every reader takes an empty `basis` as

@@ -50,6 +50,7 @@ func TUIStates(a Act, start time.Duration, g Grid, home, ledgerDir string) ([]St
 		}
 		states = append(states, State{
 			Label: b.Label,
+			Alt:   b.Alt,
 			Rows:  rows,
 			At:    at,
 			Dur:   b.Hold,

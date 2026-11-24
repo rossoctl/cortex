@@ -744,3 +744,22 @@ func TestSessionsPicker_UsageLimitColumn(t *testing.T) {
 		}
 	}
 }
+
+// A session's COST includes its keep-alive pings on an API key, and its SAVED is net of them: the
+// keeper's rescue is in the saving, so the pings that earned it come off it.
+func TestSessionsPicker_IncludesKeepAliveSpend(t *testing.T) {
+	m := &model{width: 200}
+	m.sessionsTbl = newSessionsTable()
+	m.sessions = []session.SessionSummary{{
+		ID: "abc", UpdatedAt: time.Now(), EventCount: 3, TotalTokens: 1_000,
+		CostMicros: 1_000_000, AvoidedMicros: 500_000, KeepAliveMicros: 200_000, KeepAlivePings: 4,
+	}}
+	m.rebuildSessionsTable()
+	row := strings.Join(m.sessionsTbl.Rows()[0], " ")
+	if !strings.Contains(row, "$1.20") {
+		t.Errorf("row %q: cost is missing the keep-alive spend ($1.00 + $0.20)", row)
+	}
+	if !strings.Contains(row, "$0.30") {
+		t.Errorf("row %q: saving is not net of the keep-alive spend ($0.50 - $0.20)", row)
+	}
+}

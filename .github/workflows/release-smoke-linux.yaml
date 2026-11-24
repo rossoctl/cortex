@@ -28,6 +28,12 @@
 # (scripts/smoke_inference_check.sh; #957's third checklist bullet, #956 item 3d).
 # It reads the session API rather than the unattended capture path #955 will add.
 name: Release Smoke Test (Linux)
+# release-promote.yaml reads which release run started this one off the end of
+# this title, ", release run <id>": a run started by workflow_run records it
+# nowhere else. Change the two together.
+run-name: >-
+  Release Smoke Test (Linux) for ${{ github.event.workflow_run.head_branch }},
+  release run ${{ github.event.workflow_run.id }}
 
 on:
   workflow_run:

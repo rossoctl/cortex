@@ -2,8 +2,8 @@ package session
 
 import "github.com/rossoctl/cortex/core/cost/event"
 
-// figureSum is a running total of event.Figures — a session's savings, penalties and plugin
-// spends by basis — that clamps each field instead of wrapping and remembers that it clamped,
+// figureSum is a running total of event.Figures — a session's savings, penalties, plugin
+// spends and keep-alive spend by basis — that clamps each field instead of wrapping and remembers that it clamped,
 // by event.CostSum's rule. One flag for every field, as SessionSummary.Saturated is one flag for
 // every money figure on a row.
 type figureSum struct {
@@ -12,9 +12,10 @@ type figureSum struct {
 }
 
 // fields lists f's fields, so Add and Sub cannot miss one.
-func fields(f *event.Figures) [9]*int64 {
-	return [9]*int64{&f.AvoidedMicros, &f.PenaltyMicros, &f.AvoidedUnits, &f.PenaltyUnits, &f.AvoidedAPIEquivalentMicros,
-		&f.AvoidedUnknownMicros, &f.PluginSpendMicros, &f.PluginSpendUnits, &f.PluginSpendUnknownMicros}
+func fields(f *event.Figures) [13]*int64 {
+	return [13]*int64{&f.AvoidedMicros, &f.PenaltyMicros, &f.AvoidedUnits, &f.PenaltyUnits, &f.AvoidedAPIEquivalentMicros,
+		&f.AvoidedUnknownMicros, &f.PluginSpendMicros, &f.PluginSpendUnits, &f.PluginSpendUnknownMicros,
+		&f.KeepAliveMicros, &f.KeepAliveUnits, &f.KeepAliveAPIEquivalentMicros, &f.KeepAliveUnknownMicros}
 }
 
 // Add accumulates o into s.
@@ -53,4 +54,8 @@ func (s figureSum) setOn(sum *SessionSummary) {
 	sum.PluginSpendMicros = f.PluginSpendMicros
 	sum.PluginSpendUnits = f.PluginSpendUnits
 	sum.PluginSpendUnknownMicros = f.PluginSpendUnknownMicros
+	sum.KeepAliveMicros = f.KeepAliveMicros
+	sum.KeepAliveUnits = f.KeepAliveUnits
+	sum.KeepAliveAPIEquivalentMicros = f.KeepAliveAPIEquivalentMicros
+	sum.KeepAliveUnknownMicros = f.KeepAliveUnknownMicros
 }
