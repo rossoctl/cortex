@@ -664,5 +664,6 @@ func FilterProject(rows []Row, project string) []Row {
 func hasAccountantFigure(r Row) bool {
 	return r.AvoidedMicros != 0 || r.PenaltyMicros != 0 || r.AvoidedUnits != 0 || r.PenaltyUnits != 0 ||
 		r.AvoidedAPIEquivalentMicros != 0 || r.AvoidedUnknownMicros != 0 ||
-		r.PluginSpendMicros != 0 || r.PluginSpendUnits != 0 || r.PluginSpendUnknownMicros != 0
+		r.PluginSpendMicros != 0 || r.PluginSpendUnits != 0 || r.PluginSpendUnknownMicros != 0 ||
+		r.KeepAliveMicros != 0 || r.KeepAliveAPIEquivalentMicros != 0 || r.KeepAliveUnknownMicros != 0
 }

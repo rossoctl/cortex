@@ -70,6 +70,14 @@ const (
 	SourceTranscript = "transcript"
 )
 
+// Purposes a record's spend served, when it is not the agent's own request. Carried in
+// Event.Purpose. Empty is the agent's own request.
+const (
+	// PurposeKeepAlive is a keep-alive ping the context-guru plugin sent to keep an idle
+	// session's prompt cache warm (core/accounting.Host.Ping). Not agent activity.
+	PurposeKeepAlive = "keep-alive"
+)
+
 // The values of Saving.Basis and SpendRecord.Basis (accountant design §7.1, Cortex design
 // §5.7a): what a dollar figure on the record may be summed with. Only BasisUSD is money.
 const (
@@ -281,6 +289,33 @@ type Event struct {
 	// unchanged by their presence.
 	Avoided []Saving `json:"avoided,omitempty"`
 
+	// Purpose says what the spend served when it is not the agent's own request: one of the
+	// Purpose* constants, empty for the agent's own request.
+	//
+	// SEPARATE FROM Source, deliberately. Source says how the cost was arrived at (the
+	// gateway's header, the token counts, a transcript), and that is as true of a ping as of
+	// any request; overwriting it with a purpose would lose it. ADDITIVE and omitempty: an
+	// older consumer decodes the record unchanged. The ledger and /v1/usage split on it
+	// (IsKeepAlive): a ping's spend is usage.Counts.KeepAliveMicros, never CostMicros, and a
+	// ping is counted in KeepAlivePings, never in Requests or the latency mean.
+	Purpose string `json:"purpose,omitempty"`
+
+	// Basis, Units and Estimated say what a keep-alive ping's spend (IsKeepAlive) may be summed
+	// with, as SpendRecord's fields of the same names do for a plugin's model call (design
+	// §5.7a): Basis follows the thread's billing mode, Units is the ping's tokens, output
+	// included, in usage-limit units on a subscriptionEquivalent ping, and Estimated is set on
+	// every non-usd ping. Figures books a usd ping's CostUSD as money (KeepAliveMicros), a
+	// subscriptionEquivalent one as KeepAliveUnits with its dollars as
+	// KeepAliveAPIEquivalentMicros, and an unknown one as KeepAliveUnknownMicros.
+	//
+	// SET ON A PING ONLY. An agent request's CostUSD keeps its meaning whatever its billing mode
+	// (design §5.7a scope), so these are empty on its record and no reader consults them there.
+	// An empty Basis on a ping is a record written before the split, booked as usd as it was
+	// then. ADDITIVE and omitempty.
+	Basis     string  `json:"basis,omitempty"`
+	Units     float64 `json:"units,omitempty"`
+	Estimated bool    `json:"estimated,omitempty"`
+
 	// UnattributedBreakUSD is the net cost of every cache effect this request had that no context
 	// operator owns: mostly breaks — one whose change had already ended (no ChangeID), or one whose
 	// ChangeID no applied operation reported — but also a split, TTL or mark effect with no owning
@@ -470,7 +505,11 @@ func (e Event) TotalPenaltyMicros() int64 {
 	return m
 }
 
-// Figures are one record's savings and plugin spends, split by basis (design §5.7a), in the
+// IsKeepAlive reports whether the record is a keep-alive ping's spend (Purpose
+// PurposeKeepAlive), which the totals keep apart from the agent's own requests.
+func (e Event) IsKeepAlive() bool { return e.Purpose == PurposeKeepAlive }
+
+// Figures are one record's savings, plugin spends and keep-alive spend, split by basis (design §5.7a), in the
 // integer units the aggregates keep: micros for dollars, milli-units for usage-limit units. Each
 // field is the usage.Counts field of the same name, so the ring, the ledger and the session store
 // fold one function's answer.
@@ -502,6 +541,14 @@ type Figures struct {
 	PluginSpendMicros        int64
 	PluginSpendUnits         int64
 	PluginSpendUnknownMicros int64
+	// KeepAliveMicros is a usd keep-alive ping's spend (Event.Basis); KeepAliveUnits a
+	// subscriptionEquivalent ping's Units, in milli-units, and KeepAliveAPIEquivalentMicros its
+	// dollars at API rates (not money); KeepAliveUnknownMicros an unknown-billing ping's dollars.
+	// Zero on any record that is not a ping, and on a ping that was not priced.
+	KeepAliveMicros              int64
+	KeepAliveUnits               int64
+	KeepAliveAPIEquivalentMicros int64
+	KeepAliveUnknownMicros       int64
 }
 
 // IsZero reports whether every figure is zero.
@@ -510,7 +557,8 @@ func (f Figures) IsZero() bool { return f == Figures{} }
 // Figures returns the record's savings and spends by basis. Each figure goes through
 // pricing.MicrosFromUSD (or MilliUnits) once, on the record's sum, and is zero when that sum will
 // not represent — TotalAvoidedMicros' rule. A saving with no basis is usd (EffectiveBasis). A
-// spend with no basis enters no field: spends postdate the accountant, which always sets one.
+// spend with no basis enters no field: spends postdate the accountant, which always sets one. A
+// keep-alive ping's own spend (CostUSD, when Priced) goes to the KeepAlive field its Basis names.
 func (e Event) Figures() Figures {
 	var unitsSaved, unitsPen, equivSaved, unknownSaved float64
 	for _, s := range e.Avoided {
@@ -556,7 +604,7 @@ func (e Event) Figures() Figures {
 			}
 		}
 	}
-	return Figures{
+	f := Figures{
 		AvoidedMicros:              e.TotalAvoidedMicros(),
 		PenaltyMicros:              e.TotalPenaltyMicros(),
 		AvoidedUnits:               MilliUnits(unitsSaved),
@@ -567,6 +615,18 @@ func (e Event) Figures() Figures {
 		PluginSpendUnits:           MilliUnits(spendUnits),
 		PluginSpendUnknownMicros:   pricing.MicrosOrZero(spendUnknown),
 	}
+	if e.IsKeepAlive() && e.Priced() {
+		switch e.Basis {
+		case "", BasisUSD:
+			f.KeepAliveMicros = e.Micros()
+		case BasisSubscriptionEquivalent:
+			f.KeepAliveUnits = MilliUnits(e.Units)
+			f.KeepAliveAPIEquivalentMicros = e.Micros()
+		default:
+			f.KeepAliveUnknownMicros = e.Micros()
+		}
+	}
+	return f
 }
 
 // MilliUnits is a usage-limit figure in thousandths of a unit, rounded to nearest: the integer

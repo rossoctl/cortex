@@ -1,0 +1,135 @@
+package contextguru
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+
+	cgcomponents "github.com/rossoctl/context-guru/components"
+	cgconfig "github.com/rossoctl/context-guru/config"
+	"github.com/rossoctl/context-guru/keepalive"
+	"github.com/rossoctl/cortex/core/pipeline"
+)
+
+// agentPctx is a finished request from the Claude Code agent named id: a subagent (role
+// subagent) or an agent-team teammate (role main, header set all the same).
+func agentPctx(role pipeline.AgentRole, id string) *pipeline.Context {
+	p := finishedPctx(200, role)
+	p.Headers.Set(pipeline.ClaudeCodeAgentIDHeader, id)
+	return p
+}
+
+func TestRecordForKeysAnAgentByItsOwnThread(t *testing.T) {
+	pol := cachePolicy(cgconfig.CacheConfig{KeepAlive: true})
+	for _, tc := range []struct {
+		name string
+		role pipeline.AgentRole
+	}{{"subagent", pipeline.AgentRoleSubagent}, {"teammate", pipeline.AgentRoleMain}} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, ok := recordFor(agentPctx(tc.role, "ab12"), "s1", pol, nil, logEmitter{})
+			if !ok {
+				t.Fatal("a request naming its agent was not recorded")
+			}
+			if r.Key != (keepalive.Key{Session: "s1", Thread: "a:ab12"}) {
+				t.Fatalf("key = %+v, want the agent's own thread", r.Key)
+			}
+			// The core's own test of the thread id: its subagent floors and ping plans apply.
+			if !keepalive.IsSubagentThread(r.Key.Thread) {
+				t.Fatalf("thread %q is not a subagent thread to the keeper", r.Key.Thread)
+			}
+		})
+	}
+}
+
+func TestRecordForSkipsASubagentThatNamesNoAgent(t *testing.T) {
+	pol := cachePolicy(cgconfig.CacheConfig{KeepAlive: true})
+	if _, ok := recordFor(finishedPctx(200, pipeline.AgentRoleSubagent), "s1", pol, nil, logEmitter{}); ok {
+		t.Fatal("a subagent with no agent id was recorded, which would replace the main thread's entry")
+	}
+}
+
+// A subagent's turns keep an entry of their own beside the main thread's, and its requests leave
+// the main thread's entry alone.
+func TestASubagentIsKeptWarmBesideTheMainThread(t *testing.T) {
+	p := keepAlivePlugin(t)
+	finishTurns(t, p, 2)
+	for i := 0; i < 2; i++ { // turn 0 of a thread is counted but never tracked
+		sub := agentPctx(pipeline.AgentRoleSubagent, "ab12")
+		invokeReq(p, sub)
+		p.OnFinish(t.Context(), sub)
+	}
+	if n := p.keeper.Stats().Live; n != 2 {
+		t.Fatalf("live entries = %d, want the main thread's and the subagent's", n)
+	}
+	if n := p.keeper.Sweep(time.Unix(1_700_000_000, 0).Add(281 * time.Second)); n != 2 {
+		t.Fatalf("sweep sent %d pings, want one per thread", n)
+	}
+}
+
+// A subagent's request that is still in flight pauses its own thread only: the main thread is
+// pinged while it runs.
+func TestAnInFlightSubagentDoesNotPauseTheMainThread(t *testing.T) {
+	p := keepAlivePlugin(t)
+	finishTurns(t, p, 2)
+	invokeReq(p, agentPctx(pipeline.AgentRoleSubagent, "ab12")) // arrives, never finishes
+	if n := p.keeper.Sweep(time.Unix(1_700_000_000, 0).Add(281 * time.Second)); n != 1 {
+		t.Fatalf("sweep sent %d pings, want the main thread's 1", n)
+	}
+}
+
+// cache.strategy: 1-hour-always must not relabel a subagent's request: keepalive.Keeper.
+// OneHourFirst refuses a non-empty threadID, and a subagent's own thread is "a:"+its agent id
+// (agentThreadPrefix, the same convention keeperKey uses). Before this, oneHourFirstFor always
+// passed threadID="" -- the apply library's own res.Trace.Thread.ID, which this plugin does not
+// wire -- so a named subagent's request was asked, and relabelled, as if it were the main thread
+// at the 2x 1-hour write premium (review finding).
+func TestOneHourAlwaysDoesNotRelabelASubagentsRequest(t *testing.T) {
+	p := configured(t, `{"engine":{"cache":{"strategy":"1-hour-always"}}}`)
+	if err := p.Init(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Shutdown(t.Context()) })
+	body, _ := json.Marshal(map[string]any{
+		"model": "claude-sonnet-4-5",
+		"tools": []map[string]any{
+			{"name": "Read", "description": "read a file", "input_schema": map[string]any{"type": "object"},
+				"cache_control": map[string]any{"type": "ephemeral"}},
+		},
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	pctx := inferencePctx("/v1/messages", body)
+	pctx.Headers.Set(pipeline.ClaudeCodeAgentIDHeader, "ab12")
+	if act := invokeReq(p, pctx); act.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", act.Type)
+	}
+	if pctx.BodyMutated() {
+		t.Fatalf("a subagent's request must not be relabelled under 1-hour-always: %s", pctx.Body)
+	}
+	if got := string(pctx.Body); strings.Contains(got, `"ttl":"1h"`) {
+		t.Fatalf("subagent body carries a 1h mark it should not: %s", got)
+	}
+}
+
+// A ping is accounted under the thread the accountant bills the agent's next request on
+// (accounting.ThreadOf), so the ping's facts reach that request.
+func TestAPingIsAccountedOnTheRequestsThread(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		pctx *pipeline.Context
+		want string
+	}{
+		{"main", finishedPctx(200, pipeline.AgentRoleMain), "main"},
+		{"subagent", agentPctx(pipeline.AgentRoleSubagent, "ab12"), "ab12"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			em := New().pingEmitter(tc.pctx, "s1").(pingEmitter)
+			if em.thread != tc.want {
+				t.Fatalf("ping thread = %q, want %q", em.thread, tc.want)
+			}
+			if got := pingFromReport(cgcomponents.KeepAliveReport{Thread: "a:ab12"}, "h", em.thread).ThreadID; got != tc.want {
+				t.Fatalf("Ping.ThreadID = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

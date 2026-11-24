@@ -153,6 +153,10 @@ func TestEventJSONTagsArePinned_EveryField(t *testing.T) {
 			Units:         120,
 			PenaltyUnits:  4.5,
 		}},
+		Purpose:              PurposeKeepAlive,
+		Basis:                BasisSubscriptionEquivalent,
+		Units:                1.5,
+		Estimated:            true,
 		UnattributedBreakUSD: 0.003,
 		Thread:               "main",
 		Spends: []SpendRecord{{
@@ -173,7 +177,7 @@ func TestEventJSONTagsArePinned_EveryField(t *testing.T) {
 		`"avoided":[{"component":"tool-prune",` +
 		`"tokensAvoided":1200,"usd":0.01,"provenance":"configured","penaltyUsd":0.002,` +
 		`"operator":"tool-prune","opsVersion":1,"basis":"subscriptionEquivalent","units":120,` +
-		`"penaltyUnits":4.5}],"unattributed_break_usd":0.003,"thread":"main",` +
+		`"penaltyUnits":4.5}],"purpose":"keep-alive","basis":"subscriptionEquivalent","units":1.5,"estimated":true,"unattributed_break_usd":0.003,"thread":"main",` +
 		`"spends":[{"changeId":"s:1","operator":"context-guru.extract_llm","thread":"main","model":"m",` +
 		`"host":"h","input":8000,"cacheWrite5m":1,"cacheWrite1h":2,"cacheRead":3,"output":1000,` +
 		`"usd":0.04,"basis":"usd","units":7,"estimated":true,"projected":true,"refused":true}]}`
@@ -244,7 +248,7 @@ func TestTotalAvoidedMicros_ReadsWhatTheProducerActuallyWrites(t *testing.T) {
 // process.
 func TestEventWireCoversEveryField(t *testing.T) {
 	// Keep in step with the marshal in TestEventJSONTagsArePinned_EveryField.
-	const pinned = 20
+	const pinned = 24
 	if got := reflect.TypeOf(Event{}).NumField(); got != pinned {
 		t.Fatalf("Event has %d fields, %d are pinned on the wire.\n"+
 			"Add the new field to TestEventJSONTagsArePinned_EveryField's marshal AND its "+
@@ -692,5 +696,41 @@ func TestMilliUnits(t *testing.T) {
 		if got := MilliUnits(tc.in); got != tc.want {
 			t.Errorf("MilliUnits(%v) = %d, want %d", tc.in, got, tc.want)
 		}
+	}
+}
+
+// A keep-alive ping's record is told apart by its Purpose.
+func TestIsKeepAlive(t *testing.T) {
+	if !(Event{Purpose: PurposeKeepAlive}).IsKeepAlive() || (Event{}).IsKeepAlive() {
+		t.Error("IsKeepAlive does not follow Purpose")
+	}
+}
+
+// A keep-alive ping's spend is split by its basis like a plugin's: only a usd ping is money
+// (KeepAliveMicros), a subscription ping is its usage-limit units with its API-equivalent dollars
+// beside them, and an unknown one is shown apart. A ping with no basis was written before the
+// split and reads as usd, as it was booked then. A record that is not a ping books none of these.
+func TestFigures_KeepAliveSplitsByBasis(t *testing.T) {
+	ping := func(basis string) Event {
+		return Event{CostUSD: 0.002, Settled: true, Provenance: "configured", Purpose: PurposeKeepAlive,
+			Basis: basis, Units: 12.5}
+	}
+	for _, tc := range []struct {
+		basis string
+		want  Figures
+	}{
+		{"", Figures{KeepAliveMicros: 2000}},
+		{BasisUSD, Figures{KeepAliveMicros: 2000}},
+		{BasisSubscriptionEquivalent, Figures{KeepAliveUnits: 12500, KeepAliveAPIEquivalentMicros: 2000}},
+		{BasisUnknown, Figures{KeepAliveUnknownMicros: 2000}},
+	} {
+		if got := ping(tc.basis).Figures(); got != tc.want {
+			t.Errorf("basis %q: Figures = %+v, want %+v", tc.basis, got, tc.want)
+		}
+	}
+	notPing := ping(BasisUSD)
+	notPing.Purpose = ""
+	if got := notPing.Figures(); !got.IsZero() {
+		t.Errorf("a request's record booked keep-alive figures: %+v", got)
 	}
 }

@@ -408,13 +408,29 @@ the server must have been built with clearing allowed
 
 **The accountant's per-session state is not cleared** by either `DELETE` route.
 That is the Tracker state (in memory, and in `~/.cortex/accountant-state.json` on
-a local install) and the billing mode of each thread's last request (in
-`core/accounting.Host`). They hold session and thread ids, content hashes and a
-billing mode, never content. The state has no time bound while the process runs:
-the in-memory maps keep at most 10,000 threads and drop the oldest, and the
-snapshot file, rewritten every 60s, holds what memory holds. A snapshot older than
-1h is not restored at startup, so a proxy stopped for more than an hour starts
-without it. This applies to both `DELETE` routes.
+a local install), the billing mode of each thread's last request and any keep-alive
+ping facts not yet credited (both in `core/accounting.Host`), and the context-guru
+keeper's entries. The accountant's state holds session and thread ids, content
+hashes and a billing mode, never content. **A keeper entry does hold content:** the
+caller's credential and the thread's last request body, which is the whole
+forwarded conversation, both masked. A keeper entry is released at its hold
+deadline, if no request or reload releases it first:
+
+- on a thread with a 5-minute cache, `(max_pings + 1) × idle_seconds`: 12 minutes with no
+  particular wait, 16 waiting on a person, or 36 waiting on its own tool call, since the
+  engine's wait plan (on by default) raises max_pings for the wait (its background-wait count
+  never applies here, since Cortex gives it no open-task data);
+- on a thread billed at the 1-hour tier, the engine's 1-hour schedule: 118 minutes
+  at its defaults, and never more than 236 minutes.
+
+Until then it can still ping the erased session, which re-sends that conversation
+upstream, and that spend goes to the cost ledger, which the erase keeps anyway. The
+rest has no time bound while the process runs: the in-memory maps keep at most
+10,000 threads and drop the oldest. The snapshot file, rewritten every 60s, holds
+what memory holds, except that it leaves out the threads seen longest ago once the
+file would pass 20 MiB. A snapshot older than 1h is not restored at startup, so a
+proxy stopped for more than an hour starts without it. This applies to both
+`DELETE` routes.
 
 **The context-guru plugin's session state is not cleared either, and it holds content.**
 Where the plugin runs, its state is kept in `~/.cortex/context-guru-state.db` on a local

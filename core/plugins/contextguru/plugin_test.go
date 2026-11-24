@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	bschemas "github.com/maximhq/bifrost/core/schemas"
@@ -79,14 +80,38 @@ func TestConfigure_DefaultsBuildBalanced(t *testing.T) {
 	if p.pipe == nil || p.store == nil {
 		t.Fatal("empty config should default to the balanced preset and build a pipeline + store")
 	}
-	if len(p.cfg.Paths) == 0 {
-		t.Fatal("paths should default to the inference paths")
-	}
 }
 
 func TestConfigure_RejectsBadEngine(t *testing.T) {
 	if err := New().Configure(json.RawMessage(`{"engine":{"preset":"does-not-exist"}}`)); err == nil {
 		t.Fatal("expected error for unknown preset")
+	}
+}
+
+// model and paths are retired top-level keys, same as keep_alive: json.Unmarshal into
+// contextGuruConfig silently drops an unknown field, which would otherwise let `model: {...}`
+// or `paths: [...]` look respected when neither does anything any more -- cheap_model's rename
+// from model, and the hardcoded paths list, were both silent (review finding).
+func TestConfigure_WarnsOnRetiredModelAndPathsKeys(t *testing.T) {
+	for _, tc := range []struct {
+		name, cfg, want string
+	}{
+		{"model", `{"model":{"base_url":"http://x","model":"m"}}`, "model is retired"},
+		{"paths", `{"paths":["/v1/messages"]}`, "paths is retired"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			old := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+			defer slog.SetDefault(old)
+
+			if err := New().Configure(json.RawMessage(tc.cfg)); err != nil {
+				t.Fatalf("configure: %v", err)
+			}
+			if got := buf.String(); !strings.Contains(got, tc.want) {
+				t.Fatalf("log = %q, want it to contain %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -108,6 +133,85 @@ func TestOnRequest_NonInferencePath_PassThrough(t *testing.T) {
 	}
 	if pctx.BodyMutated() {
 		t.Fatal("non-inference path must not be compacted")
+	}
+}
+
+// cache.strategy: 1-hour-head's whole effect is apply.Opts.HeadTTL1h/HeadTTLMinBytes relabelling
+// an existing head breakpoint's ttl to "1h" — nothing else reads cachePolicy's resolved fields.
+// Without wiring them into the OnRequest call (review finding), the strategy resolved a policy
+// nothing used, and the tools mark below would still read ttl "5m".
+func TestOnRequest_HeadTTL1hStrategyRelabelsAnExistingHeadBreakpoint(t *testing.T) {
+	p := configured(t, `{"engine":{"cache":{"strategy":"1-hour-head","head_ttl_min_bytes":1}}}`)
+	body, _ := json.Marshal(map[string]any{
+		"model": "claude-sonnet-4-5",
+		"tools": []map[string]any{
+			{"name": "Read", "description": "read a file", "input_schema": map[string]any{"type": "object"},
+				"cache_control": map[string]any{"type": "ephemeral", "ttl": "5m"}},
+		},
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	pctx := inferencePctx("/v1/messages", body)
+	if act := invokeReq(p, pctx); act.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", act.Type)
+	}
+	if !pctx.BodyMutated() {
+		t.Fatal("expected the tools breakpoint to be relabelled (SetBody)")
+	}
+	if got := string(pctx.Body); !strings.Contains(got, `"ttl":"1h"`) {
+		t.Fatalf("tools cache_control ttl not relabelled to 1h: %s", got)
+	}
+}
+
+// A body already at ttl "1h" sets Trace.HeadTTL1h too (apply's own doc: "count it as head all
+// the same"), with nothing actually rewritten — reportResult's byte comparison must not read
+// that as a change (review suggestion: an earlier version called SetBody on identical bytes).
+func TestOnRequest_HeadTTL1hStrategyIsANoOpWhenAlreadyRelabelled(t *testing.T) {
+	p := configured(t, `{"engine":{"cache":{"strategy":"1-hour-head","head_ttl_min_bytes":1}}}`)
+	body, _ := json.Marshal(map[string]any{
+		"model": "claude-sonnet-4-5",
+		"tools": []map[string]any{
+			{"name": "Read", "description": "read a file", "input_schema": map[string]any{"type": "object"},
+				"cache_control": map[string]any{"type": "ephemeral", "ttl": "1h"}},
+		},
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	pctx := inferencePctx("/v1/messages", body)
+	if act := invokeReq(p, pctx); act.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", act.Type)
+	}
+	if pctx.BodyMutated() {
+		t.Fatal("expected no SetBody: the body was already at ttl 1h")
+	}
+}
+
+// cache.strategy: 1-hour-always's whole effect is apply.Opts.OneHourFirst asking
+// keepalive.Keeper.OneHourFirst, which is exported as of context-guru v0.7.7 (review finding: an
+// earlier pass left this unwired on the belief that the decision was unexported, which stopped
+// being true once the dependency bumped). Without it wired, the strategy resolves a policy
+// nothing asks, and the tools mark below stays unrelabelled.
+func TestOnRequest_OneHourAlwaysStrategyRelabelsEveryExistingMark(t *testing.T) {
+	p := configured(t, `{"engine":{"cache":{"strategy":"1-hour-always"}}}`)
+	if err := p.Init(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Shutdown(t.Context()) })
+	body, _ := json.Marshal(map[string]any{
+		"model": "claude-sonnet-4-5",
+		"tools": []map[string]any{
+			{"name": "Read", "description": "read a file", "input_schema": map[string]any{"type": "object"},
+				"cache_control": map[string]any{"type": "ephemeral"}},
+		},
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	pctx := inferencePctx("/v1/messages", body)
+	if act := invokeReq(p, pctx); act.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", act.Type)
+	}
+	if !pctx.BodyMutated() {
+		t.Fatal("expected the tools breakpoint to be relabelled (SetBody)")
+	}
+	if got := string(pctx.Body); !strings.Contains(got, `"ttl":"1h"`) {
+		t.Fatalf("tools cache_control ttl not relabelled to 1h: %s", got)
 	}
 }
 
@@ -175,12 +279,37 @@ func TestOnRequest_NoSession_Skips(t *testing.T) {
 	}
 }
 
+func TestConfigure_RejectsBadCacheMode(t *testing.T) {
+	if err := New().Configure(json.RawMessage(`{"cache_mode":"always"}`)); err == nil {
+		t.Fatal("expected error for cache_mode \"always\"")
+	}
+	for _, mode := range []string{"", "auto", "on", "off"} {
+		p := New()
+		if err := p.Configure(json.RawMessage(`{"cache_mode":"` + mode + `"}`)); err != nil {
+			t.Fatalf("cache_mode %q: unexpected error: %v", mode, err)
+		}
+		// Plumbing only: apply.Opts.CacheMode's own resolution (resolveCacheAware) is
+		// context-guru's behavior, not this plugin's, so this pins that the value reaches
+		// p.cfg (and so OnRequest's apply.Opts.CacheMode), not what the engine then does with it.
+		if p.cfg.CacheMode != mode {
+			t.Fatalf("cache_mode %q: p.cfg.CacheMode = %q", mode, p.cfg.CacheMode)
+		}
+	}
+}
+
 func TestConfigure_RejectsPartialModel(t *testing.T) {
-	if err := New().Configure(json.RawMessage(`{"model":{"base_url":"http://x"}}`)); err == nil {
+	if err := New().Configure(json.RawMessage(`{"cheap_model":{"base_url":"http://x"}}`)); err == nil {
 		t.Fatal("expected error when model.model is unset but base_url is set")
 	}
-	if err := New().Configure(json.RawMessage(`{"model":{"model":"gpt-4o-mini"}}`)); err == nil {
+	if err := New().Configure(json.RawMessage(`{"cheap_model":{"model":"gpt-4o-mini"}}`)); err == nil {
 		t.Fatal("expected error when model.base_url is unset but model is set")
+	}
+}
+
+func TestConfigure_RejectsNegativeMaxConcurrent(t *testing.T) {
+	cfg := `{"cheap_model":{"base_url":"http://x","model":"m","max_concurrent":-1}}`
+	if err := New().Configure(json.RawMessage(cfg)); err == nil {
+		t.Fatal("expected error for a negative model.max_concurrent")
 	}
 }
 
@@ -494,7 +623,7 @@ func usageServer(t *testing.T) *httptest.Server {
 // context-guru and carrying the dry-run state captured when the model was built. Run with -race.
 func TestCgModel_ConcurrentCompleteOnOneRequest(t *testing.T) {
 	srv := usageServer(t)
-	p := configured(t, `{"model":{"base_url":"`+srv.URL+`","model":"cheap-model"}}`)
+	p := configured(t, `{"cheap_model":{"base_url":"`+srv.URL+`","model":"cheap-model"}}`)
 	pctx := inferencePctx("/v1/chat/completions", nil)
 	pctx.SetCurrentPlugin("context-guru", pipeline.InvocationPhaseRequest)
 	m := p.staticModelFor(pctx)
@@ -525,12 +654,87 @@ func TestCgModel_ConcurrentCompleteOnOneRequest(t *testing.T) {
 	}
 }
 
+// TestCgModel_MaxConcurrentBoundsInFlightCalls proves the cap actually bounds concurrency
+// (model.max_concurrent, mirroring context-guru-proxy's --cheap-model-concurrent): with the cap
+// at 2 and 6 calls fired at once against a server that blocks until released, no more than 2 are
+// ever in flight together, and all 6 still complete once released.
+func TestCgModel_MaxConcurrentBoundsInFlightCalls(t *testing.T) {
+	const maxConc, n = 2, 6
+	release := make(chan struct{})
+	var inFlight, peak atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		<-release
+		// Lower the count here, while the call is still inside Complete and so still holds its
+		// slot. Lowering it after Complete returns would race: Complete frees the slot in a
+		// deferred receive before it returns, so a waiting call can acquire and count itself
+		// before this call is uncounted, and a correct cap would report maxConc+1.
+		inFlight.Add(-1)
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	p := configured(t, `{"cheap_model":{"base_url":"`+srv.URL+`","model":"cheap-model","max_concurrent":`+
+		"2"+`}}`)
+	pctx := inferencePctx("/v1/chat/completions", nil)
+	pctx.SetCurrentPlugin("context-guru", pipeline.InvocationPhaseRequest)
+	model := p.staticModelFor(pctx)
+	cm, ok := model.(cgModel)
+	if !ok {
+		t.Fatalf("staticModelFor returned %T, want cgModel", model)
+	}
+
+	// onAcquire fires the instant this call's semaphore slot is taken, in-process, with no
+	// network round trip to race against: a broken cap lets every call acquire with no
+	// blocking at all, so peak reaches n almost immediately rather than waiting on anything the
+	// HTTP server on the other end of Complete could delay. The real call still goes on to that
+	// server and blocks on release there, which is what lets this holding pattern exist for the
+	// test to observe at all.
+	atCap := make(chan struct{})
+	var atCapOnce sync.Once
+	cm.onAcquire = func() {
+		cur := inFlight.Add(1)
+		for {
+			p := peak.Load()
+			if cur <= p || peak.CompareAndSwap(p, cur) {
+				break
+			}
+		}
+		if cur >= maxConc {
+			atCapOnce.Do(func() { close(atCap) })
+		}
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := cm.Complete(context.Background(), "summarize"); err != nil {
+				t.Errorf("Complete: %v", err)
+			}
+		}()
+	}
+	// Wait for the cap to actually bind before releasing: a genuinely bounded run reaches
+	// maxConc and stays there, so this never hangs waiting for a release only a bug would need.
+	<-atCap
+	close(release)
+	wg.Wait()
+	pctx.ClearCurrentPlugin()
+
+	if got := peak.Load(); got > maxConc {
+		t.Fatalf("peak concurrent calls = %d, want at most %d (max_concurrent)", got, maxConc)
+	}
+	if ops := pctx.ReportedOps(); len(ops) != n {
+		t.Fatalf("ops = %d, want %d -- every call must still complete once released", len(ops), n)
+	}
+}
+
 // A model built while the plugin runs under on_error: observe reports its calls as DryRun and as
 // context-guru's, from what was captured at construction, not from whatever is dispatched when the
 // call returns: here the call returns while a later plugin, under enforce, is dispatched.
 func TestCgModel_OperatorAndDryRunCapturedAtConstruction(t *testing.T) {
 	srv := usageServer(t)
-	p := configured(t, `{"model":{"base_url":"`+srv.URL+`","model":"cheap-model"}}`)
+	p := configured(t, `{"cheap_model":{"base_url":"`+srv.URL+`","model":"cheap-model"}}`)
 	release, called := make(chan struct{}), make(chan struct{})
 	grab := &modelGrabber{p: p, after: func(m cgcomponents.Model) {
 		go func() {
@@ -573,7 +777,7 @@ func (w *waitPlugin) OnResponse(context.Context, *pipeline.Context) pipeline.Act
 // in the plugin's metrics and the pipeline's, and reading it races nothing. Run with -race.
 func TestCgModel_CompleteAfterRunIsDroppedAndCounted(t *testing.T) {
 	srv := usageServer(t)
-	p := configured(t, `{"model":{"base_url":"`+srv.URL+`","model":"cheap-model"}}`)
+	p := configured(t, `{"cheap_model":{"base_url":"`+srv.URL+`","model":"cheap-model"}}`)
 	grab := &modelGrabber{p: p}
 	pl, err := pipeline.New([]pipeline.Plugin{grab})
 	if err != nil {
@@ -667,7 +871,7 @@ func TestModelsForBuildsNeitherModelUnderObserve(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := configured(t, `{}`)
+			p := configured(t, `{`+offline+`}}`)
 			grab := &modelsForGrabber{p: p, provider: tc.provider}
 			pl, err := pipeline.New([]pipeline.Plugin{grab}, pipeline.WithPolicies(pipeline.ErrorPolicyObserve))
 			if err != nil {
