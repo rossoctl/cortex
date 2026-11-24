@@ -388,6 +388,35 @@ func TestStart_NoURLSendsNothing(t *testing.T) {
 	}
 }
 
+// With no token, the push sends no Authorization header, even when the environment holds OTLP
+// headers meant for another backend (review finding). otlpmetrichttp falls back to
+// OTEL_EXPORTER_OTLP_HEADERS / OTEL_EXPORTER_OTLP_METRICS_HEADERS when no WithHeaders option is
+// set, so that backend's key would otherwise reach this collector.
+func TestStart_NoTokenSendsNoEnvironmentHeaders(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "Authorization=Bearer%20leaked")
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_HEADERS", "Authorization=Bearer%20leaked-metrics")
+	rc, srv := newReceiver(t)
+	cfg := config.MetricsPushConfig{URL: srv.URL, Interval: time.Hour}
+	mp, shutdown, err := Start(cfg, "dev", "")
+	if err != nil || mp == nil {
+		t.Fatalf("Start = %v, %v", mp, err)
+	}
+	observe(accounting.NewSink(mp, rates()))
+	if err := shutdown(context.Background()); err != nil { // flushes: the one push of an hour interval
+		t.Fatalf("shutdown: %v", err)
+	}
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	if len(rc.auth) == 0 {
+		t.Fatal("the collector received no push")
+	}
+	for _, a := range rc.auth {
+		if a != "" {
+			t.Errorf("Authorization = %q, want none", a)
+		}
+	}
+}
+
 // An http URL to a host that is not loopback is refused: the token would travel in the clear.
 func TestStart_RefusesPlainHTTP(t *testing.T) {
 	mp, _, err := Start(config.MetricsPushConfig{URL: "http://collector.example.com", Token: "s3cret"}, "dev", "")
