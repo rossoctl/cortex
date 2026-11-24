@@ -2,6 +2,11 @@
 
 This file provides context for Claude (AI assistant) when working with the `cortex` monorepo.
 
+Other agents read [`AGENTS.md`](AGENTS.md). It tells them to read this file and says
+what is different for an agent that is not Claude Code. It links to sections here by
+anchor. If you rename a heading, change the worktree steps, the nested-file table or the
+attribution policy, update `AGENTS.md` to match.
+
 ## AI Assistant Instructions
 
 - **Always work in your own git worktree — never in the shared top-level checkout.**
