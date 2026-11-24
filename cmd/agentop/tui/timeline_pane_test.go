@@ -1375,6 +1375,21 @@ func TestTimelineWaits_AskUserQuestionIsWaitingOnYou(t *testing.T) {
 	}
 }
 
+// Bob's spawn_subagent returns only when its subagents do, so its span is the caller waiting on
+// them, not tool time. The span alone says so: here no child row covers the wait.
+func TestTimelineWaits_SyncSpawnIsWaitingOnSubagents(t *testing.T) {
+	tl := sampleTimeline() // main finishes a reply at 1200s; the next turn starts at 1500s
+	tl.Tools = append(tl.Tools, timeline.Tool{Agent: timeline.MainAgent, ID: "s1", Name: "spawn_subagent", Start: tlAt(1200), End: tlPtr(1500), Seq: 35})
+	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 180, time.Time{}, tlAt(3600))
+	if c := lay.agents[0].cells[cellOf(t, lay, 1300)]; !near(c.subs, 1) || c.tool != 0 {
+		t.Errorf("while the spawn ran: %+v, want waiting on subagents", c)
+	}
+	without := buildTimelineLayout(sampleTimeline(), tlAt(0), tlAt(1800), 180, time.Time{}, tlAt(3600))
+	if got, want := lay.agents[0].toolTime, without.agents[0].toolTime; got != want {
+		t.Errorf("tool time = %s, want %s: the spawn is not tool time", got, want)
+	}
+}
+
 // A cell inside a turn that carries a model names it, so a client running several models
 // side by side (Bob's classifier beside its main turns) reads apart.
 func TestTimelineStrip_NamesTheTurnModel(t *testing.T) {
