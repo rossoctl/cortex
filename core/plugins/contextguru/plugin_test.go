@@ -81,9 +81,6 @@ func TestConfigure_DefaultsBuildBalanced(t *testing.T) {
 	if p.pipe == nil || p.store == nil {
 		t.Fatal("empty config should default to the balanced preset and build a pipeline + store")
 	}
-	if len(p.cfg.Paths) == 0 {
-		t.Fatal("paths should default to the inference paths")
-	}
 }
 
 func TestConfigure_RejectsBadEngine(t *testing.T) {
@@ -196,16 +193,16 @@ func TestConfigure_RejectsBadCacheMode(t *testing.T) {
 }
 
 func TestConfigure_RejectsPartialModel(t *testing.T) {
-	if err := New().Configure(json.RawMessage(`{"model":{"base_url":"http://x"}}`)); err == nil {
+	if err := New().Configure(json.RawMessage(`{"cheap_model":{"base_url":"http://x"}}`)); err == nil {
 		t.Fatal("expected error when model.model is unset but base_url is set")
 	}
-	if err := New().Configure(json.RawMessage(`{"model":{"model":"gpt-4o-mini"}}`)); err == nil {
+	if err := New().Configure(json.RawMessage(`{"cheap_model":{"model":"gpt-4o-mini"}}`)); err == nil {
 		t.Fatal("expected error when model.base_url is unset but model is set")
 	}
 }
 
 func TestConfigure_RejectsNegativeMaxConcurrent(t *testing.T) {
-	cfg := `{"model":{"base_url":"http://x","model":"m","max_concurrent":-1}}`
+	cfg := `{"cheap_model":{"base_url":"http://x","model":"m","max_concurrent":-1}}`
 	if err := New().Configure(json.RawMessage(cfg)); err == nil {
 		t.Fatal("expected error for a negative model.max_concurrent")
 	}
@@ -521,7 +518,7 @@ func usageServer(t *testing.T) *httptest.Server {
 // context-guru and carrying the dry-run state captured when the model was built. Run with -race.
 func TestCgModel_ConcurrentCompleteOnOneRequest(t *testing.T) {
 	srv := usageServer(t)
-	p := configured(t, `{"model":{"base_url":"`+srv.URL+`","model":"cheap-model"}}`)
+	p := configured(t, `{"cheap_model":{"base_url":"`+srv.URL+`","model":"cheap-model"}}`)
 	pctx := inferencePctx("/v1/chat/completions", nil)
 	pctx.SetCurrentPlugin("context-guru", pipeline.InvocationPhaseRequest)
 	m := p.staticModelFor(pctx)
@@ -574,7 +571,7 @@ func TestCgModel_MaxConcurrentBoundsInFlightCalls(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	p := configured(t, `{"model":{"base_url":"`+srv.URL+`","model":"cheap-model","max_concurrent":`+
+	p := configured(t, `{"cheap_model":{"base_url":"`+srv.URL+`","model":"cheap-model","max_concurrent":`+
 		"2"+`}}`)
 	pctx := inferencePctx("/v1/chat/completions", nil)
 	pctx.SetCurrentPlugin("context-guru", pipeline.InvocationPhaseRequest)
@@ -612,7 +609,7 @@ func TestCgModel_MaxConcurrentBoundsInFlightCalls(t *testing.T) {
 // call returns: here the call returns while a later plugin, under enforce, is dispatched.
 func TestCgModel_OperatorAndDryRunCapturedAtConstruction(t *testing.T) {
 	srv := usageServer(t)
-	p := configured(t, `{"model":{"base_url":"`+srv.URL+`","model":"cheap-model"}}`)
+	p := configured(t, `{"cheap_model":{"base_url":"`+srv.URL+`","model":"cheap-model"}}`)
 	release, called := make(chan struct{}), make(chan struct{})
 	grab := &modelGrabber{p: p, after: func(m cgcomponents.Model) {
 		go func() {
@@ -655,7 +652,7 @@ func (w *waitPlugin) OnResponse(context.Context, *pipeline.Context) pipeline.Act
 // in the plugin's metrics and the pipeline's, and reading it races nothing. Run with -race.
 func TestCgModel_CompleteAfterRunIsDroppedAndCounted(t *testing.T) {
 	srv := usageServer(t)
-	p := configured(t, `{"model":{"base_url":"`+srv.URL+`","model":"cheap-model"}}`)
+	p := configured(t, `{"cheap_model":{"base_url":"`+srv.URL+`","model":"cheap-model"}}`)
 	grab := &modelGrabber{p: p}
 	pl, err := pipeline.New([]pipeline.Plugin{grab})
 	if err != nil {

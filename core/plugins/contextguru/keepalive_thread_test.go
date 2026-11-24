@@ -1,8 +1,6 @@
 package contextguru
 
 import (
-	"reflect"
-	"strconv"
 	"testing"
 	"time"
 
@@ -21,7 +19,7 @@ func agentPctx(role pipeline.AgentRole, id string) *pipeline.Context {
 }
 
 func TestRecordForKeysAnAgentByItsOwnThread(t *testing.T) {
-	pol := keepAliveConfig{Enabled: true}.policy(cgconfig.CacheConfig{})
+	pol := cachePolicy(cgconfig.CacheConfig{KeepAlive: true})
 	for _, tc := range []struct {
 		name string
 		role pipeline.AgentRole
@@ -43,7 +41,7 @@ func TestRecordForKeysAnAgentByItsOwnThread(t *testing.T) {
 }
 
 func TestRecordForSkipsASubagentThatNamesNoAgent(t *testing.T) {
-	pol := keepAliveConfig{Enabled: true}.policy(cgconfig.CacheConfig{})
+	pol := cachePolicy(cgconfig.CacheConfig{KeepAlive: true})
 	if _, ok := recordFor(finishedPctx(200, pipeline.AgentRoleSubagent), "s1", pol, nil, logEmitter{}); ok {
 		t.Fatal("a subagent with no agent id was recorded, which would replace the main thread's entry")
 	}
@@ -98,43 +96,5 @@ func TestAPingIsAccountedOnTheRequestsThread(t *testing.T) {
 				t.Fatalf("Ping.ThreadID = %q, want %q", got, tc.want)
 			}
 		})
-	}
-}
-
-// Every `default` tag on keepAliveConfig is the value its zero takes in policy(). The tags are
-// the schema users read; the policy takes the engine's shipped defaults, which move with the pin.
-func TestKeepAliveDefaultTagsMatchThePolicy(t *testing.T) {
-	pol := keepAliveConfig{Enabled: true}.policy(cgconfig.CacheConfig{})
-	// Enabled's default is Configure's, not policy()'s: a config with no keep_alive block.
-	enabled := 0.0
-	if configured(t, `{}`).cfg.KeepAlive.Enabled {
-		enabled = 1
-	}
-	actual := map[string]float64{
-		"Enabled":         enabled,
-		"IdleSeconds":     pol.Idle.Seconds(),
-		"MaxPings":        float64(pol.MaxPings),
-		"MaxUSDPerPing":   pol.MaxUSDPerPing,
-		"MinPrefixTokens": float64(pol.MinPrefixTokens),
-	}
-	typ := reflect.TypeOf(keepAliveConfig{})
-	for i := 0; i < typ.NumField(); i++ {
-		f := typ.Field(i)
-		tag, ok := f.Tag.Lookup("default")
-		if !ok {
-			continue
-		}
-		want, known := actual[f.Name]
-		if !known {
-			t.Errorf("%s has a default tag but no policy value to check it against", f.Name)
-			continue
-		}
-		if b, err := strconv.ParseBool(tag); err == nil {
-			tag = map[bool]string{true: "1", false: "0"}[b]
-		}
-		got, err := strconv.ParseFloat(tag, 64)
-		if err != nil || got != want {
-			t.Errorf("%s: default tag %q, policy default %v", f.Name, tag, want)
-		}
 	}
 }

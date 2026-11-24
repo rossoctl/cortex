@@ -146,7 +146,7 @@ func runFinishedAnthropicRequest(t *testing.T, pipe *pipeline.Pipeline, sessionI
 func TestBuild_KeepAliveThroughPipeline(t *testing.T) {
 	pipe, err := plugins.Build([]config.PluginEntry{
 		{Name: "inference-parser"},
-		{Name: "context-guru", Config: json.RawMessage(`{"keep_alive":{"enabled":true,"min_prefix_tokens":1}}`)},
+		{Name: "context-guru", Config: json.RawMessage(`{"engine": {"cache": {"keepalive": true, "keepalive_min_prefix_tokens": 1, "keepalive_wait_plan": false}}}`)},
 	})
 	if err != nil {
 		t.Fatalf("pipeline should build with [inference-parser, context-guru]: %v", err)
@@ -162,7 +162,7 @@ func TestBuild_KeepAliveThroughPipeline(t *testing.T) {
 		t.Fatal("context-guru instance not found in built pipeline")
 	}
 	if cg.keeper == nil {
-		t.Fatal("keeper should be built when keep_alive.enabled is true")
+		t.Fatal("keeper should be built when cache.keepalive is true")
 	}
 
 	ctx := context.Background()
@@ -191,7 +191,7 @@ func TestBuild_KeepAliveHoldsNothingUnderObserve(t *testing.T) {
 	pipe, err := plugins.Build([]config.PluginEntry{
 		{Name: "inference-parser"},
 		{Name: "context-guru", OnError: pipeline.ErrorPolicyObserve,
-			Config: json.RawMessage(`{"keep_alive":{"enabled":true,"min_prefix_tokens":1}}`)},
+			Config: json.RawMessage(`{"engine": {"cache": {"keepalive": true, "keepalive_min_prefix_tokens": 1, "keepalive_wait_plan": false}}}`)},
 	})
 	if err != nil {
 		t.Fatalf("build: %v", err)

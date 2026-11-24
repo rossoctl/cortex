@@ -11,8 +11,9 @@ config enables it by default (preset `xhigh`). `lite`, `envoy` and
 `cpex` leave it out; a build with none of those tags needs
 `-tags include_plugin_contextguru` to link it.
 
-- `paths` (`[]string`) — inference request paths to compact. Default: `/v1/chat/completions`, `/v1/completions`, `/v1/messages`.
-- `model` (object) — optional "cheap" LLM endpoint for model-backed components (summarize, extract:code); omitted means those degrade to deterministic/no-op.
+Inference request paths are fixed, not configurable: `/v1/chat/completions`, `/v1/completions`, `/v1/messages` — the same routes `context-guru-proxy` itself hardcodes.
+
+- `cheap_model` (object) — optional "cheap" LLM endpoint for model-backed components (summarize, extract:code); omitted means those degrade to deterministic/no-op.
   - `base_url` — OpenAI-compatible endpoint base.
   - `model` — model name to call.
   - `api_key` — optional bearer token.
@@ -20,7 +21,7 @@ config enables it by default (preset `xhigh`). `lite`, `envoy` and
   - `timeout_ms` — per-call timeout, default 150000.
   - `max_concurrent` — bounds concurrent calls to this model, process-wide, across every request. Default 4 — the same default as `context-guru-proxy`'s `--cheap-model-concurrent` flag, which this mirrors. A call that would exceed it waits for a slot, or returns the request's own context error if that context is canceled first.
 - `engine` (object) — native context-guru config (preset / pipeline / per-component / store / cache), passed through verbatim. Default: `preset: balanced`.
-  - `cache.strategy` — picks a named prompt-cache policy: `none`, `auto`, `1-ping`, `2-ping`, `1-hour-head`, `1-hour-on-wait`, `1-hour-always`, `30-min-ping`. Resolved by context-guru itself (`config.LookupStrategy`/`applyStrategy`), not reimplemented in this plugin — see context-guru's own [`docs/how-to/cache-strategies.md`](https://github.com/rossoctl/context-guru/blob/main/docs/how-to/cache-strategies.md). This is the SAME `cache:` block `context-guru-proxy`'s `--config` loads, so a strategy behaves identically in both. Unset: `keep_alive` (below) decides keep-alive instead, exactly as before this key existed — `keep_alive: {enabled: false}` still always wins over any strategy, as a kill switch.
+  - `cache.strategy` — picks a named prompt-cache policy: `none`, `auto`, `1-ping`, `2-ping`, `1-hour-head`, `1-hour-on-wait`, `1-hour-always`, `30-min-ping`. Resolved by context-guru itself (`config.LookupStrategy`/`applyStrategy`), not reimplemented in this plugin — see context-guru's own [`docs/how-to/cache-strategies.md`](https://github.com/rossoctl/context-guru/blob/main/docs/how-to/cache-strategies.md). This is the SAME `cache:` block `context-guru-proxy`'s `--config` loads, so a strategy behaves identically in both. Unset: this plugin fills `cache.strategy: auto` itself, but only when the operator's `engine:` YAML has no `cache:` key at all — any operator-authored `cache:` block is left completely alone. This is what keeps keep-alive "on by default on every install" true with no plugin-level default of its own.
 
 **The request's own model (`model.source: incoming`).** A component configured with `model.source: incoming` calls the model the agent itself is using, on the agent's own credential. OpenAI Chat Completions only: through `llmclient`, on the request's endpoint and `Authorization`. On other dialects the component uses the `model` block, or degrades to deterministic. Each such call is reported to the request it was made for as a spend op (`pluginSpendMicros`). A call that returns after its request was accounted is dropped and counted in the `late_model_calls_dropped` metric.
 
@@ -57,16 +58,13 @@ provider has cached stays the same.
   - `model_info` — `litellm` (the LiteLLM public model map, fetched in the background and cached) or `off` (no network). The default depends on where Cortex runs: `litellm` on a local install, `off` anywhere else, so a pod does not fetch the map from the public internet on its first request (and again after every hot reload) unless its config asks. With `off`, only `windows` gives an exact window, so set `windows` or `model_info: litellm` in a cluster to let the fraction triggers fire. An explicit `model_info` always wins.
   - `model_info_url` — overrides the map's URL. Setting it with `model_info` unset turns the map on, on any install.
   - `windows` — model id to window in tokens. Checked first, and treated as exact.
-- `keep_alive` (object) — on by default, on every install. Pings an idle session's prompt cache before it expires, so the next turn is a cache hit instead of a full re-send. Each ping is billed to the caller's own credential; set `enabled: false` to turn it off.
+**Keep-alive** pings an idle session's prompt cache before it expires, so the next turn is a cache hit instead of a full re-send. Each ping is billed to the caller's own credential. It is on by default, on every install: whether to ping, how often, and on what schedule is entirely `engine.cache`'s decision (`cache.strategy`, or the `cache.keepalive_*` keys directly — see context-guru's own [`docs/how-to/cache-strategies.md`](https://github.com/rossoctl/context-guru/blob/main/docs/how-to/cache-strategies.md)), not a plugin-level setting. Set `cache.strategy: none` to turn it off.
 
-  **Upgrade note for clusters:** a cluster that already runs context-guru (for compaction, for example) gets keep-alive with no config change. From then on Cortex holds each tracked thread's credential and last request, masked, and sends billed pings on those credentials. `session-budget` and `litellm-budget-track` do not count the pings, and off a local install they go through `HTTPS_PROXY`. To keep the old behaviour, set `keep_alive: {enabled: false}` before you upgrade. Every decision (whether to ping, how much, when to stop) stays inside the context-guru engine, not this plugin.
+There used to be a plugin-level `keep_alive` block here (`enabled`, `idle_seconds`, `max_pings`, `max_usd_per_ping`, `min_prefix_tokens`), predating `engine.cache` support. It is retired: every one of its knobs is a `cache.keepalive_*` key on the engine's own config already, so keeping both was keeping two copies of the same decision. A config that still sends a `keep_alive` block gets one `WARN` naming the retired key and is otherwise unaffected — the key is accepted and ignored, not refused, so an old document keeps loading.
+
+  **Upgrade note for clusters:** a cluster that already runs context-guru (for compaction, for example) gets keep-alive with no config change. From then on Cortex holds each tracked thread's credential and last request, masked, and sends billed pings on those credentials. `session-budget` and `litellm-budget-track` do not count the pings, and off a local install they go through `HTTPS_PROXY`. To keep the old behaviour, set `engine.cache.strategy: none` before you upgrade. Every decision (whether to ping, how much, when to stop) stays inside the context-guru engine, not this plugin.
 
   **Threads:** each thread of a session has its own cache entry, so the keeper tracks each one apart. A Claude Code subagent or agent-team teammate is its own thread, keyed by its `X-Claude-Code-Agent-Id`; every other request is the session's main thread. A request on one thread does not end another thread's idle span, and each ping is accounted on its own thread. A request marked as a subagent's (`cc_is_subagent=true`) that sends no agent id is not tracked, because nothing tells it apart from the session's other subagents.
-  - `enabled` (bool) — keep-alive on or off. Default: `true`. A `keep_alive` block without `enabled` keeps the default.
-  - `idle_seconds` (int) — idle time before the first ping, measured from the previous request's start. Default: `240` (context-guru's `DefaultKeepAliveIdle`).
-  - `max_pings` (int) — most pings sent in one idle span. Default: `2`.
-  - `max_usd_per_ping` (float) — refuse a ping whose projected cost exceeds this, in USD. Default: `0.50`.
-  - `min_prefix_tokens` (int) — billed prefix a session must reach before it becomes eligible for a ping. Default: `80000`.
 
   **Ordering:** `OnFinish` reads `pctx.Headers` after the whole outbound chain has run, so the credential a ping holds is whatever actually went upstream — this holds regardless of where `context-guru` sits relative to a token-exchange or credential-injection plugin. A short-lived exchanged token can still expire before the ping fires; the ping then gets a 4xx from the upstream, which stops keep-alive for that session.
 
@@ -77,8 +75,8 @@ provider has cached stays the same.
   **What a ping replays:** the last request of the thread, as it went upstream. A request that a router translated to another protocol, or gave upstream headers to (`inference-router`), is not tracked: its body, path and headers in the pipeline are not the bytes on the wire, so a ping could not replay it.
 
   **Credential and content retention:** for each tracked thread, Cortex keeps in memory, masked, the caller's credential and the thread's last request body. The body is the whole forwarded conversation, which each ping re-sends. Both are released on that thread's next request, on plugin `Shutdown` or a config reload, or at the thread's hold deadline, whichever comes first. The deadline depends on the cache tier the provider billed:
-  - A thread with a 5-minute cache: `(max_pings + 1) × idle_seconds`, 12 minutes at the defaults above.
-  - A thread whose request asks `ttl: "1h"` on every cache breakpoint, and whose cache the provider billed at the 1-hour tier: the engine's 1-hour schedule, one ping at 59 minutes, so 118 minutes. It is never more than 236 minutes (context-guru's `keepalive.MaxHold1h`). The `keep_alive` block has no setting for this schedule.
+  - A thread with a 5-minute cache: `(max_pings + 1) × idle_seconds`, 12 minutes at the engine's defaults (`cache.keepalive_max_pings`: 2, `cache.keepalive_idle_seconds`: 240).
+  - A thread whose request asks `ttl: "1h"` on every cache breakpoint, and whose cache the provider billed at the 1-hour tier: the engine's 1-hour schedule, one ping at 59 minutes, so 118 minutes. It is never more than 236 minutes (context-guru's `keepalive.MaxHold1h`). There is no `engine.cache` setting for this schedule.
 
   **Hot-reload:** every config hot-reload tears down and rebuilds the pipeline, which drops all keep-alive tracking state. During the drain window, the outgoing instance may still send one more ping for a session the new instance no longer tracks.
 
@@ -86,7 +84,7 @@ provider has cached stays the same.
 
 ## Where its own model calls go
 
-The plugin sends two kinds of request itself, outside the pipeline: the `model` calls of the
+The plugin sends two kinds of request itself, outside the pipeline: the `cheap_model` calls of the
 LLM-backed components (and an `incoming` model's calls), and the keep-alive pings. Whether they
 honour `HTTPS_PROXY` depends on the install:
 

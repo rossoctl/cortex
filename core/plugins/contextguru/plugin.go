@@ -12,7 +12,7 @@
 // establishes the request is an inference call before it runs.
 //
 // LLM-backed engine components (summarize, extract:code) are optional: configure
-// a `model:` block to enable a static cheap model, and the plugin also
+// a `cheap_model:` block to enable a static cheap model, and the plugin also
 // reconstructs the agent's own "incoming" model from the live request so a
 // component with model.source: incoming can reuse it. With no model available
 // those components degrade to deterministic/no-op.
@@ -48,6 +48,7 @@ import (
 	"github.com/rossoctl/context-guru/keepalive"
 	"github.com/rossoctl/context-guru/models"
 	cgstore "github.com/rossoctl/context-guru/store"
+	yaml "gopkg.in/yaml.v3"
 )
 
 // sentinelHeader is set on the plugin's own outbound LLM calls (via llmclient) so
@@ -133,11 +134,13 @@ func pct(before, after int) string {
 // to config.LoadBytes (preset / pipeline / per-component blocks incl. marker_mode
 // / store).
 type contextGuruConfig struct {
-	Paths  []string        `json:"paths"`
-	Model  *modelConfig    `json:"model"`
-	Engine json.RawMessage `json:"engine"`
-	// KeepAlive is the prompt-cache keep-alive. On unless enabled: false (Configure).
-	KeepAlive keepAliveConfig `json:"keep_alive"`
+	// CheapModel is the optional static cheap model for LLM-backed components. Named
+	// cheap_model, not model: context-guru-proxy's own name for the same concept is
+	// CHEAP_MODEL*, and the "cheap" is load-bearing -- it is never the agent's own model
+	// (that one is model.source: incoming, reconstructed from the live request, not configured
+	// here at all).
+	CheapModel *modelConfig    `json:"cheap_model"`
+	Engine     json.RawMessage `json:"engine"`
 	// ContextWindow says where model windows come from, for the engine's fraction triggers.
 	ContextWindow windowsConfig `json:"context_window"`
 	// CacheMode overrides whether the engine places prompt-cache breakpoints on the outbound
@@ -147,6 +150,13 @@ type contextGuruConfig struct {
 	// "auto", exactly as an unset CacheMode always has. Validated at Configure.
 	CacheMode string `json:"cache_mode"`
 }
+
+// inferencePaths are the request paths this plugin acts on. Hardcoded, not configurable:
+// nothing in this repo's tests, docs or deploy manifests has ever overridden it, and
+// context-guru-proxy has no equivalent knob either -- it hardcodes its own routes
+// (/openai, /anthropic, /healthz, /stats, /expand) the same way, because the whole point of
+// that binary is to always run the engine on them. See gated.
+var inferencePaths = []string{"/v1/chat/completions", "/v1/completions", "/v1/messages"}
 
 // validCacheModes are apply.Opts.CacheMode's only legal values ("" counts as "auto" and is not
 // listed here, since Configure treats an absent key as unset, not as the literal string).
@@ -354,28 +364,27 @@ func (p *ContextGuru) Capabilities() pipeline.PluginCapabilities {
 func (p *ContextGuru) SetLocalInstall(local bool) { p.localInstall = local }
 
 func (p *ContextGuru) Configure(raw json.RawMessage) error {
-	// Keep-alive is on unless the config says enabled: false, on every install. Set before
-	// decoding, so a missing keep_alive block or a block without `enabled` keeps it, and an
-	// explicit false overrides it.
-	decoded := contextGuruConfig{KeepAlive: keepAliveConfig{Enabled: true}}
+	var decoded contextGuruConfig
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &decoded); err != nil {
 			return fmt.Errorf("context-guru config: %w", err)
 		}
+		warnOnRetiredKeepAliveKey(raw)
 	}
 	if decoded.CacheMode != "" && !validCacheModes[decoded.CacheMode] {
 		return fmt.Errorf("context-guru config: cache_mode %q is not one of: auto, on, off", decoded.CacheMode)
 	}
 	p.cfg = decoded
-	if len(p.cfg.Paths) == 0 {
-		p.cfg.Paths = []string{"/v1/chat/completions", "/v1/completions", "/v1/messages"}
-	}
 
-	// Engine config: default to the balanced preset when none is supplied.
+	// Engine config: default to the balanced preset when none is supplied. injectDefaultCacheStrategy
+	// then fills `cache: {strategy: auto}` ONLY when the operator's own engine: YAML has no cache:
+	// key at all -- keep-alive stays on by default on every install, same as before keep_alive:
+	// was retired, but through the engine's own strategy table rather than a second copy of it.
 	engine := p.cfg.Engine
 	if len(engine) == 0 {
 		engine = []byte("preset: balanced")
 	}
+	engine = injectDefaultCacheStrategy(engine)
 	cfg, err := cgconfig.LoadBytes(engine)
 	if err != nil {
 		return fmt.Errorf("context-guru engine config: %w", err)
@@ -412,7 +421,7 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 		p.disp.Close()
 		p.keeper, p.disp, p.kaPol = nil, nil, keepalive.Policy{}
 	}
-	if pol := p.cfg.KeepAlive.policy(cfg.Cache); pol.KeepAlive {
+	if pol := cachePolicy(cfg.Cache); pol.KeepAlive {
 		p.kaPol = pol
 		p.disp = newCortexDispatcher(newPingClient(p.localInstall))
 		p.disp.sentinel = p.sentinel
@@ -434,7 +443,7 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 	// Model timeouts / caps (shared by static + incoming clients).
 	p.modelTO = defaultModelTimeout
 	p.modelMax = 4096
-	if m := p.cfg.Model; m != nil {
+	if m := p.cfg.CheapModel; m != nil {
 		if m.TimeoutMs > 0 {
 			p.modelTO = time.Duration(m.TimeoutMs) * time.Millisecond
 		}
@@ -475,15 +484,50 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 		}
 	}
 	slog.Info("context-guru configured",
-		"paths", p.cfg.Paths, "modelConfigured", p.static != nil,
+		"paths", inferencePaths, "modelConfigured", p.static != nil,
 		"engineBytes", len(engine), "stateDB", p.statePath)
 	return nil
+}
+
+// warnOnRetiredKeepAliveKey logs one WARN when raw still carries the retired `keep_alive:` key,
+// naming it and where its settings live now -- the same pattern context-guru's own
+// decodeWithModelHint uses for a retired key (drop it, never refuse the document, always say so).
+// json.Unmarshal into contextGuruConfig silently ignores an unknown field by default, which would
+// otherwise let `keep_alive: {enabled: true}` look respected when it no longer does anything.
+func warnOnRetiredKeepAliveKey(raw json.RawMessage) {
+	var keys map[string]json.RawMessage
+	if json.Unmarshal(raw, &keys) != nil {
+		return
+	}
+	if _, present := keys["keep_alive"]; present {
+		slog.Warn("context-guru config: keep_alive is retired and is not applied; " +
+			"set engine.cache.strategy (or cache.keepalive_* directly) instead -- see " +
+			"docs/context-guru-plugin.md")
+	}
+}
+
+// injectDefaultCacheStrategy appends `cache: {strategy: auto}` to engine's own YAML, but only
+// when the operator wrote no top-level cache: key there at all. This is what keeps keep-alive on
+// by default on every install now that keep_alive: (which used to carry that default) is
+// retired. It never touches engine bytes that already name a cache: key, however they wrote it
+// -- an operator who names a strategy themselves, or hand-tunes cache.keepalive_* directly with
+// no strategy named, is left alone either way; only "no cache: key at all" gets this default.
+func injectDefaultCacheStrategy(engine []byte) []byte {
+	var doc map[string]yaml.Node
+	if err := yaml.Unmarshal(engine, &doc); err != nil {
+		return engine // malformed YAML: let cgconfig.LoadBytes produce the real error
+	}
+	if _, present := doc["cache"]; present {
+		return engine
+	}
+	out := append([]byte{}, engine...)
+	return append(out, []byte("\ncache:\n  strategy: "+cgconfig.DefaultStrategy+"\n")...)
 }
 
 // Init attaches the store's disk copy and starts its flusher. It runs in Init and not in
 // Configure so the flusher is under the pipeline's Start/unwind/Stop contract: a pipeline that a
 // failed build or reload drops is never started, and so holds no flusher. Init also starts the
-// keep-alive sweep, when keep_alive is on. It FAILS OPEN and never returns an error.
+// keep-alive sweep, when the resolved cache policy has it on. It FAILS OPEN and never returns an error.
 func (p *ContextGuru) Init(context.Context) error {
 	if old := p.stateDisk.Swap(attachStateDB(p.store, p.stateDB, p.statePath)); old != nil {
 		_ = old.Close()
@@ -734,7 +778,7 @@ func isSubagent(pctx *pipeline.Context) bool {
 
 // gated reports whether the request path is an inference path the plugin acts on.
 func (p *ContextGuru) gated(path string) bool {
-	for _, s := range p.cfg.Paths {
+	for _, s := range inferencePaths {
 		if path == s || strings.HasSuffix(path, s) {
 			return true
 		}
@@ -861,14 +905,12 @@ func sessionID(pctx *pipeline.Context) string {
 // ConfigSchema surfaces the operator-facing fields in agentop / /v1/plugins.
 func (p *ContextGuru) ConfigSchema() []pipeline.FieldSchema {
 	return []pipeline.FieldSchema{
-		{Name: "paths", Type: "[]string", Description: "Inference request paths to compact (default: chat/completions, completions, messages)."},
-		{Name: "model", Type: "object", Description: "Optional static cheap model for LLM-backed components (summarize, extract:code). Its calls honour HTTPS_PROXY except on a local install, where it points at Cortex itself. max_concurrent bounds concurrent calls to it, process-wide; default 4, the same default as context-guru-proxy's --cheap-model-concurrent flag."},
+		{Name: "cheap_model", Type: "object", Description: "Optional static cheap model for LLM-backed components (summarize, extract:code); context-guru-proxy's own name for the same concept is CHEAP_MODEL*. Its calls honour HTTPS_PROXY except on a local install, where it points at Cortex itself. max_concurrent bounds concurrent calls to it, process-wide; default 4, the same default as context-guru-proxy's --cheap-model-concurrent flag."},
 		{Name: "engine", Type: "object", Description: "Native context-guru config: preset / pipeline / per-component (marker_mode) / store / cache. " +
 			"cache.strategy picks a named prompt-cache policy -- none, auto, 1-ping, 2-ping, 1-hour-head, 1-hour-on-wait, 1-hour-always, 30-min-ping -- " +
 			"resolved by context-guru itself (config.LookupStrategy), not reimplemented here; see context-guru's docs/how-to/cache-strategies.md. " +
-			"Unset: cache.strategy's own default (auto) is NOT applied -- the keep_alive block below decides keep-alive instead, unchanged from before."},
+			"Unset: this plugin fills cache.strategy with \"auto\" itself (only when no cache: key is present at all), so keep-alive stays on by default on every install."},
 		{Name: "context_window", Type: "object", Description: "Where model context windows come from, for fraction-of-window triggers (cache_aware_summarizer's 0.9): model_info (litellm | off; default litellm on a local install, off elsewhere, and litellm wherever model_info_url is set), model_info_url, windows (model id -> tokens, exact)."},
-		{Name: "keep_alive", Type: "object", Description: "Prompt-cache keep-alive, on by default: enabled (true), idle_seconds (240), max_pings (2), max_usd_per_ping (0.50), min_prefix_tokens (80000). Pings bill the caller's own credential; each is accounted through the accountant host where accounting is on (the cost ledger and /v1/usage book it as purpose keep-alive, apart from the agent's requests: keepAlivePings, and its spend by the thread's billing basis — keepAliveMicros on an API key, keepAliveUnits on a subscription, keepAliveUnknownMicros otherwise), and otherwise only logged."},
 		{Name: "cache_mode", Type: "string", Description: "Override whether the engine places prompt-cache breakpoints on the outbound request at all: \"auto\" (default), \"on\" or \"off\". The same field and the same three values as context-guru-proxy's CACHE_MODE environment variable."},
 	}
 }

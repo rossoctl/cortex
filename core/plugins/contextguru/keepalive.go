@@ -11,68 +11,24 @@ import (
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
-// keepAliveConfig is the plugin's `keep_alive:` block — a legacy static override, kept for
-// back-compat with an install that tunes keep-alive here instead of under `engine: cache:`.
-// Every value is a knob on a decision the engine makes; none of them is a decision. A zero value
-// takes the engine's own shipped default (config.DefaultKeepAlive*), or the strategy's resolved
-// value when `engine: cache: strategy` is set (policy, below).
-type keepAliveConfig struct {
-	Enabled         bool    `json:"enabled" description:"Ping an idle session's prompt cache before it expires. Each ping is billed to the caller's own credential." default:"true"`
-	IdleSeconds     int     `json:"idle_seconds" description:"Idle time before the first ping, from the previous request's start." default:"240"`
-	MaxPings        int     `json:"max_pings" description:"Most pings in one idle span." default:"2"`
-	MaxUSDPerPing   float64 `json:"max_usd_per_ping" description:"Refuse a ping whose projected cost exceeds this (USD)." default:"0.50"`
-	MinPrefixTokens int     `json:"min_prefix_tokens" description:"Billed prefix a session must reach before it is pinged." default:"80000"`
-}
-
-// policy resolves the keep-alive Policy from cache, the engine's own `cache:` block (parsed by
-// cgconfig.LoadBytes from `engine:` — see Configure), and c, this plugin's legacy `keep_alive:`
-// override.
+// cachePolicy resolves the keep-alive Policy from cache, the engine's own `cache:` block --
+// parsed by cgconfig.LoadBytes from `engine:` in Configure, which has already run
+// config.applyStrategy against the raw YAML, so cache.strategy's keys (if the operator named
+// one) are already filled in by the time this runs.
 //
-// Without `cache.strategy` set, nothing here changes from before: c alone decides every field,
-// as policy() always did. This is deliberate — an install that has never heard of `engine: cache:`
-// keeps behaving exactly as it does today.
+// There used to be a second, plugin-level `keep_alive:` override here, predating
+// `engine: cache:` support. It is gone: every one of its knobs (idle_seconds, max_pings,
+// max_usd_per_ping, min_prefix_tokens) is a cache.keepalive_* key on config.CacheConfig already
+// -- keeping both was keeping two copies of the same decision. An operator who still sends a
+// `keep_alive:` block gets a WARN naming the deprecated key (Configure) and nothing else: the
+// key is accepted and ignored, not refused, so an old document keeps loading.
 //
-// With `cache.strategy` set, cache.Resolved() (named strategies: none, auto, 1-ping, 2-ping,
-// 1-hour-head, 1-hour-on-wait, 1-hour-always, 30-min-ping — see context-guru's
-// docs/how-to/cache-strategies.md) decides every field, INCLUDING whether keep-alive runs at all
-// ("none" sets no cache key, so cache.KeepAlive is false). The one override kept across both
-// paths is c.Enabled == false: an explicit `keep_alive: {enabled: false}` always wins, as a kill
-// switch independent of the chosen strategy. Mixing the two tuning surfaces (a strategy AND
-// c's other knobs) is not supported — set one or the other, not both — because resolving
-// per-field precedence between two plugin-level overrides would be a local policy decision, not
-// a translation of what the engine already resolved.
-func (c keepAliveConfig) policy(cache cgconfig.CacheConfig) keepalive.Policy {
-	if cache.Strategy == "" {
-		// WaitPlan is left false (the zero value) here on purpose, matching the doc above: with no
-		// `cache.strategy` set, this branch must be byte-for-byte what policy() always returned.
-		// Turning the per-wait plan on changes real scheduling, not just a tunable — #858's "a
-		// thread with no tool call yet is not pinged" would stop every reply that has not yet
-		// called a tool, which is also every fixture in this package's own tests. That default
-		// change is opt-in, through a named strategy (the branch below), not bundled into the
-		// legacy keep_alive block's existing meaning.
-		pol := keepalive.Policy{
-			KeepAlive:       c.Enabled,
-			Idle:            time.Duration(cgconfig.DefaultKeepAliveIdle) * time.Second,
-			MaxPings:        cgconfig.DefaultKeepAliveMaxPings,
-			MaxUSDPerPing:   cgconfig.DefaultKeepAliveMaxUSDPerPing,
-			MinPrefixTokens: cgconfig.DefaultKeepAliveMinPrefix,
-		}
-		if c.IdleSeconds > 0 {
-			pol.Idle = time.Duration(c.IdleSeconds) * time.Second
-		}
-		if c.MaxPings > 0 {
-			pol.MaxPings = c.MaxPings
-		}
-		if c.MaxUSDPerPing > 0 {
-			pol.MaxUSDPerPing = c.MaxUSDPerPing
-		}
-		if c.MinPrefixTokens > 0 {
-			pol.MinPrefixTokens = c.MinPrefixTokens
-		}
-		return pol
-	}
+// Configure defaults cache.strategy to "auto" itself when the operator's engine: YAML has no
+// cache: key at all (see injectDefaultCacheStrategy), which is what keeps keep-alive "on by
+// default on every install" true without this function carrying its own default.
+func cachePolicy(cache cgconfig.CacheConfig) keepalive.Policy {
 	resolved := cache.Resolved()
-	pol := keepalive.Policy{
+	return keepalive.Policy{
 		KeepAlive:            resolved.KeepAlive,
 		Idle:                 time.Duration(resolved.KeepAliveIdleSeconds) * time.Second,
 		OpenAIIdle:           time.Duration(resolved.KeepAliveOpenAIIdleSeconds) * time.Second,
@@ -93,10 +49,6 @@ func (c keepAliveConfig) policy(cache cgconfig.CacheConfig) keepalive.Policy {
 		BackgroundExtraPings: resolved.KeepAliveBackgroundExtraPings,
 		HumanExtraPings:      resolved.KeepAliveHumanExtraPings,
 	}
-	if !c.Enabled {
-		pol.KeepAlive = false
-	}
-	return pol
 }
 
 // agentThreadPrefix marks a keeper thread that one named agent owns. It is the core's own form —

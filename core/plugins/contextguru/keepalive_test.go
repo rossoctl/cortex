@@ -38,11 +38,19 @@ func heldCount(p *ContextGuru) int {
 	return len(p.disp.held)
 }
 
+// keepAliveTestConfig turns keep-alive on with the prefix floor out of the way, through
+// engine.cache directly (keep_alive: is retired). keepalive_wait_plan: false keeps these
+// fixtures' established flat-ping behavior: they are about keeper plumbing, not wait
+// classification, and finishedPctx never calls a tool, which the per-wait plan treats as "no ping
+// yet" (#858) -- a deliberate, data-backed engine default (see cache-strategies.md), just not
+// what these tests are about.
+const keepAliveTestConfig = `{"engine": {"cache": {"keepalive": true, "keepalive_min_prefix_tokens": 1, "keepalive_wait_plan": false}}}`
+
 // keepAlivePlugin is a configured, started plugin with keep-alive on and the prefix floor out of
 // the way; Shutdown runs at cleanup.
 func keepAlivePlugin(t *testing.T) *ContextGuru {
 	t.Helper()
-	p := configured(t, `{"keep_alive": {"enabled": true, "min_prefix_tokens": 1}}`)
+	p := configured(t, keepAliveTestConfig)
 	if err := p.Init(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +69,7 @@ func finishTurns(t *testing.T, p *ContextGuru, n int) {
 }
 
 func TestRecordForMapsAFinishedRequest(t *testing.T) {
-	pol := keepAliveConfig{Enabled: true}.policy(cgconfig.CacheConfig{})
+	pol := cachePolicy(cgconfig.CacheConfig{KeepAlive: true})
 	r, ok := recordFor(finishedPctx(200, pipeline.AgentRoleMain), "s1", pol, func() dispatch.Ref { return "" }, logEmitter{})
 	if !ok {
 		t.Fatal("a finished main-thread request was not recorded")
@@ -83,14 +91,14 @@ func TestRecordForMapsAFinishedRequest(t *testing.T) {
 func TestRecordForUsageNotOKWithoutCacheTiers(t *testing.T) {
 	pctx := finishedPctx(200, pipeline.AgentRoleMain)
 	pctx.Extensions.Inference.PresentKinds = 1 | 8 // input + output only
-	r, ok := recordFor(pctx, "s1", keepAliveConfig{Enabled: true}.policy(cgconfig.CacheConfig{}), nil, logEmitter{})
+	r, ok := recordFor(pctx, "s1", cachePolicy(cgconfig.CacheConfig{KeepAlive: true}), nil, logEmitter{})
 	if !ok || r.UsageOK {
 		t.Fatalf("ok=%v usageOK=%v; want recorded with UsageOK false", ok, r.UsageOK)
 	}
 }
 
 func TestRecordForSkipsSubagentsAndMissingInputs(t *testing.T) {
-	pol := keepAliveConfig{Enabled: true}.policy(cgconfig.CacheConfig{})
+	pol := cachePolicy(cgconfig.CacheConfig{KeepAlive: true})
 	if _, ok := recordFor(finishedPctx(200, pipeline.AgentRoleSubagent), "s1", pol, nil, logEmitter{}); ok {
 		t.Error("a subagent request was recorded under the main thread's key")
 	}
@@ -105,18 +113,18 @@ func TestRecordForSkipsSubagentsAndMissingInputs(t *testing.T) {
 }
 
 func TestPolicyDefaults(t *testing.T) {
-	p := keepAliveConfig{Enabled: true}.policy(cgconfig.CacheConfig{})
+	p := cachePolicy(cgconfig.CacheConfig{KeepAlive: true})
 	if !p.On() || p.Idle != time.Duration(cgconfig.DefaultKeepAliveIdle)*time.Second ||
 		p.MaxPings != cgconfig.DefaultKeepAliveMaxPings ||
 		p.MaxUSDPerPing != cgconfig.DefaultKeepAliveMaxUSDPerPing ||
 		p.MinPrefixTokens != cgconfig.DefaultKeepAliveMinPrefix {
 		t.Fatalf("policy = %+v", p)
 	}
-	if (keepAliveConfig{}).policy(cgconfig.CacheConfig{}).On() {
-		t.Fatal("keep-alive on with enabled: false")
+	if cachePolicy(cgconfig.CacheConfig{}).On() {
+		t.Fatal("keep-alive on with KeepAlive unset")
 	}
-	o := keepAliveConfig{Enabled: true, IdleSeconds: 60, MaxPings: 5, MaxUSDPerPing: 0.1,
-		MinPrefixTokens: 1000}.policy(cgconfig.CacheConfig{})
+	o := cachePolicy(cgconfig.CacheConfig{KeepAlive: true, KeepAliveIdleSeconds: 60,
+		KeepAliveMaxPings: 5, KeepAliveMaxUSDPerPing: 0.1, KeepAliveMinPrefixTokens: 1000})
 	if o.Idle != time.Minute || o.MaxPings != 5 || o.MaxUSDPerPing != 0.1 || o.MinPrefixTokens != 1000 {
 		t.Fatalf("overrides not applied: %+v", o)
 	}
@@ -135,10 +143,10 @@ func cacheConfigFor(t *testing.T, engineYAML string) cgconfig.CacheConfig {
 }
 
 // A strategy named under engine.cache.strategy picks the policy, including whether keep-alive
-// runs at all — not just a handful of knobs under the plugin's own keep_alive block.
+// runs at all.
 func TestPolicyStrategyAuto(t *testing.T) {
 	cache := cacheConfigFor(t, "preset: balanced\ncache:\n  strategy: auto\n")
-	pol := keepAliveConfig{Enabled: true}.policy(cache)
+	pol := cachePolicy(cache)
 	if !pol.On() {
 		t.Fatalf("strategy auto: policy = %+v, want keep-alive on", pol)
 	}
@@ -147,32 +155,28 @@ func TestPolicyStrategyAuto(t *testing.T) {
 	}
 }
 
-// "none" sets no cache key, so it must turn keep-alive off even though the plugin's own
-// keep_alive.enabled defaults to true.
+// "none" sets no cache key, so it must turn keep-alive off.
 func TestPolicyStrategyNone(t *testing.T) {
 	cache := cacheConfigFor(t, "preset: balanced\ncache:\n  strategy: none\n")
-	pol := keepAliveConfig{Enabled: true}.policy(cache)
+	pol := cachePolicy(cache)
 	if pol.On() {
 		t.Fatalf("strategy none: policy = %+v, want keep-alive off", pol)
 	}
 }
 
-// An explicit keep_alive.enabled: false is a kill switch that wins over any strategy.
-func TestPolicyStrategyWithExplicitDisable(t *testing.T) {
-	cache := cacheConfigFor(t, "preset: balanced\ncache:\n  strategy: auto\n")
-	pol := keepAliveConfig{Enabled: false}.policy(cache)
-	if pol.On() {
-		t.Fatalf("keep_alive.enabled: false with strategy auto: policy = %+v, want off", pol)
+// WaitPlan is on by default for ANY resolved cache policy (config.CacheConfig.WaitPlanOn), not
+// just a named strategy -- cachePolicy always goes through Resolved(), and WaitPlanOn()'s own
+// default is "on" unless keepalive_wait_plan: false is set explicitly. That explicit opt-out is
+// the only way off.
+func TestPolicyWaitPlanOffNeedsAnExplicitKey(t *testing.T) {
+	on := cachePolicy(cgconfig.CacheConfig{KeepAlive: true})
+	if !on.WaitPlan {
+		t.Fatal("WaitPlan off with no keepalive_wait_plan key at all")
 	}
-}
-
-// Without cache.strategy set, policy() returns exactly what it always did: the per-wait plan
-// (WaitPlan) stays off, because turning it on changes real ping scheduling (#858: a thread with
-// no tool call yet gets no ping), not just a tunable.
-func TestPolicyNoStrategyKeepsWaitPlanOff(t *testing.T) {
-	pol := keepAliveConfig{Enabled: true}.policy(cgconfig.CacheConfig{})
-	if pol.WaitPlan {
-		t.Fatal("WaitPlan on with no cache.strategy set")
+	f := false
+	off := cachePolicy(cgconfig.CacheConfig{KeepAlive: true, KeepAliveWaitPlan: &f})
+	if off.WaitPlan {
+		t.Fatal("WaitPlan on with keepalive_wait_plan: false")
 	}
 }
 
@@ -183,7 +187,7 @@ func TestRecordForCarriesStopReasonAndToolNames(t *testing.T) {
 	pctx := finishedPctx(200, pipeline.AgentRoleMain)
 	pctx.Extensions.Inference.FinishReason = "tool_use"
 	pctx.Extensions.Inference.ToolCalls = []pipeline.InferenceToolCall{{Name: "Bash"}, {Name: "Read"}}
-	r, ok := recordFor(pctx, "s1", keepAliveConfig{Enabled: true}.policy(cgconfig.CacheConfig{}), nil, logEmitter{})
+	r, ok := recordFor(pctx, "s1", cachePolicy(cgconfig.CacheConfig{KeepAlive: true}), nil, logEmitter{})
 	if !ok {
 		t.Fatal("not recorded")
 	}
@@ -210,7 +214,10 @@ func strSliceEqual(a, b []string) bool {
 	return true
 }
 
-// Keep-alive is on by default on every install, local or not.
+// Keep-alive is on by default on every install, local or not, through Configure's own
+// cache.strategy: auto default (injectDefaultCacheStrategy) -- not through keep_alive:, which is
+// retired and so ignored (its two variants here just prove an old document still loads with no
+// error, unchanged).
 func TestKeepAliveOnByDefault(t *testing.T) {
 	for _, local := range []bool{false, true} {
 		for _, cfg := range []string{`{}`, `{"keep_alive": {}}`, `{"keep_alive": {"max_pings": 3}}`} {
@@ -227,9 +234,9 @@ func TestKeepAliveOnByDefault(t *testing.T) {
 }
 
 func TestKeepAliveCanBeTurnedOff(t *testing.T) {
-	p := configured(t, `{"keep_alive": {"enabled": false}}`)
+	p := configured(t, `{"engine": {"cache": {"strategy": "none"}}}`)
 	if p.keeper != nil || p.disp != nil {
-		t.Fatal("a keeper was built with keep_alive.enabled: false")
+		t.Fatal("a keeper was built with cache.strategy: none")
 	}
 	// The lifecycle hooks are no-ops with keep-alive off.
 	if err := p.Init(t.Context()); err != nil {
@@ -295,7 +302,7 @@ func TestSentinelRequestIsNeverRecorded(t *testing.T) {
 }
 
 func TestShutdownReleasesHeldCredentials(t *testing.T) {
-	p := configured(t, `{"keep_alive": {"enabled": true, "min_prefix_tokens": 1}}`)
+	p := configured(t, keepAliveTestConfig)
 	if err := p.Init(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -311,13 +318,13 @@ func TestShutdownReleasesHeldCredentials(t *testing.T) {
 	}
 }
 
-func TestConfigSchemaListsKeepAlive(t *testing.T) {
+// keep_alive is retired: ConfigSchema must not list it as a live field.
+func TestConfigSchemaDoesNotListKeepAlive(t *testing.T) {
 	for _, f := range New().ConfigSchema() {
 		if f.Name == "keep_alive" {
-			return
+			t.Fatal("ConfigSchema still lists the retired keep_alive field")
 		}
 	}
-	t.Fatal("ConfigSchema has no keep_alive entry")
 }
 
 // TestASkippedSubagentRequestDoesNotPauseTheMainThread covers a request that looks like ordinary
@@ -382,7 +389,7 @@ func TestARequestWithNoInferenceParseDoesNotPauseTheMainThread(t *testing.T) {
 }
 
 func TestRequestFinishingAfterShutdownHoldsNothing(t *testing.T) {
-	p := configured(t, `{"keep_alive": {"enabled": true, "min_prefix_tokens": 1}}`)
+	p := configured(t, keepAliveTestConfig)
 	if err := p.Init(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -429,7 +436,7 @@ func TestCredIDIsPerCredential(t *testing.T) {
 	if got := credID(nil); got != "" {
 		t.Errorf("nil headers gave %q, want \"\"", got)
 	}
-	r, _ := recordFor(finishedPctx(200, pipeline.AgentRoleMain), "s1", keepAliveConfig{Enabled: true}.policy(cgconfig.CacheConfig{}),
+	r, _ := recordFor(finishedPctx(200, pipeline.AgentRoleMain), "s1", cachePolicy(cgconfig.CacheConfig{KeepAlive: true}),
 		func() dispatch.Ref { return "" }, logEmitter{})
 	if r.Cred != credID(http.Header{"Authorization": {"Bearer caller"}}) {
 		t.Errorf("recordFor set Cred %q, want the caller's credential id", r.Cred)
@@ -567,7 +574,7 @@ func oneHourPctx() *pipeline.Context {
 // billed at the 1-hour tier ran on the 5-minute schedule.
 func TestRecordForCarriesTheOneHourCacheWrite(t *testing.T) {
 	pctx := oneHourPctx()
-	r, ok := recordFor(pctx, "s1", keepAliveConfig{Enabled: true}.policy(cgconfig.CacheConfig{}), nil, logEmitter{})
+	r, ok := recordFor(pctx, "s1", cachePolicy(cgconfig.CacheConfig{KeepAlive: true}), nil, logEmitter{})
 	if !ok {
 		t.Fatal("a 1h-billed request was not recorded")
 	}
@@ -666,7 +673,7 @@ func TestKeepAliveHoldsNothingForARequestTheRouterRewrote(t *testing.T) {
 	pctx := finishedPctx(200, pipeline.AgentRoleMain)
 	pctx.MarkRedirectable()
 	pipe.Run(t.Context(), pctx)
-	r, ok := recordFor(pctx, "s1", keepAliveConfig{Enabled: true}.policy(cgconfig.CacheConfig{}), nil, logEmitter{})
+	r, ok := recordFor(pctx, "s1", cachePolicy(cgconfig.CacheConfig{KeepAlive: true}), nil, logEmitter{})
 	if !pctx.Redirected() || !ok || r.Endpoint != "openai.example" {
 		t.Fatalf("a redirected, untranslated request: redirected=%v recorded=%v endpoint=%q",
 			pctx.Redirected(), ok, r.Endpoint)
