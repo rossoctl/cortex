@@ -50,6 +50,10 @@ func TestKeepAlivePing_AReloadCountsAPingOnce(t *testing.T) {
 	h := accounting.New(accounting.Options{})
 	t.Cleanup(func() { _ = h.Close() })
 	old, next := newTestPlugin(1_000_000_000, 0, 0), newTestPlugin(1_000_000_000, 0, 0)
+	// One store, as two instances on one redis_url share one Redis. It signals each finished
+	// accumulate, so the test reads Redis without polling.
+	store := &signalStore{memStore: newMemStore(), done: make(chan struct{}, 4)}
+	old.store, next.store = store, store
 	subscribeTo(h, old)
 	subscribeTo(h, next)
 	if _, ok := h.Ping("sess-1", nil, "api.anthropic.com", ping("sess-1"), accounting.PingInfo{Status: 200}); !ok {
@@ -57,6 +61,11 @@ func TestKeepAlivePing_AReloadCountsAPingOnce(t *testing.T) {
 	}
 	if o, n := calls(old, "sess-1"), calls(next, "sess-1"); o != 0 || n != 1 {
 		t.Errorf("during the drain: old counted %d, new %d; want 0 and 1", o, n)
+	}
+	<-store.done
+	fields, _ := store.HashGet(context.Background(), next.redisKey("sess-1"))
+	if fields["tokens"] != "1835" || fields["calls"] != "1" {
+		t.Errorf("redis after one ping = %v, want tokens 1835, calls 1", fields)
 	}
 	close(next.stopped) // no refresh loop was started
 	if err := next.Shutdown(context.Background()); err != nil {
@@ -128,4 +137,16 @@ func TestKeepAlivePing_NoSession(t *testing.T) {
 	if n != 0 {
 		t.Errorf("%d sessions counted, want 0", n)
 	}
+}
+
+// signalStore is a memStore that sends on done after each Expire, the last call accumulate makes.
+type signalStore struct {
+	*memStore
+	done chan struct{}
+}
+
+func (s *signalStore) Expire(ctx context.Context, key string, ttl time.Duration) error {
+	err := s.memStore.Expire(ctx, key, ttl)
+	s.done <- struct{}{}
+	return err
 }
