@@ -416,8 +416,9 @@ caller's credential and the thread's last request body, which is the whole
 forwarded conversation, both masked. A keeper entry is released at its hold
 deadline, if no request or reload releases it first:
 
-- on a thread with a 5-minute cache, `(max_pings + 1) × idle_seconds`, 12 minutes
-  at the defaults;
+- on a thread with a 5-minute cache, `(max_pings + 1) × idle_seconds`: 12 minutes at the plain
+  default, or up to 36 minutes for a thread waiting on its own tool call, since the engine's
+  wait plan (on by default) raises max_pings to 8 for that wait;
 - on a thread billed at the 1-hour tier, the engine's 1-hour schedule: 118 minutes
   at its defaults, and never more than 236 minutes.
 

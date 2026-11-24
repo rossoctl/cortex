@@ -390,8 +390,15 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 	// then fills `cache: {strategy: auto}` ONLY when the operator's own engine: YAML has no cache:
 	// key at all -- keep-alive stays on by default on every install, same as before keep_alive:
 	// was retired, but through the engine's own strategy table rather than a second copy of it.
+	//
+	// engine: with no value, or every child commented out, decodes to the JSON literal "null"
+	// (len 4), not an empty json.RawMessage -- treated the same as an absent engine: key here,
+	// so the two cannot silently diverge (review finding: without this, a null engine turned
+	// keep-alive off while an absent one turned it on, the one difference between "I wrote
+	// engine: with nothing under it" and "I never wrote engine: at all" an operator could not
+	// see and would not expect).
 	engine := p.cfg.Engine
-	if len(engine) == 0 {
+	if len(bytes.TrimSpace(engine)) == 0 || bytes.Equal(bytes.TrimSpace(engine), []byte("null")) {
 		engine = []byte("preset: balanced")
 	}
 	engine = injectDefaultCacheStrategy(engine)

@@ -705,8 +705,10 @@ curl -X DELETE http://localhost:47601/v1/sessions/<id>
 Neither erases the savings accountant's own per-session state: ids, content hashes and the
 billing mode, no content, in memory and in `~/.cortex/accountant-state.json`. Nor does either
 erase the keep-alive keeper's entries, which hold the caller's credential and the thread's last
-request body (the whole conversation), both masked. A keeper entry goes within 12 minutes at its
-defaults, or within 118 minutes (never more than 236) on a thread billed at the 1-hour tier. The rest stays until newer sessions push it out (at most 10,000 threads are
+request body (the whole conversation), both masked. A keeper entry goes within 12 minutes at the
+plain default, within 36 minutes for a thread waiting on its own tool call (the engine's wait
+plan raises the ping count for that wait), or within 118 minutes (never more than 236) on a
+thread billed at the 1-hour tier. The rest stays until newer sessions push it out (at most 10,000 threads are
 kept), and a state file older than 1 hour is not read at startup (see
 [session-api.md](session-api.md#delete-v1sessions)).
 

@@ -281,10 +281,14 @@ func TestKeepAliveFalseWithNoStrategyStaysOff(t *testing.T) {
 // running proxy on config reload since plugins/deps.go's Configure call has no recover).
 // cgconfig.LoadBytes("null") itself already returns a zero config with no error, so this stays
 // a no-op: injectDefaultCacheStrategy must not add a cache: key to a null engine.
+// engine: null must not panic (the original finding) and must not diverge from an absent
+// engine: either (review finding, a second pass over the first fix): both reach Configure's
+// own default-to-balanced path, so both build a keeper under keep-alive's on-by-default rule,
+// the same as TestKeepAliveOnByDefault's `{}` case.
 func TestConfigure_NullEngineDoesNotPanic(t *testing.T) {
 	p := configured(t, `{"engine": null}`)
-	if p.keeper != nil || p.disp != nil {
-		t.Fatal("a keeper was built from a null engine")
+	if p.keeper == nil || p.disp == nil || !p.kaPol.On() {
+		t.Fatal("a null engine must build a keeper, the same as an absent engine")
 	}
 }
 

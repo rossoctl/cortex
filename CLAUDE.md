@@ -272,8 +272,10 @@ ids, content hashes and a billing mode, no content. A keeper entry also holds th
 credential and the thread's last request body (the whole forwarded conversation), both masked,
 and a ping re-sends that body. The context-guru state DOES
 hold content (the summary checkpoint and other text the plugin made), and its rows stay 30 days
-after their last write. A keeper entry goes at `(max_pings + 1) × idle_seconds` (12 minutes
-at the defaults) on a 5-minute cache, and at 118 minutes (never more than 236) on a thread
+after their last write. A keeper entry goes at `(max_pings + 1) × idle_seconds` (12 minutes at the plain
+default, up to 36 minutes for a thread waiting on its own tool call, since the engine's wait
+plan raises max_pings to `cache.keepalive_tool_wait_max_pings` -- 8 by default -- for that case)
+on a 5-minute cache, and at 118 minutes (never more than 236) on a thread
 billed at the 1-hour tier. The rest has no time bound while the process runs: the in-memory
 maps keep at most 10,000 threads, dropping the oldest, and the snapshot (rewritten every 60s)
 holds what memory holds, except that it leaves out the threads seen longest ago once the file
