@@ -5,8 +5,19 @@ Generates `docs/assets/cortex-demo.svg`, the animated demo on the repo README.
 ```sh
 go run .                    # regenerate the committed asset
 go run . -out /tmp/x.svg    # write somewhere else
-go test ./...               # includes the staleness check
+go run . -stills            # regenerate the still screens in docs/assets/agentop/
+go test ./...               # includes the staleness checks
 ```
+
+## The stills
+
+`stills.yaml` makes the screens of [Using agentop](../../docs/using-agentop.md): one
+still SVG for each beat, named for its label, in `docs/assets/agentop/`. They come from
+the same capture as the demo, with the same fixture. Each beat needs `alt`, the
+image's description. Keys accumulate from beat to beat, as in the demo. Its
+`pipeline:` list gives the Pipeline pane stand-in plugins with real names
+(`fixturepipeline.go`). There is no Usage still: the replay puts its tokens in one
+bucket, so the chart is one bar. The spend breakdown needs a grid of at least 29 rows.
 
 ## What it is
 

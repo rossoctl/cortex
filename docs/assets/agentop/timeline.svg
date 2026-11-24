@@ -1,0 +1,287 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 872 598" width="872" height="598" font-size="14" role="img" aria-label="The agentop Timeline pane for one session. The main agent and five subagents each have a row of bars on one time axis, with their model time, tool time and tokens per second at the right. Below them, each host that the session called has a row with its request count, and a legend names the colours: tools, model, retrying, waiting on subagents and waiting on you.">
+<style>
+text{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;white-space:pre}
+g.st{opacity:0}
+.rv{visibility:hidden}
+.cur{fill:#58a6ff}
+@keyframes blink{0%,49%{opacity:1}50%,100%{opacity:0.15}}
+@keyframes st0{0.0000%,100%{opacity:1}}
+g.st0{animation:st0 2s linear infinite}
+@media (prefers-reduced-motion:reduce){
+g.st,.rv,.cur,clipPath rect{animation:none!important}
+g.st{opacity:0}
+g.st.final{opacity:1}
+.rv{visibility:visible}
+.cur{visibility:hidden}
+clipPath rect{width:100000px}
+}
+</style>
+<rect width="872" height="598" rx="8" fill="#0d1117"/>
+<path d="M0 8a8 8 0 0 1 8-8h856a8 8 0 0 1 8 8v22H0z" fill="#161b22"/>
+<circle cx="18" cy="15" r="5" fill="#ff5f57"/>
+<circle cx="36" cy="15" r="5" fill="#febc2e"/>
+<circle cx="54" cy="15" r="5" fill="#28c840"/>
+<text x="436" y="19.0" fill="#6e7681" font-size="12" text-anchor="middle">cortex</text>
+<defs>
+<g id="r0"><text y="58.0"><tspan x="16.0" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">agentop</tspan><tspan x="74.8" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#4b5563"> · </tspan><tspan x="100.0" textLength="252.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="600">audit the repo before release </tspan><tspan x="352.0" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">(api-7f3c)</tspan><tspan x="436.0" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#4b5563"> · </tspan><tspan x="461.2" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="600">timeline</tspan></text>
+</g>
+<g id="r1"><text y="76.0"><tspan x="16.0" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#4b5563">╭─ </tspan><tspan x="41.2" textLength="100.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">ALL SESSIONS</tspan><tspan x="142.0" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#4b5563"> · </tspan><tspan x="167.2" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">LAST 1H</tspan><tspan x="234.4" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">~</tspan><tspan x="242.8" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="600">$15.03</tspan><tspan x="293.2" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#4b5563"> · </tspan><tspan x="318.4" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">TODAY</tspan><tspan x="368.8" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">~</tspan><tspan x="377.2" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="600">$15.03</tspan><tspan x="427.6" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#4b5563"> · </tspan><tspan x="452.8" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">7 DAYS</tspan><tspan x="511.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">~</tspan><tspan x="520.0" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="600">$15.03</tspan><tspan x="570.4" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#4b5563"> · </tspan><tspan x="595.6" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">THIS MONTH</tspan><tspan x="688.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">~</tspan><tspan x="696.4" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="600">$15.03</tspan><tspan x="746.8" textLength="109.2" lengthAdjust="spacingAndGlyphs" fill="#4b5563"> ───────────╮</tspan></text>
+</g>
+<g id="r2"><rect x="116.8" y="81.0" width="42.5" height="18.0" fill="#a5b3fc"/>
+<text y="94.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="24.4" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">window </tspan><tspan x="83.2" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#9ca3af"> 5m </tspan><tspan x="116.8" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#111827" font-weight="600"> all </tspan><tspan x="242.8" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">╷</tspan><tspan x="251.2" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">09-15 </tspan><tspan x="301.6" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="600">12:24</tspan><tspan x="377.2" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">╷</tspan><tspan x="385.6" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">12:24</tspan><tspan x="562.0" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">09-15 </tspan><tspan x="612.4" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="600">12:24</tspan><tspan x="654.4" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">╷</tspan><tspan x="662.8" textLength="184.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">   model  tools  tok/s</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r3"><rect x="242.8" y="99.0" width="25.7" height="18.0" fill="#a78bfa"/>
+<rect x="284.8" y="99.0" width="17.3" height="18.0" fill="#0e7490"/>
+<rect x="410.8" y="99.0" width="17.3" height="18.0" fill="#0e7490"/>
+<rect x="486.4" y="99.0" width="17.3" height="18.0" fill="#0e7490"/>
+<rect x="545.2" y="99.0" width="8.9" height="18.0" fill="#0e7490"/>
+<rect x="629.2" y="99.0" width="17.3" height="18.0" fill="#0e7490"/>
+<rect x="646.0" y="99.0" width="8.9" height="18.0" fill="#a78bfa"/>
+<rect x="268.0" y="99.0" width="17.3" height="18.0" fill="#a78bfa"/>
+<rect x="301.6" y="99.0" width="109.7" height="18.0" fill="#0e7490"/>
+<rect x="427.6" y="99.0" width="59.3" height="18.0" fill="#0e7490"/>
+<rect x="503.2" y="99.0" width="42.5" height="18.0" fill="#0e7490"/>
+<rect x="553.6" y="99.0" width="76.1" height="18.0" fill="#0e7490"/>
+<rect x="654.4" y="99.0" width="8.9" height="18.0" fill="#a78bfa"/>
+<rect x="242.8" y="114.8" width="8.9" height="2.2" fill="#fbbf24"/>
+<rect x="251.2" y="112.5" width="8.9" height="4.5" fill="#fbbf24"/>
+<rect x="259.6" y="114.8" width="8.9" height="2.2" fill="#fbbf24"/>
+<rect x="284.8" y="108.0" width="8.9" height="9.0" fill="#a78bfa"/>
+<rect x="293.2" y="112.5" width="8.9" height="4.5" fill="#a78bfa"/>
+<rect x="410.8" y="112.5" width="8.9" height="4.5" fill="#a78bfa"/>
+<rect x="419.2" y="114.8" width="8.9" height="2.2" fill="#a78bfa"/>
+<rect x="486.4" y="108.0" width="8.9" height="9.0" fill="#a78bfa"/>
+<rect x="494.8" y="114.8" width="8.9" height="2.2" fill="#a78bfa"/>
+<rect x="545.2" y="110.2" width="8.9" height="6.8" fill="#a78bfa"/>
+<rect x="629.2" y="110.2" width="17.3" height="6.8" fill="#a78bfa"/>
+<rect x="646.0" y="114.8" width="8.9" height="2.2" fill="#fbbf24"/>
+<text y="112.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="24.4" textLength="218.4" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">main agent                </tspan><tspan x="662.8" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="671.2" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#a78bfa">    2m</tspan><tspan x="721.6" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#fbbf24">   7.6s</tspan><tspan x="780.4" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">     81</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r4"><text y="130.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r5"><rect x="268.0" y="135.0" width="370.1" height="18.0" fill="#a78bfa"/>
+<rect x="268.0" y="150.8" width="8.9" height="2.2" fill="#fbbf24"/>
+<rect x="276.4" y="148.5" width="8.9" height="4.5" fill="#fbbf24"/>
+<rect x="284.8" y="150.8" width="8.9" height="2.2" fill="#fbbf24"/>
+<rect x="293.2" y="146.2" width="8.9" height="6.8" fill="#fbbf24"/>
+<rect x="301.6" y="150.8" width="8.9" height="2.2" fill="#fbbf24"/>
+<rect x="310.0" y="148.5" width="8.9" height="4.5" fill="#fbbf24"/>
+<rect x="318.4" y="150.8" width="8.9" height="2.2" fill="#fbbf24"/>
+<rect x="326.8" y="148.5" width="34.1" height="4.5" fill="#fbbf24"/>
+<rect x="360.4" y="146.2" width="8.9" height="6.8" fill="#fbbf24"/>
+<rect x="368.8" y="150.8" width="17.3" height="2.2" fill="#fbbf24"/>
+<rect x="385.6" y="148.5" width="8.9" height="4.5" fill="#fbbf24"/>
+<rect x="394.0" y="146.2" width="8.9" height="6.8" fill="#fbbf24"/>
+<rect x="402.4" y="148.5" width="25.7" height="4.5" fill="#fbbf24"/>
+<rect x="427.6" y="146.2" width="8.9" height="6.8" fill="#fbbf24"/>
+<rect x="436.0" y="150.8" width="8.9" height="2.2" fill="#fbbf24"/>
+<rect x="444.4" y="148.5" width="17.3" height="4.5" fill="#fbbf24"/>
+<rect x="461.2" y="150.8" width="8.9" height="2.2" fill="#fbbf24"/>
+<rect x="469.6" y="146.2" width="8.9" height="6.8" fill="#fbbf24"/>
+<rect x="478.0" y="148.5" width="8.9" height="4.5" fill="#fbbf24"/>
+<rect x="486.4" y="150.8" width="8.9" height="2.2" fill="#fbbf24"/>
+<rect x="494.8" y="148.5" width="17.3" height="4.5" fill="#fbbf24"/>
+<rect x="511.6" y="150.8" width="50.9" height="2.2" fill="#fbbf24"/>
+<rect x="562.0" y="148.5" width="8.9" height="4.5" fill="#fbbf24"/>
+<rect x="570.4" y="150.8" width="25.7" height="2.2" fill="#fbbf24"/>
+<rect x="595.6" y="148.5" width="8.9" height="4.5" fill="#fbbf24"/>
+<rect x="604.0" y="150.8" width="8.9" height="2.2" fill="#fbbf24"/>
+<rect x="612.4" y="148.5" width="8.9" height="4.5" fill="#fbbf24"/>
+<rect x="620.8" y="150.8" width="8.9" height="2.2" fill="#fbbf24"/>
+<text y="148.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="24.4" textLength="218.4" lengthAdjust="spacingAndGlyphs" fill="#67e8f9">  Audit the auth flow     </tspan><tspan x="662.8" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="671.2" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#a78bfa">    8m</tspan><tspan x="721.6" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#fbbf24">     1m</tspan><tspan x="780.4" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">     79</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r6"><text y="166.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r7"><rect x="276.4" y="171.0" width="92.9" height="18.0" fill="#a78bfa"/>
+<rect x="377.2" y="171.0" width="50.9" height="18.0" fill="#a78bfa"/>
+<rect x="436.0" y="171.0" width="42.5" height="18.0" fill="#a78bfa"/>
+<rect x="268.0" y="171.0" width="8.9" height="18.0" fill="#a78bfa"/>
+<rect x="368.8" y="171.0" width="8.9" height="18.0" fill="#a78bfa"/>
+<rect x="427.6" y="171.0" width="8.9" height="18.0" fill="#a78bfa"/>
+<rect x="478.0" y="171.0" width="17.3" height="18.0" fill="#a78bfa"/>
+<rect x="276.4" y="184.5" width="25.7" height="4.5" fill="#fbbf24"/>
+<rect x="301.6" y="186.8" width="17.3" height="2.2" fill="#fbbf24"/>
+<rect x="318.4" y="184.5" width="17.3" height="4.5" fill="#fbbf24"/>
+<rect x="335.2" y="186.8" width="34.1" height="2.2" fill="#fbbf24"/>
+<rect x="377.2" y="186.8" width="25.7" height="2.2" fill="#fbbf24"/>
+<rect x="402.4" y="184.5" width="17.3" height="4.5" fill="#fbbf24"/>
+<rect x="419.2" y="186.8" width="8.9" height="2.2" fill="#fbbf24"/>
+<rect x="436.0" y="186.8" width="17.3" height="2.2" fill="#fbbf24"/>
+<rect x="452.8" y="177.8" width="8.9" height="11.2" fill="#fbbf24"/>
+<rect x="461.2" y="175.5" width="8.9" height="13.5" fill="#fbbf24"/>
+<rect x="469.6" y="186.8" width="8.9" height="2.2" fill="#fbbf24"/>
+<text y="184.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="24.4" textLength="218.4" lengthAdjust="spacingAndGlyphs" fill="#67e8f9">  Review retry logic      </tspan><tspan x="662.8" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="671.2" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#a78bfa">    5m</tspan><tspan x="721.6" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#fbbf24">    54s</tspan><tspan x="780.4" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">     96</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r8"><text y="202.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r9"><rect x="276.4" y="207.0" width="34.1" height="18.0" fill="#a78bfa"/>
+<rect x="318.4" y="207.0" width="109.7" height="18.0" fill="#a78bfa"/>
+<rect x="436.0" y="207.0" width="92.9" height="18.0" fill="#a78bfa"/>
+<rect x="310.0" y="207.0" width="8.9" height="18.0" fill="#fbbf24"/>
+<rect x="427.6" y="207.0" width="8.9" height="18.0" fill="#a78bfa"/>
+<rect x="528.4" y="207.0" width="17.3" height="18.0" fill="#a78bfa"/>
+<rect x="276.4" y="222.8" width="17.3" height="2.2" fill="#fbbf24"/>
+<rect x="293.2" y="220.5" width="8.9" height="4.5" fill="#fbbf24"/>
+<rect x="301.6" y="218.2" width="8.9" height="6.8" fill="#fbbf24"/>
+<rect x="318.4" y="211.5" width="8.9" height="13.5" fill="#fbbf24"/>
+<rect x="326.8" y="222.8" width="17.3" height="2.2" fill="#fbbf24"/>
+<rect x="343.6" y="220.5" width="8.9" height="4.5" fill="#fbbf24"/>
+<rect x="352.0" y="222.8" width="25.7" height="2.2" fill="#fbbf24"/>
+<rect x="377.2" y="220.5" width="8.9" height="4.5" fill="#fbbf24"/>
+<rect x="385.6" y="211.5" width="8.9" height="13.5" fill="#fbbf24"/>
+<rect x="394.0" y="222.8" width="34.1" height="2.2" fill="#fbbf24"/>
+<rect x="436.0" y="222.8" width="92.9" height="2.2" fill="#fbbf24"/>
+<text y="220.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="24.4" textLength="218.4" lengthAdjust="spacingAndGlyphs" fill="#67e8f9">  Check DB migrations     </tspan><tspan x="662.8" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="671.2" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#a78bfa">    6m</tspan><tspan x="721.6" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#fbbf24">     1m</tspan><tspan x="780.4" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">     75</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r10"><text y="238.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r11"><rect x="284.8" y="243.0" width="118.1" height="18.0" fill="#a78bfa"/>
+<rect x="276.4" y="243.0" width="8.9" height="18.0" fill="#a78bfa"/>
+<rect x="402.4" y="243.0" width="17.3" height="18.0" fill="#a78bfa"/>
+<rect x="284.8" y="258.8" width="118.1" height="2.2" fill="#fbbf24"/>
+<text y="256.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="24.4" textLength="218.4" lengthAdjust="spacingAndGlyphs" fill="#67e8f9">  Scan deps for CVEs      </tspan><tspan x="662.8" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="671.2" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#a78bfa">    3m</tspan><tspan x="721.6" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#fbbf24">   5.4s</tspan><tspan x="780.4" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">     83</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r12"><text y="274.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r13"><rect x="293.2" y="279.0" width="25.7" height="18.0" fill="#a78bfa"/>
+<rect x="326.8" y="279.0" width="302.9" height="18.0" fill="#a78bfa"/>
+<rect x="318.4" y="279.0" width="8.9" height="18.0" fill="#a78bfa"/>
+<rect x="629.2" y="279.0" width="17.3" height="18.0" fill="#a78bfa"/>
+<rect x="293.2" y="292.5" width="8.9" height="4.5" fill="#fbbf24"/>
+<rect x="301.6" y="288.0" width="8.9" height="9.0" fill="#fbbf24"/>
+<rect x="310.0" y="294.8" width="8.9" height="2.2" fill="#fbbf24"/>
+<rect x="326.8" y="283.5" width="17.3" height="13.5" fill="#fbbf24"/>
+<rect x="343.6" y="290.2" width="8.9" height="6.8" fill="#fbbf24"/>
+<rect x="352.0" y="288.0" width="8.9" height="9.0" fill="#fbbf24"/>
+<rect x="360.4" y="290.2" width="8.9" height="6.8" fill="#fbbf24"/>
+<rect x="368.8" y="294.8" width="25.7" height="2.2" fill="#fbbf24"/>
+<rect x="394.0" y="290.2" width="17.3" height="6.8" fill="#fbbf24"/>
+<rect x="410.8" y="294.8" width="84.5" height="2.2" fill="#fbbf24"/>
+<rect x="494.8" y="290.2" width="8.9" height="6.8" fill="#fbbf24"/>
+<rect x="503.2" y="294.8" width="50.9" height="2.2" fill="#fbbf24"/>
+<rect x="553.6" y="290.2" width="8.9" height="6.8" fill="#fbbf24"/>
+<rect x="562.0" y="294.8" width="67.7" height="2.2" fill="#fbbf24"/>
+<text y="292.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="24.4" textLength="218.4" lengthAdjust="spacingAndGlyphs" fill="#67e8f9">  Review docs and CI      </tspan><tspan x="662.8" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="671.2" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#a78bfa">    8m</tspan><tspan x="721.6" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#fbbf24">     1m</tspan><tspan x="780.4" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">    101</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r14"><text y="310.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r15"><text y="328.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="24.4" textLength="823.2" lengthAdjust="spacingAndGlyphs" fill="#4b5563">╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r16"><rect x="293.2" y="333.0" width="8.9" height="18.0" fill="#c3b5fd"/>
+<rect x="326.8" y="333.0" width="8.9" height="18.0" fill="#c3b5fd"/>
+<rect x="242.8" y="348.8" width="25.7" height="2.2" fill="#c3b5fd"/>
+<rect x="268.0" y="344.2" width="8.9" height="6.8" fill="#c3b5fd"/>
+<rect x="276.4" y="339.8" width="17.3" height="11.2" fill="#c3b5fd"/>
+<rect x="301.6" y="337.5" width="8.9" height="13.5" fill="#c3b5fd"/>
+<rect x="310.0" y="335.2" width="8.9" height="15.8" fill="#c3b5fd"/>
+<rect x="318.4" y="337.5" width="8.9" height="13.5" fill="#c3b5fd"/>
+<rect x="335.2" y="337.5" width="25.7" height="13.5" fill="#c3b5fd"/>
+<rect x="360.4" y="335.2" width="8.9" height="15.8" fill="#c3b5fd"/>
+<rect x="368.8" y="337.5" width="8.9" height="13.5" fill="#c3b5fd"/>
+<rect x="377.2" y="335.2" width="25.7" height="15.8" fill="#c3b5fd"/>
+<rect x="402.4" y="337.5" width="8.9" height="13.5" fill="#fca5a5"/>
+<rect x="410.8" y="335.2" width="17.3" height="15.8" fill="#c3b5fd"/>
+<rect x="427.6" y="342.0" width="8.9" height="9.0" fill="#c3b5fd"/>
+<rect x="436.0" y="337.5" width="8.9" height="13.5" fill="#c3b5fd"/>
+<rect x="444.4" y="342.0" width="8.9" height="9.0" fill="#c3b5fd"/>
+<rect x="452.8" y="337.5" width="8.9" height="13.5" fill="#c3b5fd"/>
+<rect x="461.2" y="339.8" width="8.9" height="11.2" fill="#c3b5fd"/>
+<rect x="469.6" y="337.5" width="8.9" height="13.5" fill="#c3b5fd"/>
+<rect x="478.0" y="342.0" width="8.9" height="9.0" fill="#c3b5fd"/>
+<rect x="486.4" y="337.5" width="8.9" height="13.5" fill="#c3b5fd"/>
+<rect x="494.8" y="342.0" width="8.9" height="9.0" fill="#c3b5fd"/>
+<rect x="503.2" y="339.8" width="8.9" height="11.2" fill="#c3b5fd"/>
+<rect x="511.6" y="344.2" width="8.9" height="6.8" fill="#c3b5fd"/>
+<rect x="520.0" y="339.8" width="25.7" height="11.2" fill="#c3b5fd"/>
+<rect x="545.2" y="342.0" width="8.9" height="9.0" fill="#c3b5fd"/>
+<rect x="553.6" y="346.5" width="8.9" height="4.5" fill="#c3b5fd"/>
+<rect x="562.0" y="344.2" width="8.9" height="6.8" fill="#c3b5fd"/>
+<rect x="570.4" y="346.5" width="8.9" height="4.5" fill="#c3b5fd"/>
+<rect x="578.8" y="344.2" width="8.9" height="6.8" fill="#c3b5fd"/>
+<rect x="587.2" y="346.5" width="8.9" height="4.5" fill="#c3b5fd"/>
+<rect x="595.6" y="344.2" width="25.7" height="6.8" fill="#c3b5fd"/>
+<rect x="620.8" y="344.2" width="17.3" height="6.8" fill="#fca5a5"/>
+<rect x="637.6" y="346.5" width="8.9" height="4.5" fill="#c3b5fd"/>
+<rect x="646.0" y="348.8" width="17.3" height="2.2" fill="#c3b5fd"/>
+<text y="346.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="24.4" textLength="218.4" lengthAdjust="spacingAndGlyphs" fill="#c3b5fd">api.anthropic.com     LLM </tspan><tspan x="662.8" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="671.2" textLength="159.6" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">            533 req</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r17"><text y="364.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r18"><rect x="251.2" y="384.8" width="8.9" height="2.2" fill="#9ca3af"/>
+<rect x="385.6" y="384.8" width="17.3" height="2.2" fill="#9ca3af"/>
+<rect x="637.6" y="384.8" width="8.9" height="2.2" fill="#9ca3af"/>
+<text y="382.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="24.4" textLength="210.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">api.github.com         🔒 </tspan><tspan x="654.4" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="662.8" textLength="159.6" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">             16 req</tspan><tspan x="839.2" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r19"><text y="400.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r20"><rect x="234.4" y="420.8" width="17.3" height="2.2" fill="#9ca3af"/>
+<text y="418.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="24.4" textLength="210.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">github.com             🔒 </tspan><tspan x="654.4" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="662.8" textLength="159.6" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">              2 req</tspan><tspan x="839.2" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r21"><text y="436.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r22"><text y="454.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="24.4" textLength="823.2" lengthAdjust="spacingAndGlyphs" fill="#4b5563">──────────────────────────────────────────────────────────────────────────────────────────────────</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r23"><rect x="24.4" y="459.0" width="8.9" height="18.0" fill="#fbbf24"/>
+<rect x="100.0" y="459.0" width="8.9" height="18.0" fill="#a78bfa"/>
+<rect x="175.6" y="459.0" width="8.9" height="18.0" fill="#f87171"/>
+<rect x="276.4" y="459.0" width="8.9" height="18.0" fill="#0e7490"/>
+<rect x="478.0" y="459.0" width="8.9" height="18.0" fill="#3b4558"/>
+<text y="472.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="32.8" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af"> tools</tspan><tspan x="108.4" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af"> model</tspan><tspan x="184.0" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#9ca3af"> retrying</tspan><tspan x="284.8" textLength="176.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af"> waiting on subagents</tspan><tspan x="486.4" textLength="126.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af"> waiting on you</tspan><tspan x="612.4" textLength="218.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">  ┆ time cut from the axis</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r24"><text y="490.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r25"><text y="508.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r26"><text y="526.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r27"><text y="544.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan><tspan x="847.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#4b5563">│</tspan></text>
+</g>
+<g id="r28"><text y="562.0"><tspan x="16.0" textLength="840.0" lengthAdjust="spacingAndGlyphs" fill="#4b5563">╰──────────────────────────────────────────────────────────────────────────────────────────────────╯</tspan></text>
+</g>
+<g id="r29"><rect x="16.0" y="567.0" width="17.3" height="18.0" fill="#1f2837"/>
+<rect x="32.8" y="567.0" width="59.3" height="18.0" fill="#4b5563"/>
+<rect x="91.6" y="567.0" width="76.1" height="18.0" fill="#1f2837"/>
+<rect x="167.2" y="567.0" width="25.7" height="18.0" fill="#4b5563"/>
+<rect x="192.4" y="567.0" width="76.1" height="18.0" fill="#1f2837"/>
+<rect x="268.0" y="567.0" width="42.5" height="18.0" fill="#4b5563"/>
+<rect x="310.0" y="567.0" width="59.3" height="18.0" fill="#1f2837"/>
+<rect x="368.8" y="567.0" width="25.7" height="18.0" fill="#4b5563"/>
+<rect x="394.0" y="567.0" width="59.3" height="18.0" fill="#1f2837"/>
+<rect x="452.8" y="567.0" width="25.7" height="18.0" fill="#4b5563"/>
+<rect x="478.0" y="567.0" width="378.5" height="18.0" fill="#1f2837"/>
+<text y="580.0"><tspan x="16.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">… </tspan><tspan x="32.8" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#f9fafb"> enter </tspan><tspan x="91.6" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#9ca3af"> events  </tspan><tspan x="167.2" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#f9fafb"> / </tspan><tspan x="192.4" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#9ca3af"> search  </tspan><tspan x="268.0" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#f9fafb"> esc </tspan><tspan x="310.0" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af"> back  </tspan><tspan x="368.8" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#f9fafb"> ? </tspan><tspan x="394.0" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af"> keys  </tspan><tspan x="452.8" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#f9fafb"> q </tspan><tspan x="478.0" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af"> quit</tspan><tspan x="620.8" textLength="92.4" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">● connected</tspan><tspan x="730.0" textLength="126.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">12.4 events/sec</tspan></text>
+</g>
+</defs>
+<g class="st st0 final lbl-timeline">
+<use href="#r0"/>
+<use href="#r1"/>
+<use href="#r2"/>
+<use href="#r3"/>
+<use href="#r4"/>
+<use href="#r5"/>
+<use href="#r6"/>
+<use href="#r7"/>
+<use href="#r8"/>
+<use href="#r9"/>
+<use href="#r10"/>
+<use href="#r11"/>
+<use href="#r12"/>
+<use href="#r13"/>
+<use href="#r14"/>
+<use href="#r15"/>
+<use href="#r16"/>
+<use href="#r17"/>
+<use href="#r18"/>
+<use href="#r19"/>
+<use href="#r20"/>
+<use href="#r21"/>
+<use href="#r22"/>
+<use href="#r23"/>
+<use href="#r24"/>
+<use href="#r25"/>
+<use href="#r26"/>
+<use href="#r27"/>
+<use href="#r28"/>
+<use href="#r29"/>
+</g>
+</svg>

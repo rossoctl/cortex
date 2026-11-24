@@ -61,8 +61,15 @@ func (e *emitter) pct(d time.Duration) float64 {
 	return p
 }
 
+// demoLabel is the animated demo's aria-label.
+const demoLabel = "Cortex: install, point Claude Code at it, run several sessions, then watch an agent and its subagents work in the agentop timeline and open a tool call"
+
 // EmitSVG writes the animated SVG.
 func EmitSVG(w io.Writer, states []State, total time.Duration, g Grid) error {
+	return emitSVG(w, states, total, g, demoLabel)
+}
+
+func emitSVG(w io.Writer, states []State, total time.Duration, g Grid, label string) error {
 	if len(states) == 0 {
 		return fmt.Errorf("no states to emit")
 	}
@@ -77,8 +84,8 @@ func EmitSVG(w io.Writer, states []State, total time.Duration, g Grid) error {
 		body.WriteString(e.stateBody(i, st))
 	}
 
-	fmt.Fprintf(w, `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %.0f %.0f" width="%.0f" height="%.0f" font-size="%.0f" role="img" aria-label="Cortex: install, point Claude Code at it, run several sessions, then watch an agent and its subagents work in the agentop timeline and open a tool call">`+"\n",
-		width, height, width, height, fontSize)
+	fmt.Fprintf(w, `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %.0f %.0f" width="%.0f" height="%.0f" font-size="%.0f" role="img" aria-label="%s">`+"\n",
+		width, height, width, height, fontSize, escapeXML(label))
 
 	fmt.Fprintf(w, "<style>\n%s</style>\n", e.styleSheet())
 
