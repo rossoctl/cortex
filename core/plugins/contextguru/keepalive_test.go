@@ -233,6 +233,22 @@ func TestKeepAliveOnByDefault(t *testing.T) {
 	}
 }
 
+// An explicit engine.cache.keepalive: false, with no cache.strategy named, must stay off: the
+// operator wrote a cache: key, so injectDefaultCacheStrategy's "no cache: key at all" condition
+// is false and it adds no cache.strategy: auto default on top of it (review finding — an earlier
+// version of this check could not tell "keepalive: false" apart from "no cache: key", because a
+// decoded false and an absent key are byte-identical on the plain bool CacheConfig.KeepAlive
+// decodes to, and read only that).
+func TestKeepAliveFalseWithNoStrategyStaysOff(t *testing.T) {
+	p := configured(t, `{"engine": {"cache": {"keepalive": false}}}`)
+	if p.keeper != nil || p.disp != nil {
+		t.Fatal("a keeper was built with cache.keepalive: false and no strategy")
+	}
+	if p.kaPol.KeepAlive {
+		t.Error("kaPol.KeepAlive is true with cache.keepalive: false and no strategy")
+	}
+}
+
 func TestKeepAliveCanBeTurnedOff(t *testing.T) {
 	p := configured(t, `{"engine": {"cache": {"strategy": "none"}}}`)
 	if p.keeper != nil || p.disp != nil {

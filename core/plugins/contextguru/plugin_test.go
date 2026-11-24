@@ -110,6 +110,32 @@ func TestOnRequest_NonInferencePath_PassThrough(t *testing.T) {
 	}
 }
 
+// cache.strategy: 1-hour-head's whole effect is apply.Opts.HeadTTL1h/HeadTTLMinBytes relabelling
+// an existing head breakpoint's ttl to "1h" — nothing else reads cachePolicy's resolved fields.
+// Without wiring them into the OnRequest call (review finding), the strategy resolved a policy
+// nothing used, and the tools mark below would still read ttl "5m".
+func TestOnRequest_HeadTTL1hStrategyRelabelsAnExistingHeadBreakpoint(t *testing.T) {
+	p := configured(t, `{"engine":{"cache":{"strategy":"1-hour-head","head_ttl_min_bytes":1}}}`)
+	body, _ := json.Marshal(map[string]any{
+		"model": "claude-sonnet-4-5",
+		"tools": []map[string]any{
+			{"name": "Read", "description": "read a file", "input_schema": map[string]any{"type": "object"},
+				"cache_control": map[string]any{"type": "ephemeral", "ttl": "5m"}},
+		},
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	pctx := inferencePctx("/v1/messages", body)
+	if act := invokeReq(p, pctx); act.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", act.Type)
+	}
+	if !pctx.BodyMutated() {
+		t.Fatal("expected the tools breakpoint to be relabelled (SetBody)")
+	}
+	if got := string(pctx.Body); !strings.Contains(got, `"ttl":"1h"`) {
+		t.Fatalf("tools cache_control ttl not relabelled to 1h: %s", got)
+	}
+}
+
 func TestOnRequest_CompactsLargeToolOutput(t *testing.T) {
 	p := configured(t, collapseEngine)
 	body := chatBody(bigToolOutput())

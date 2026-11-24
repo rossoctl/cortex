@@ -421,8 +421,14 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 		p.disp.Close()
 		p.keeper, p.disp, p.kaPol = nil, nil, keepalive.Policy{}
 	}
-	if pol := cachePolicy(cfg.Cache); pol.KeepAlive {
-		p.kaPol = pol
+	// p.kaPol is stored regardless of pol.KeepAlive: cache.strategy's other effects at the
+	// request's own cache breakpoints (HeadTTL1h/HeadTTLMinBytes, OnRequest's apply.Opts) are
+	// independent of whether the keep-alive keeper itself is built, and a strategy such as
+	// 1-hour-head, which asks for the one but not the other, used to leave p.kaPol at its zero
+	// value — resolving a policy nothing read (review finding).
+	pol := cachePolicy(cfg.Cache)
+	p.kaPol = pol
+	if pol.KeepAlive {
 		p.disp = newCortexDispatcher(newPingClient(p.localInstall))
 		p.disp.sentinel = p.sentinel
 		p.disp.rates = func() pricing.Resolver { return p.rates }
@@ -589,14 +595,23 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 	models := p.modelsFor(pctx, provider)
 	before := len(pctx.Body)
 	window, exact := p.windowFor(ctx, pctx)
+	// HeadTTL1h/HeadTTLMinBytes are cache.strategy: 1-hour-head's whole effect (cachePolicy):
+	// without them here, that strategy resolved a policy nothing read, and OnRequest asked for
+	// the plain 5-minute tier regardless (review finding). OneHourFirst, the 1-hour-always/
+	// -on-wait strategies' own effect (p.kaPol.OneHourAlways/OneHourOnWait), is not wired here:
+	// the decision it needs (keepalive.Keeper's own oneHourFirstThread) is unexported, so this
+	// plugin has no way to ask it. Those two strategies still resolve a policy; they still do
+	// nothing at the request's own cache breakpoints until the library exports that decision.
 	res := apply.BodyOpts(ctx, p.pipe, p.store, apply.Opts{
-		Provider:    provider,
-		Body:        pctx.Body,
-		Session:     sid,
-		Models:      models,
-		Window:      window,
-		WindowExact: exact,
-		CacheMode:   p.cfg.CacheMode,
+		Provider:        provider,
+		Body:            pctx.Body,
+		Session:         sid,
+		Models:          models,
+		Window:          window,
+		WindowExact:     exact,
+		CacheMode:       p.cfg.CacheMode,
+		HeadTTL1h:       p.kaPol.HeadTTL1h,
+		HeadTTLMinBytes: p.kaPol.HeadTTLMinBytes,
 	})
 	if res.Trace.Session != "" {
 		p.cgSessions.set(sid, res.Trace.Session)
@@ -659,7 +674,16 @@ func stampDryRun(ops []accountant.Operation, dryRun bool) {
 func reportResult(pctx *pipeline.Context, res apply.Result) (out []byte, changed bool, ops []accountant.Operation) {
 	threadParent, _ := res.Trace.Thread.InheritsFrom()
 	pctx.SetAccountingThread(res.Trace.Thread.ID, threadParent)
-	out, changed = res.Body, res.Changed
+	// res.Changed itself misses a head-TTL relabel (cache.strategy: 1-hour-head) on a request
+	// that has a messages array: apply.BodyOpts folds the relabel into Changed on its two early
+	// returns (no messages, or no restore plan to splice), but the full-pipeline path at the
+	// bottom overwrites Changed from the message rewrite alone, dropping the tools/system edit
+	// res.Body already carries (review finding, reproduced — Trace.HeadTTL1h true, Changed
+	// false, with the relabelled bytes sitting unread in res.Body). Trace.HeadTTL1h is
+	// authoritative here regardless of which path set Changed, so ORing it in recovers exactly
+	// the one case this library gap drops; it is already true, so this is a no-op, on every path
+	// that already counted it.
+	out, changed = res.Body, res.Changed || res.Trace.HeadTTL1h
 	if changed && len(out) > 0 {
 		ops = append(ops, res.Trace.Ops...)
 		// The tools and system changes apply makes report no op of their own; they are found
