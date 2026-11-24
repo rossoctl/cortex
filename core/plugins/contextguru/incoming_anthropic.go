@@ -344,6 +344,27 @@ func (s *sentStash) CoversSpan(session string, count int, hash string) bool {
 	return cgcomponents.SpanHash(norm[:count]) == hash
 }
 
+// getCovered checks coverage and reads the stashed body under ONE lock (components.
+// PrefixCoveredAsker's own reason to exist: CoversSpan followed by get reads the stash twice,
+// and a concurrent put -- the next request on this thread, since the ask that calls this runs
+// detached -- can replace the entry between the two reads, so the ask goes out over a body the
+// check never approved).
+func (s *sentStash) getCovered(session string, count int, hash string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.m[session]
+	if !ok {
+		return nil, cgcomponents.ErrNoPrefix
+	}
+	if count >= 0 {
+		norm := apply.NormalizeMessages(e.provider, e.preBody)
+		if count > len(norm) || cgcomponents.SpanHash(norm[:count]) != hash {
+			return nil, cgcomponents.ErrStalePrefix
+		}
+	}
+	return e.forwarded, nil
+}
+
 // pendingBody is OnRequest's snapshot of the body this plugin received, kept on the REQUEST's
 // own pctx (pipeline.SetState) rather than in a map keyed by session. A session-keyed map let
 // two requests sharing one session id (Claude Code's one-shot calls, the main turn) overlap in
@@ -393,6 +414,11 @@ type prefixAsker struct {
 	cli   cheapmodel.Anthropic
 }
 
+// Also implements components.PrefixCoveredAsker (AskCovered, below): usePrefixAsk makes this
+// the engine's only path on Anthropic, where the call runs detached, so the check-then-ask race
+// PrefixCoveredAsker exists to close is live here, not theoretical.
+var _ cgcomponents.PrefixCoveredAsker = prefixAsker{}
+
 func (p prefixAsker) Ask(ctx context.Context, session, ask string) (string, cgcomponents.PrefixUsage, error) {
 	body := p.stash.get(session)
 	if len(body) == 0 {
@@ -404,4 +430,17 @@ func (p prefixAsker) Ask(ctx context.Context, session, ask string) (string, cgco
 
 func (p prefixAsker) CoversSpan(session string, count int, hash string) bool {
 	return p.stash.CoversSpan(session, count, hash)
+}
+
+// AskCovered implements components.PrefixCoveredAsker: the engine's only path on Anthropic
+// (usePrefixAsk), where the call runs detached, so a plain CoversSpan-then-Ask would read the
+// stash twice and could ask over a body a concurrent put already replaced (the race
+// PrefixCoveredAsker's doc describes). getCovered checks and reads under one lock instead.
+func (p prefixAsker) AskCovered(ctx context.Context, session string, count int, hash, ask string) (string, cgcomponents.PrefixUsage, error) {
+	body, err := p.stash.getCovered(session, count, hash)
+	if err != nil {
+		return "", cgcomponents.PrefixUsage{}, err
+	}
+	reply, u, err := p.cli.CompletePrefixed(ctx, body, ask)
+	return reply, cgcomponents.PrefixUsage(u), err
 }

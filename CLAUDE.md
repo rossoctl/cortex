@@ -268,9 +268,10 @@ per-session state:** the Tracker state and `~/.cortex/accountant-state.json`, th
 per-thread billing mode and pending ping facts in `core/accounting.Host`, the
 context-guru keeper's entries, the context-guru incoming-model credential holds and
 forwarded-body stash, and the context-guru plugin's session state in
-`~/.cortex/context-guru-state.db`. The accountant state and the keeper hold session and thread
-ids, content hashes and a billing mode, no content; the keeper also holds the caller's
-credential, masked. The incoming-model holds (one per distinct host+credential, across every
+`~/.cortex/context-guru-state.db`. The accountant state holds session and thread
+ids, content hashes and a billing mode, no content. The keeper DOES hold content: the caller's
+credential and the thread's last request body (the whole forwarded conversation, which each
+ping re-sends), both masked. The incoming-model holds (one per distinct host+credential, across every
 session that uses it) also hold a masked credential, released on a timer at most
 `holdSweepInterval` (10m) past `incomingHoldTTL` (2h) idle, whether or not any later request
 arrives. The forwarded-body stash DOES hold content — the last body sent upstream, for up to 16

@@ -14,6 +14,7 @@ import (
 
 	bschemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/rossoctl/accountant"
+	"github.com/rossoctl/context-guru/apply"
 	"github.com/rossoctl/context-guru/cheapmodel"
 	cgcomponents "github.com/rossoctl/context-guru/components"
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -328,6 +329,45 @@ func TestPrefixAskerAppendsToStashedBody(t *testing.T) {
 	}
 	if gotSentinel == "" || gotSentinel != p.sentinel {
 		t.Fatalf("upstream got sentinel %q, want the plugin's own", gotSentinel)
+	}
+}
+
+// AskCovered (components.PrefixCoveredAsker) must be implemented: usePrefixAsk makes prefixAsker
+// the engine's only path on Anthropic, and that call runs detached, so a CoversSpan-then-Ask
+// caller (the one check-then-ask race this interface exists to close) could ask over a body a
+// concurrent put already replaced. Without AskCovered, a PrefixAsker that lacks it falls back
+// to exactly that two-read path (review finding).
+func TestPrefixAskerAskCovered(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"model":"claude-sonnet-5","content":[{"type":"text","text":"summary"}],`+
+			`"usage":{"input_tokens":1,"cache_read_input_tokens":9,"output_tokens":2}}`)
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	p := configured(t, `{`+offline+`}}`)
+	pctx := anthropicPctx(u.Host, pipeline.AgentRoleMain)
+	pctx.Scheme = "http"
+	cli, ok := p.anthropicIncoming(pctx)
+	if !ok {
+		t.Fatal("no incoming model")
+	}
+	a := prefixAsker{stash: p.stash, cli: cli}
+
+	if _, _, err := a.AskCovered(context.Background(), "k", -1, "", "summarize"); !errors.Is(err, cgcomponents.ErrNoPrefix) {
+		t.Fatalf("AskCovered with nothing stashed: err = %v, want ErrNoPrefix", err)
+	}
+
+	body := []byte(`{"model":"claude-sonnet-5","max_tokens":10,"messages":[{"role":"user","content":"the transcript"}]}`)
+	p.stash.put("k", bschemas.Anthropic, []byte(`{}`), body)
+	norm := apply.NormalizeMessages(bschemas.Anthropic, []byte(`{}`))
+	hash := cgcomponents.SpanHash(norm[:0])
+
+	if _, _, err := a.AskCovered(context.Background(), "k", 0, "wrong-hash", "summarize"); !errors.Is(err, cgcomponents.ErrStalePrefix) {
+		t.Fatalf("AskCovered with a hash the stash does not cover: err = %v, want ErrStalePrefix", err)
+	}
+	reply, _, err := a.AskCovered(context.Background(), "k", 0, hash, "summarize")
+	if err != nil || reply != "summary" {
+		t.Fatalf("AskCovered = %q, %v; want summary", reply, err)
 	}
 }
 
