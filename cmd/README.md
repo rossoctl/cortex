@@ -146,7 +146,10 @@ local single-host setups typically pin them all to `127.0.0.1`. `cortex
 proxy on a MOCA host. It is the one build that links the moca driver
 (`include_driver_moca`), the VM control channel that
 [`core/listener/vmcontrol`](../core/listener/vmcontrol/CLAUDE.md) describes, and
-it carries `static-inject`. CI builds and tests it; nothing publishes it yet.
+it carries `static-inject`. CI builds and tests it, and runs moca's egress
+conformance suite against it (see
+[`scripts/moca-conformance/`](../scripts/moca-conformance/));
+nothing publishes it yet.
 The channel runs on Unix only: a non-Unix `hostegress` build exits at startup
 when `MOCA_EGRESS_CONTROL_SOCK` is set. Every other `cortex` build ignores
 the VM control channel's variables (`MOCA_EGRESS_CONTROL_*`, `MOCA_TENANCY`,

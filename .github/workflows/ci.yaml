@@ -677,6 +677,53 @@ jobs:
       - name: Run check-gateway-linkage.sh tests
         run: sh scripts/check-gateway-linkage_test.sh
 
+  # Runs moca's egress conformance suite, at the moca commit in MOCA_COMMIT,
+  # against the hostegress build. The job passes while the failing cases are
+  # exactly those in known-failures.txt.
+  moca-conformance:
+    name: moca egress conformance (hostegress)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GOWORK: "off"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5  # v7.1.0
+        with:
+          go-version-file: cmd/cortex/go.mod
+          cache-dependency-path: cmd/cortex/go.sum
+
+      - name: Run check.sh tests
+        run: sh scripts/moca-conformance/check_test.sh
+
+      - name: Build hostegress
+        working-directory: cmd/cortex
+        run: |
+          TAGS=$(go -C ../../scripts/profile-tags run . hostegress)
+          go build -tags "${TAGS}" -o "${RUNNER_TEMP}/cortex-hostegress" .
+
+      # The runner's module replaces moca's generated code with a path in the
+      # same repository, so it builds from a clone, not with go install.
+      - name: Build the conformance runner
+        run: |
+          git init -q "${RUNNER_TEMP}/moca"
+          cd "${RUNNER_TEMP}/moca"
+          git fetch -q --depth 1 https://github.com/rossoctl/moca.git "$(cat "${GITHUB_WORKSPACE}/scripts/moca-conformance/MOCA_COMMIT")"
+          git checkout -q FETCH_HEAD
+          cd remote-worker
+          go build -o "${RUNNER_TEMP}/moca-egress-conformance" ./cmd/moca-egress-conformance
+
+      # The output streams, so a job that times out still shows the case it hung on.
+      - name: Run the suite
+        run: |
+          { code=0
+            "${RUNNER_TEMP}/moca-egress-conformance" -bin "${RUNNER_TEMP}/cortex-hostegress" 2>&1 || code=$?
+            echo "${code}" >"${RUNNER_TEMP}/conformance.code"
+          } | tee "${RUNNER_TEMP}/conformance.txt"
+          sh scripts/moca-conformance/check.sh scripts/moca-conformance/known-failures.txt \
+            "${RUNNER_TEMP}/conformance.txt" "$(cat "${RUNNER_TEMP}/conformance.code")"
+
   # Static checks of the central metrics stack (deploy/central): Prometheus rules and their unit
   # tests, the collector config, the generated dashboards, and the Kustomize render through
   # kubeconform. The live smoke test needs the cluster and is not run here.
