@@ -24,6 +24,11 @@ DIR_SAVED, DIR_ADDED = ',direction="saved"', ',direction="added"'
 RESCUE_SAVED, RESCUE_ADDED = ',effect="rescue",direction="saved"', ',effect="rescue",direction="added"'
 TIER_READ = ',tier="cache_read"'
 TIER_PROMPT = ',tier=~"cache_read|cache_write_5m|cache_write_1h|input"'
+# The per-component panels leave out the two spend-only operators. keeper is the keep-alive ping cost: its
+# saving is the rescue cache effect, which has no component label. context-guru is the plugin's own model
+# calls: their saving is on the component rows (extract_llm, summarize). So both rows can only be red, and
+# they would read as components to turn off. Their cost stays in every total and in Net by kind.
+NOT_SPEND_ONLY = ',component!~"keeper|context-guru"'
 
 
 def var(name, label, query, multi=True):
@@ -280,7 +285,7 @@ def spend(by=""):
     return inc("llm_inference_cost_usd_total", by)
 
 
-def net(by="", fn="inc", new_series_fallback=True):
+def net(by="", fn="inc", new_series_fallback=True, extra=""):
     """The net saving, saved side minus added side, per label value. For a by in NET_LABELS, both
     sides include the cache effects and the interaction (accountant docs/metrics/metrics.md, "The net
     saving"): leaving them out shows a keep-alive ping as a cost and never its rescue. For any other
@@ -291,13 +296,16 @@ def net(by="", fn="inc", new_series_fallback=True):
     other side's label values times zero. The total (no by) is padded the same way: a fleet whose
     only activity so far is keep-alive pings has an added side and no saved side, and an unpadded
     difference shows that as no data instead of a cost. new_series_fallback is forwarded to inc()
-    (ignored when fn="bar", which always keeps it); see inc()'s own doc comment."""
+    (ignored when fn="bar", which always keeps it); see inc()'s own doc comment. extra is a label filter
+    for the operations-only net (a by outside NET_LABELS)."""
     if by in NET_LABELS:
         s = saved_side(by, fn, new_series_fallback)
         a = added_side(by, fn, new_series_fallback)
     else:
         side = (
-            (lambda m: inc(m, by, new_series_fallback=new_series_fallback)) if fn == "inc" else (lambda m: bar(m, by))
+            (lambda m: inc(m, by, extra=extra, new_series_fallback=new_series_fallback))
+            if fn == "inc"
+            else (lambda m: bar(m, by, extra))
         )
         s, a = side("llm_savings_saved_usd_total"), side("llm_savings_added_usd_total")
     return f"((({s}) or ({a}) * 0) - (({a}) or ({s}) * 0))"
@@ -787,7 +795,7 @@ def savings():
         series(
             1,
             "Net by component (USD, selected range)",
-            [(net("component"), "{{component}}")],
+            [(net("component", extra=NOT_SPEND_ONLY), "{{component}}")],
             0,
             0,
             9,
@@ -795,7 +803,7 @@ def savings():
             unit=USD,
             kind="bargauge",
             instant=True,
-            desc="Saved minus added of each component's operations. Cache effects are not in it: they have no component label (see Cache effects). So a keep-alive rescue is not here, and the keeper shows only its ping cost: its whole net is under Cache management in the Fleet dashboard's Net saved by source. A red bar is a component whose operations cost more than they save.",
+            desc="Saved minus added of each component's operations. Cache effects are not in it: they have no component label (see Cache effects). So the keeper (ping cost only) and context-guru (the plugin's own model calls, whose saving is on the component rows) are not shown. The keeper's whole net is under Cache management in the Fleet dashboard's Net saved by source. A red bar is a component whose operations cost more than they save.",
         )
     )
     P.append(
@@ -901,7 +909,10 @@ def savings():
         table(
             8,
             "Components with a negative net",
-            [inc("llm_savings_saved_usd_total", "component"), inc("llm_savings_added_usd_total", "component")],
+            [
+                inc("llm_savings_saved_usd_total", "component", extra=NOT_SPEND_ONLY),
+                inc("llm_savings_added_usd_total", "component", extra=NOT_SPEND_ONLY),
+            ],
             13,
             17,
             11,
@@ -933,7 +944,7 @@ def savings():
                     },
                 },
             ],
-            desc="Read this table first: a component here has operations that cost more than they save. Cache effects are not in it, so the keeper shows its pings and not its rescues: read it on the Cache dashboard. A component with no saved series at all shows no row; it appears in Net by component.",
+            desc="Read this table first: a component here has operations that cost more than they save. Cache effects are not in it. The keeper and context-guru are not shown: they only spend, and their saving is elsewhere (the keeper's on the Cache dashboard). A component with no saved series at all shows no row; it appears in Net by component.",
             unit_by_col={"saved": USD, "added": USD, "net": USD},
         )
     )

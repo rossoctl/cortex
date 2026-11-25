@@ -95,6 +95,14 @@ class NetTest(unittest.TestCase):
             for m in self.EFFECTS:
                 self.assertNotIn(m, got, by)
 
+    def test_component_panels_leave_out_spend_only_operators(self):
+        panels = {p["title"]: p for p in g.savings()["panels"]}
+        for title in ("Net by component (USD, selected range)", "Components with a negative net"):
+            for t in panels[title]["targets"]:
+                self.assertIn('component!~"keeper|context-guru"', t["expr"], title)
+        kind = [p for p in g.savings()["panels"] if p["title"].startswith("Net by kind")][0]
+        self.assertNotIn("keeper", kind["targets"][0]["expr"])
+
     def test_the_fleet_headline_uses_the_full_net(self):
         p = [p for p in g.fleet()["panels"] if p["title"] == "NET SAVED"][0]
         self.assertEqual(p["targets"][0]["expr"], g.net())
