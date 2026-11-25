@@ -124,8 +124,8 @@ func TestRegression_WrappedLastLineBeforeASibling(t *testing.T) {
 		t.Fatalf("only %d cases: the sweep no longer reaches the shape", cases)
 	}
 
-	// The line is taken only when the secret reaches into it: a one-line value with a secret of
-	// its own, above a 64-wide block, leaves the block's first line to the block.
+	// The block below a taken line is decoded too (findEncoded scans on from that line): a one-line
+	// value with a secret of its own, above a 64-wide block, does not hide the block.
 	one := base64.StdEncoding.EncodeToString([]byte("API_TOKEN=" + gh + strings.Repeat("\nX=ab", 57)))[:76]
 	env := base64.StdEncoding.EncodeToString([]byte("DB_HOST=db.internal.example\nAPI_TOKEN=" + fakes()["github"] + "\nLOG_LEVEL=info\nREGION=eu\n"))
 	var lines []string
@@ -347,6 +347,10 @@ func TestRegression_DollarDashAndColon(t *testing.T) {
 		{"password=$Winter:" + "2024", "Winter:2024"},
 		{`{"password":"$Summer-` + `2024"}`, "Summer-2024"},
 		{"password=$Summer-" + "Fun!", "Summer-Fun"},
+		// a mixed-case word before "-{", and "~" or "(" in what follows the dash (#2124 reviews)
+		{`{"password":"$Admin-` + `{Secret9}"}`, "Admin-{Secret9}"},
+		{"password=$love-" + "you~123", "love-you~123"},
+		{`{"password":"$abc-` + `def(Gh1)"}`, "abc-def(Gh1)"},
 		{"password=$Qwerty-" + "x9Lm#Tz", "Qwerty-x9Lm"},
 		{`{"password":"$Monkey-` + `Banana7!"}`, "Monkey-Banana7"},
 		{"password=$pass-" + "2fa9Kq", "pass-2fa9Kq"},
@@ -363,7 +367,7 @@ func TestRegression_DollarDashAndColon(t *testing.T) {
 		"$password = $env:DB_PASSWORD", "password=$HOME/.pw", "password=$DB_USER:$DB_PASS", "password=$DB_PASS-backup",
 		"PASSWORD=$PG_PASS-$SUFFIX", "password=$pass-suffix", "password=$password-file", "PASSWORD=$db_pass-backup",
 		"password=$DB_PASS-2024", "password=$tmp-dir/$name", "password=$out-dir/build-2024", "password=$root-dir/Foo",
-		"password=$cfg-path:8080", "password=$base-x${env}", `{"password":"$db-pass}"}`} {
+		"password=$cfg-path:8080", "password=$base-x${env}", `{"password":"$db-pass}"}`, "password=$pass-{suffix}", "password=$work-dir/~/x"} {
 		if out, st := redact(in); out != in || len(st) != 0 {
 			t.Errorf("%q changed: %q", in, out)
 		}

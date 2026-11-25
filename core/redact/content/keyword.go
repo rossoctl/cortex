@@ -555,7 +555,7 @@ func isReference(v string) bool {
 			// "$money-Bags7!" and "$pass-2fa" are passwords); after a mixed-case word, only as PHP's "->"
 			// ("$Summer-Fun!" is a password).
 			len(rest) > 1 && (rest[0] == ':' && rest[1] >= '0' && rest[1] <= '9' || rest[0] == '-' && strings.ToUpper(name) != name &&
-				(rest[1] >= '0' && rest[1] <= '9' || rest[1] != '>' && rest[1] != '$' && rest[1] != '{' &&
+				(rest[1] >= '0' && rest[1] <= '9' || rest[1] != '>' && rest[1] != '$' &&
 					(strings.ToLower(name) != name || !plainWordAfterDash(rest[1:]))))) {
 			return false
 		}
@@ -631,11 +631,11 @@ func variableName(s string) bool {
 }
 
 // plainWordAfterDash reports whether s, what follows "$name-", starts with a plain lowercase word
-// up to a path's or a variable's separator ("dir/$name", "path:8080", "suffix"), as a shell
-// variable's literal suffix does. Capitals, digits or symbols in it ("Bags7!", "banana7") read as
-// a password's.
+// up to a path's or a variable's separator ("dir/$name", "path:8080", "x${env}", "suffix"), as a
+// shell variable's literal suffix does. Capitals, digits or symbols in it ("Bags7!", "banana7",
+// "you~123", "def(Gh1)") read as a password's.
 func plainWordAfterDash(s string) bool {
-	if k := strings.IndexAny(s, "/:.${}()~"); k >= 0 {
+	if k := strings.IndexAny(s, "/:.${}"); k >= 0 {
 		s = s[:k]
 	}
 	return strings.Trim(s, "abcdefghijklmnopqrstuvwxyz-_") == ""

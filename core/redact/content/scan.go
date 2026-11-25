@@ -229,17 +229,11 @@ func wrappedBlock(text string, i int) []b64Run {
 			block = append(block, r)
 			pos = r.end
 		case n <= width && lastLineOK(text, block, r):
-			cand := append(block[:len(block):len(block)], r)
-			if siblingLine(text, r) {
-				// A line followed by another of its own width starts a block of its own (a 64-wide
-				// block below a longer line, a digest or a one-line value), unless a secret in the
-				// joined block reaches into it: then it is this block's last line, and what
-				// follows is the next value.
-				if e, ok := blockEdit(text, cand); !ok || e.End <= r.s {
-					return block
-				}
-			}
-			return cand
+			// A line followed by another of its own width (siblingLine) may be this block's last
+			// line or the start of a block of its own (a 64-wide block below a longer line). It is
+			// taken here, and findEncoded scans on from it too, so both are decoded: blockEdit
+			// leaves it out of the edit when no secret reaches into it.
+			return append(block, r)
 		default:
 			return block
 		}

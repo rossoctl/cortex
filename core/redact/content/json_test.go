@@ -374,7 +374,7 @@ func TestJSON_ValuesOnlyAgainstBytes(t *testing.T) {
 			keyMisses++
 		}
 	}
-	t.Logf("5000 documents: %d with a value secret Bytes finds (JSON finds every one); %d with a key secret JSON keeps and Bytes finds", valueFinds, keyMisses)
+	t.Logf("5000 documents: %d (document, value secret) pairs Bytes redacts, JSON every one; %d documents with a key secret only Bytes redacts", valueFinds, keyMisses)
 	if valueFinds < 500 || keyMisses == 0 {
 		t.Errorf("the generator no longer reaches both cases: %d value finds, %d key misses", valueFinds, keyMisses)
 	}
