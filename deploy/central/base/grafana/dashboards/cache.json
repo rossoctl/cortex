@@ -257,8 +257,24 @@
           "noValue": "no data",
           "decimals": 1,
           "color": {
-            "mode": "fixed",
-            "fixedColor": "#F2495C"
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#73BF69",
+                "value": null
+              },
+              {
+                "color": "#FF9830",
+                "value": 0.01
+              },
+              {
+                "color": "#F2495C",
+                "value": 0.05
+              }
+            ]
           }
         },
         "overrides": []

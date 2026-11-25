@@ -244,6 +244,15 @@ def ratio(num, den):
 PING_FAILED = ',outcome=~"failed|timeout"'
 PING_SENT = ',outcome=~"ok|failed|timeout"'
 
+def failure_colors(d):
+    """A failure share is green at 0, orange from 1 %, red from 5 %. A fixed red showed 0 % in red."""
+    d["fieldConfig"]["defaults"]["color"] = {"mode": "thresholds"}
+    d["fieldConfig"]["defaults"]["thresholds"] = {
+        "mode": "absolute",
+        "steps": [{"color": GREEN, "value": None}, {"color": ORANGE, "value": 0.01}, {"color": RED, "value": 0.05}],
+    }
+    return d
+
 def ping_failure_ratio():
     """Failed and timed-out pings divided by sent pings, over the range. A fleet whose pings all
     succeed has no failed or timeout series, and an unpadded numerator then shows no data, not 0 %.
@@ -992,22 +1001,23 @@ def cache():
         )
     )
     P.append(
-        stat(
-            4,
-            "Ping failure ratio",
-            ping_failure_ratio(),
-            8,
-            8,
-            w=10,
-            h=8,
-            unit="percentunit",
-            decimals=1,
-            c=RED,
-            big=True,
-            desc="Share of the sent pings that failed or timed out over the selected range. A failed or timed-out ping "
-            "does not keep the cache warm, and a timeout is still booked at its projected cost (#754). A skipped ping "
-            "was not sent, and an unattributed ping (an older cortex build) has no outcome, so neither is in the ratio. "
-            "No data means no ping was sent in the range.",
+        failure_colors(
+            stat(
+                4,
+                "Ping failure ratio",
+                ping_failure_ratio(),
+                8,
+                8,
+                w=10,
+                h=8,
+                unit="percentunit",
+                decimals=1,
+                big=True,
+                desc="Share of the sent pings that failed or timed out over the selected range. A failed or timed-out ping "
+                "does not keep the cache warm, and a timeout is still booked at its projected cost (#754). A skipped ping "
+                "was not sent, and an unattributed ping (an older cortex build) has no outcome, so neither is in the ratio. "
+                "No data means no ping was sent in the range.",
+            )
         )
     )
     P.append(
