@@ -264,9 +264,15 @@ func startChild(t *testing.T, home, run string, args ...string) *child {
 // startChildAt is startChild with a copy of this test binary at path.
 func startChildAt(t *testing.T, path, home, run string, args ...string) *child {
 	t.Helper()
+	return startChildEnv(t, path, childEnv(home, run), args...)
+}
+
+// startChildEnv is startChildAt with env as the child's whole environment.
+func startChildEnv(t *testing.T, path string, env []string, args ...string) *child {
+	t.Helper()
 	c := &child{out: &lockedBuffer{}, done: make(chan error, 1)}
 	c.cmd = exec.Command(path, args...) //nolint:gosec // this test binary
-	c.cmd.Env = childEnv(home, run)
+	c.cmd.Env = env
 	c.cmd.Stdout, c.cmd.Stderr = c.out, c.out
 	// Its own process group, as under launchd, so cleanup can end a supervisor's child too:
 	// one left behind would hold the output pipe open and keep Wait from returning.

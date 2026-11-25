@@ -43,6 +43,23 @@ The session-events API at `:9094` is documented in
 ConfigMap contracts in
 [`cortex-demos/CLAUDE.md`](https://github.com/rossoctl/cortex-demos/blob/main/CLAUDE.md#configmaps-and-secrets-expected-at-runtime).
 
+The [hostegress build](#hostegress-build) also starts with no `--config` when
+`MOCA_EGRESS_CONTROL_SOCK` is set, and needs no `PATH` or `HOME`. It then
+requires `MOCA_EGRESS_CONTROL_UIDS` and, as moca's own egress proxy does,
+`MOCA_EGRESS_ALLOW`, whose entries here are `host:port`. It runs a built-in
+config ([`cortex/hostegress.yaml`](cortex/hostegress.yaml)): the forward proxy
+with the egress guard on, no session store, no hot-reload, and every listener
+on a loopback port the kernel picks. Any local process can reach that forward
+proxy, beside the VM listeners. On `SIGTERM` it stops at once, as moca's
+egress proxy does: it closes every listener and open connection, then exits 0.
+The socket, the uids and the allow list have no defaults here, so whatever
+starts it sets each one explicitly.
+
+Every `cortex` build sends systemd `READY=1` once it serves, when
+`NOTIFY_SOCKET` is set, so it can run as a `Type=notify` unit. Under
+`--supervise` the proxy child sends it, so such a unit needs
+`NotifyAccess=all`.
+
 ## Ports
 
 **Proxy-sidecar (`cortex`, and its `authbridge-lite` and `authbridge-cpex` image variants):**

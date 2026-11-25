@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"log/slog"
+	"net"
 	"strings"
 	"testing"
 )
@@ -17,9 +18,13 @@ func TestResolveControlConfigIgnoresMocaEnv(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	t.Cleanup(func() { slog.SetDefault(restore) })
 
-	cc, err := resolveControlConfig(func(string) string { return "/run/c.sock" })
+	getenv := func(string) string { return "/run/c.sock" }
+	cc, err := resolveControlConfig(getenv)
 	if err != nil || cc.Socket != "" {
 		t.Fatalf("got %+v, %v; want the channel off and no error", cc, err)
+	}
+	if _, ok, _ := builtinConfig(getenv, net.InterfaceAddrs); ok {
+		t.Fatal("offered a built-in config, so --config would not be required")
 	}
 	if !strings.Contains(buf.String(), "hostegress") {
 		t.Fatalf("no warning naming the hostegress profile; log: %q", buf.String())

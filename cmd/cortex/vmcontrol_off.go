@@ -4,6 +4,7 @@ package main
 
 import (
 	"log/slog"
+	"net"
 
 	"github.com/rossoctl/cortex/core/listener/forwardproxy"
 )
@@ -30,3 +31,8 @@ func resolveControlConfig(getenv func(string) string) (controlConfig, error) {
 func startVMControl(controlConfig, *forwardproxy.Server) vmControlServer { return nil }
 
 func checkVMControlStarted(controlConfig, vmControlServer) {}
+
+// builtinConfig has no config to offer, so --config stays required.
+func builtinConfig(func(string) string, func() ([]net.Addr, error)) ([]byte, bool, error) {
+	return nil, false, nil
+}
