@@ -205,8 +205,8 @@ github.com/rossoctl/accountant v0.8.0 h1:a8e7o95gGXyfORR4QrPwS+jL6rTG3If6gR9nbod
 github.com/rossoctl/accountant v0.8.0/go.mod h1:AA9aM/QvO3AksXUGjOJiunMSxiZ1PqRsCxqKvq4IsrI=
 github.com/rossoctl/accountant/metrics v0.8.0 h1:EEPPwFhcHu/rpFRdUC1AisMf70wHriI6qa6+w+JsWI0=
 github.com/rossoctl/accountant/metrics v0.8.0/go.mod h1:OtEYvVnZhMepTLXLTAXTFxf8fRAib/41vehHWKYO99o=
-github.com/rossoctl/context-guru v0.7.8 h1:mTcsPJgjqIhe4fIZpbfeHm0TL4nRXENWUILvUeuv1tg=
-github.com/rossoctl/context-guru v0.7.8/go.mod h1:6yznvTv3TAwChsRgrwwpnSNRrO9cd/KBQ1oTRKBfhLY=
+github.com/rossoctl/context-guru v0.7.9 h1:HiidyTLwpV3kmUfm1sJaQSm77Pqm1id1BOSo+xPnzVA=
+github.com/rossoctl/context-guru v0.7.9/go.mod h1:G5rsCZmWq8WliL+ML7TbLO0VYC8I//YfGeIBPybTfIs=
 github.com/segmentio/asm v1.2.1 h1:DTNbBqs57ioxAD4PrArqftgypG4/qNpXoJx8TVXxPR0=
 github.com/segmentio/asm v1.2.1/go.mod h1:BqMnlJP91P8d+4ibuonYZw9mfnzI9HfxselHZr5aAcs=
 github.com/sirupsen/logrus v1.10.2 h1:G2SED73/qrAu6YwbdxOD6peLkCBI3z7L+ykJFTXJBBo=
