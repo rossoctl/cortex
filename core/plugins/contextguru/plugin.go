@@ -50,6 +50,7 @@ import (
 	"github.com/rossoctl/context-guru/keepalive"
 	"github.com/rossoctl/context-guru/models"
 	cgstore "github.com/rossoctl/context-guru/store"
+	"github.com/rossoctl/context-guru/thread"
 	yaml "gopkg.in/yaml.v3"
 )
 
@@ -307,6 +308,9 @@ type ContextGuru struct {
 	// (apply.Trace.Session), so OnFinish records billed input under the key OnRequest reads.
 	// One entry per session, overwritten on each request, bounded by sessionKeysCap.
 	cgSessions sessionKeys
+	// threads is the engine's thread resolver (thread.go's threadOf), one per plugin instance
+	// because it holds each session's threads. Set by Configure.
+	threads *thread.Tracker
 
 	// Keep-alive, all nil/zero when keep_alive.enabled is false. The keeper decides when to ping; disp
 	// only sends and holds the credential.
@@ -392,6 +396,7 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 		return fmt.Errorf("context-guru config: cache_mode %q is not one of: auto, on, off", decoded.CacheMode)
 	}
 	p.cfg = decoded
+	p.threads = thread.New()
 
 	// Engine config: default to the xhigh preset when none is supplied. xhigh includes the
 	// model-calling components (cache_aware_summarizer, extract_llm, extract_llm_sweep). They act
@@ -719,9 +724,13 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 		HeadTTL1h:       p.kaPol.HeadTTL1h,
 		HeadTTLMinBytes: p.kaPol.HeadTTLMinBytes,
 		OneHourFirst:    p.oneHourFirstFor(pctx, provider, pctx.Host),
+		ThreadOf:        p.threadOf(pctx, pctx.Body),
 	})
 	if res.Trace.Session != "" {
 		p.cgSessions.set(sid, res.Trace.Session)
+	}
+	if res.Trace.ThreadResolved {
+		pipeline.SetState(pctx, cgThreadStateKey, &cgThread{id: res.Trace.Thread.ID})
 	}
 	out, changed, ops := reportResult(pctx, res)
 	if changed && len(out) > 0 {
@@ -768,9 +777,9 @@ func stampDryRun(ops []accountant.Operation, dryRun bool) {
 // observe state the first call already mutated, not reproduce it.
 //
 // Thread: names the request's accounting thread from the engine's own thread split
-// (design §5.4/§5.5). res.Trace.Thread.ID is empty with no Opts.ThreadOf wired (unchanged
-// in this task), and SetAccountingThread's empty-id no-op then leaves
-// core/accounting.ThreadOf's default rule ("main" for the primary agent) in place.
+// (design §5.4/§5.5, Opts.ThreadOf in OnRequest). accountingThread keeps
+// core/accounting.ThreadOf's default rule for the primary thread ("main") and for a named agent
+// (its subagent id and parent), and names a prefix-continuity thread with the engine's id.
 //
 // Ops: the engine's Trace.Ops plus the envelope ops (envelopeOps), built only when the engine
 // produced a rewrite (changed && non-empty out). The caller must call pctx.SetBody(out) BEFORE
@@ -779,8 +788,9 @@ func stampDryRun(ops []accountant.Operation, dryRun bool) {
 // engine merely computed it: reporting here, before SetBody, would price a shadow write (an
 // earlier enforced writer's bytes already in effect) as a real saving.
 func reportResult(pctx *pipeline.Context, res apply.Result) (out []byte, changed bool, ops []accountant.Operation) {
-	threadParent, _ := res.Trace.Thread.InheritsFrom()
-	pctx.SetAccountingThread(res.Trace.Thread.ID, threadParent)
+	if id, parent, ok := accountingThread(res.Trace.Thread); ok {
+		pctx.SetAccountingThread(id, parent)
+	}
 	// A head-TTL relabel (cache.strategy: 1-hour-head, or a 1-hour-always/-on-wait OneHourFirst
 	// relabel) sets Trace.HeadTTL1h. Since context-guru v0.7.8 (#1356) it also sets res.Changed on
 	// every return path, and ORing Trace.HeadTTL1h in still covers an older engine. But a body
@@ -963,11 +973,12 @@ func dialectFor(path string) (bschemas.ModelProvider, string) {
 // bookkeeping does.
 //
 // threadID is captured from pctx here, at the same call that reads it for keeperKey
-// (keepalive.go), rather than taken from the library's own apply.Opts.ThreadOf/res.Trace.Thread,
-// which this plugin does not wire (review finding: that left threadID always "", so a named
-// subagent's request was asked -- and relabelled -- as if it were the main thread). The two
-// agree on one convention, agentThreadPrefix + pctx.Subagent(), so this call's Key{Thread:...}
-// and the keeper's own Arrive/Depart/Record calls for the same request key identically.
+// (keepalive.go), rather than taken from the library's res.Trace.Thread (the threadID argument
+// apply passes). The keeper keys a thread by its agent header only: a named agent is
+// agentThreadPrefix + pctx.Subagent(), and every other request is the main thread. The engine's
+// thread (threadOf) agrees on a named agent, but it also splits prefix-continuity threads, which
+// the keeper does not track apart. So this call's Key{Thread:...} uses the keeper's own rule, and
+// it keys the same entry as the keeper's Arrive/Depart/Record calls for the same request.
 func (p *ContextGuru) oneHourFirstFor(pctx *pipeline.Context, provider bschemas.ModelProvider, endpoint string) func(session, threadID, model string, toolsDeclared bool) bool {
 	if p.keeper == nil || (!p.kaPol.OneHourOnWait && !p.kaPol.OneHourAlways) {
 		return nil
@@ -978,7 +989,7 @@ func (p *ContextGuru) oneHourFirstFor(pctx *pipeline.Context, provider bschemas.
 		threadID = agentThreadPrefix + agent
 	}
 	route := pctx.Path
-	return func(session, _ /* unused: the library never resolves this without Opts.ThreadOf */, model string, toolsDeclared bool) bool {
+	return func(session, _ /* the engine thread; the keeper keys by keeperKey */, model string, toolsDeclared bool) bool {
 		return p.keeper.OneHourFirst("", session, threadID, provider, endpoint, route, model, toolsDeclared, mode)
 	}
 }

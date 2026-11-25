@@ -72,7 +72,7 @@ There used to be a plugin-level `keep_alive` block here (`enabled`, `idle_second
 
   **Upgrade note for clusters:** a cluster that already runs context-guru (for compaction, for example) gets keep-alive with no config change. From then on Cortex holds each tracked thread's credential and last request, masked, and sends billed pings on those credentials. `session-budget` counts the pings' tokens and calls where accounting is on (so a session can reach its limit sooner than before), `litellm-budget-track` does not count them, and off a local install they go through `HTTPS_PROXY`. To keep the old behaviour, set `engine.cache.strategy: none` before you upgrade. Every decision (whether to ping, how much, when to stop) stays inside the context-guru engine, not this plugin.
 
-  **Threads:** each thread of a session has its own cache entry, so the keeper tracks each one apart. A Claude Code subagent or agent-team teammate is its own thread, keyed by its `X-Claude-Code-Agent-Id`; every other request is the session's main thread. A request on one thread does not end another thread's idle span, and each ping is accounted on its own thread. A request marked as a subagent's (`cc_is_subagent=true`) that sends no agent id is not tracked, because nothing tells it apart from the session's other subagents.
+  **Threads:** each thread of a session has its own cache entry, so the keeper tracks each one apart. A Claude Code subagent or agent-team teammate is its own thread, keyed by its `X-Claude-Code-Agent-Id`; every other request is the session's main thread. This is narrower than the engine's own thread split ([Threads](#threads)), which also splits a session's other requests by prefix continuity. A request on one thread does not end another thread's idle span, and each ping is accounted on its own thread. A request marked as a subagent's (`cc_is_subagent=true`) that sends no agent id is not tracked, because nothing tells it apart from the session's other subagents.
 
   **Ordering:** `OnFinish` reads `pctx.Headers` after the whole outbound chain has run, so the credential a ping holds is whatever actually went upstream — this holds regardless of where `context-guru` sits relative to a token-exchange or credential-injection plugin. A short-lived exchanged token can still expire before the ping fires; the ping then gets a 4xx from the upstream, which stops keep-alive for that session.
 
@@ -89,6 +89,24 @@ There used to be a plugin-level `keep_alive` block here (`enabled`, `idle_second
   **Hot-reload:** every config hot-reload tears down and rebuilds the pipeline, which drops all keep-alive tracking state. During the drain window, the outgoing instance may still send one more ping for a session the new instance no longer tracks.
 
 - `cache_mode` (string) — override whether the engine places prompt-cache breakpoints on the outbound request at all: `"auto"` (default; unset behaves the same), `"on"` or `"off"`. This is `apply.Opts.CacheMode`, threaded through unchanged — the same field and the same three values as `context-guru-proxy`'s `CACHE_MODE` environment variable, so a value means the same thing in both. A bad value is a config error at `Configure`, not a silent fallback to `auto`.
+
+## Threads
+
+The engine splits each session into threads. It keeps its state, and the accountant prices, one thread apart from another. The plugin sets `apply.Opts.ThreadOf` with context-guru's `thread.ResolveSession`, the rule `context-guru-proxy` uses:
+
+1. A request that names its agent is that agent's thread, `a:<agent id>`. The agent id is `pctx.Subagent()`: `X-Claude-Code-Agent-Id`, or a Bob child's task id.
+2. Any other request goes by prefix continuity. If it continues a thread's history, it is on that thread. If it continues none, it starts a thread of its own, `p:<hash>`. So a session's one-shot calls (a title, a permission check) get their own threads, and they do not look like the main agent dropped context.
+3. A request with no usable message list is the session's primary thread.
+
+The accountant thread follows from it:
+
+- The primary thread is `main`, as before.
+- A named agent keeps `core/accounting`'s rule: its subagent id, with its parent from `X-Claude-Code-Parent-Agent-Id`, or `main`.
+- A prefix-continuity thread is the engine's id, `p:<hash>`. If it continues another thread by content (an edited turn, a rewind), that thread is its parent.
+
+The keep-alive keeper does not use prefix continuity. It keys a thread by the agent header only (see **Threads** under keep-alive above). The thread state is in memory, one tracker per plugin instance. A config hot-reload drops it.
+
+The engine also reads each thread's last billed input (`Ctx.PrevBilledInputThread`). `OnFinish` writes it under the thread `OnRequest` resolved, for every thread. The session figure (`Ctx.PrevBilledInput`) stays main-agent only.
 
 ## Where its own model calls go
 

@@ -102,11 +102,16 @@ func (p *ContextGuru) windowFor(ctx context.Context, pctx *pipeline.Context) (wi
 // and declines on every turn. Billed input is fresh + cache read + cache write: the ruler a
 // context window is stated in.
 //
-// Only a successful main-agent request is recorded. A subagent shares the session id but carries
-// its own, much smaller transcript, and recording it would understate the main thread's fill.
+// The session figure records only a successful main-agent request. A subagent shares the session
+// id but carries its own, much smaller transcript, and recording it would understate the main
+// thread's fill.
+//
+// The per-thread figure (Ctx.PrevBilledInputThread) is recorded for every thread, subagents
+// included, under the thread the engine resolved on this request's OnRequest (cgThread): the
+// engine reads it under that thread, so the write must use the same one.
 func (p *ContextGuru) recordBilled(pctx *pipeline.Context, sid string) {
 	inf := pctx.Extensions.Inference
-	if inf == nil || isSubagent(pctx) || pctx.StatusCode >= 400 {
+	if inf == nil || pctx.StatusCode >= 400 {
 		return
 	}
 	billed := int64(inf.InputTokens) + int64(inf.CacheReadTokens) + int64(inf.CacheWriteTokens)
@@ -117,6 +122,12 @@ func (p *ContextGuru) recordBilled(pctx *pipeline.Context, sid string) {
 	// engine scopes and validates the id, and the two must match for the next request to read it.
 	key, ok := p.cgSessions.get(sid)
 	if !ok {
+		return
+	}
+	if th := pipeline.GetState[cgThread](pctx, cgThreadStateKey); th != nil {
+		apply.RecordBilledInputThread(p.store, key, th.id, billed)
+	}
+	if isSubagent(pctx) {
 		return
 	}
 	apply.RecordBilledInput(p.store, key, billed)
