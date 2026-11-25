@@ -170,6 +170,11 @@ func TestPlanContextGuru(t *testing.T) {
 			src: cgDoc("      - name: context-guru\n        config:\n          engine:\n            preset: xhigh\n" +
 				"            components:\n              toolfilter:\n                remove: [Read,\n                  Grep]\n" + tpBashGh),
 		},
+		{
+			name: "27 bare scalar context-guru + tool-prune", src: cgDoc("      - context-guru\n" + tpBashGh), changed: true,
+			names:  []string{"inference-parser", "mcp-parser", "a2a-parser", "context-guru"},
+			remove: []string{"Bash", "mcp__gh__issue"}, preset: "xhigh",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
