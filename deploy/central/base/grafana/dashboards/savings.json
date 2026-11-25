@@ -83,7 +83,7 @@
       },
       "targets": [
         {
-          "expr": "sort_desc((((sum by (component)((increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) and last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[30d] offset $__range)) or (increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) >= last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range])) or last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]))) or (sum by (component)((increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) and last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[30d] offset $__range)) or (increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) >= last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range])) or last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]))) * 0) - ((sum by (component)((increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) and last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[30d] offset $__range)) or (increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) >= last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range])) or last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]))) or (sum by (component)((increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) and last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[30d] offset $__range)) or (increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) >= last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range])) or last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]))) * 0)))",
+          "expr": "(((sum by (component)((increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) and last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[30d] offset $__range)) or (increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) >= last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range])) or last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]))) or (sum by (component)((increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) and last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[30d] offset $__range)) or (increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) >= last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range])) or last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]))) * 0) - ((sum by (component)((increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) and last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[30d] offset $__range)) or (increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) >= last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range])) or last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]))) or (sum by (component)((increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) and last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[30d] offset $__range)) or (increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) >= last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range])) or last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]))) * 0))",
           "legendFormat": "{{component}}",
           "refId": "A",
           "datasource": {
@@ -126,11 +126,33 @@
         "displayMode": "basic",
         "showUnfilled": true,
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
+          "values": true,
+          "calcs": [],
+          "fields": "/^Last \\*$/"
         }
-      }
+      },
+      "transformations": [
+        {
+          "id": "reduce",
+          "options": {
+            "mode": "seriesToRows",
+            "reducers": [
+              "lastNotNull"
+            ]
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Last *",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ]
     },
     {
       "id": 2,

@@ -402,6 +402,7 @@ def series(
     time_from=None,
     interval=None,
     fixed_color=None,
+    sort_desc=False,
     lines=(),
 ):
     d = {
@@ -454,6 +455,14 @@ def series(
         # A bar that is a cost, not a net saving, has no good side of zero: one fixed colour.
         if fixed_color:
             d["fieldConfig"]["defaults"]["color"] = color(fixed_color)
+        # Grafana does not keep the order of the series that Prometheus returns, so sort_desc() in the
+        # query does not sort the bars. Grafana sorts them: one row per series, then rows by value.
+        if sort_desc:
+            d["transformations"] = [
+                {"id": "reduce", "options": {"mode": "seriesToRows", "reducers": ["lastNotNull"]}},
+                {"id": "sortBy", "options": {"sort": [{"field": "Last *", "desc": True}]}},
+            ]
+            d["options"]["reduceOptions"] = {"values": True, "calcs": [], "fields": "/^Last \\*$/"}
     if kind == "barchart":
         d["options"] = {"legend": {"displayMode": "hidden"}, "xTickLabelRotation": 0}
         d["fieldConfig"]["defaults"]["color"] = color(GREEN)
@@ -799,7 +808,7 @@ def savings():
         series(
             1,
             "Net by component (USD, selected range)",
-            [(f'sort_desc({net("component", extra=NOT_SPEND_ONLY)})', "{{component}}")],
+            [(net("component", extra=NOT_SPEND_ONLY), "{{component}}")],
             0,
             0,
             9,
@@ -807,6 +816,7 @@ def savings():
             unit=USD,
             kind="bargauge",
             instant=True,
+            sort_desc=True,
             desc="Saved minus added of each component's operations. Cache effects are not in it: they have no component label (see Cache effects). So the keeper (ping cost only) and context-guru (the plugin's own model calls, whose saving is on the component rows) are not shown. The keeper's whole net is under Cache management in the Fleet dashboard's Net saved by source. A red bar is a component whose operations cost more than they save.",
         )
     )
