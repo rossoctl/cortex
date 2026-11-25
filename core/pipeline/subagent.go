@@ -1,6 +1,9 @@
 package pipeline
 
 import (
+	"net/http"
+	"strings"
+
 	"github.com/rossoctl/cortex/core/model"
 )
 
@@ -108,7 +111,61 @@ func (c *Context) resolveSubagents() {
 	if own, _ := model.BobChildTask(c.Headers); own != "" {
 		c.subagent = own
 		c.bobChild = true
+		return
 	}
+	c.subagent = subagentHeader(otherClientSubagent(c.Headers))
+}
+
+// The headers Codex and OpenCode name a subagent with. context-guru reads the same headers
+// (agent/codex, agent/opencode, and agent.Client.SubagentID). core/pipeline may not import
+// context-guru (core/accounting's boundary test forbids it in accounting's whole dependency
+// closure, and accounting imports this package), so the rule is copied here.
+// plugins/contextguru's TestSubagentMatchesContextGuru fails when the two disagree.
+const (
+	// CodexThreadIDHeader is the thread that made a Codex request. A subagent has its own.
+	CodexThreadIDHeader = "Thread-Id"
+	// CodexParentThreadIDHeader names the parent thread. Only a Codex subagent sends it.
+	CodexParentThreadIDHeader = "X-Codex-Parent-Thread-Id"
+	// OpenCodeSessionIDHeader is the OpenCode session of the request. A subagent has its own.
+	OpenCodeSessionIDHeader = "X-Opencode-Session-Id"
+	// OpenCodeParentSessionIDHeader names the parent session. Only an OpenCode subagent sends it.
+	OpenCodeParentSessionIDHeader = "X-Opencode-Parent-Session-Id"
+)
+
+// otherClientSubagent is the subagent id a Codex or an OpenCode request names, or "":
+//   - Codex (a User-Agent or Originator that starts with "codex"): its own Thread-Id, when it
+//     names a parent thread. The ids have no vendor prefix, so they are read only for Codex.
+//   - OpenCode, for a client that is not Codex, Claude Code, Bob or pi: its own session id, when it
+//     names a parent session.
+//
+// The parent is not recorded (ParentSubagent stays ""). Both clients name the parent even when
+// it is the main conversation, and ParentSubagent's "" already means "the conversation".
+func otherClientSubagent(h http.Header) string {
+	if hasPrefixFold(h.Get("User-Agent"), "codex") || hasPrefixFold(h.Get("Originator"), "codex") {
+		if strings.TrimSpace(h.Get(CodexParentThreadIDHeader)) == "" {
+			return ""
+		}
+		return strings.TrimSpace(h.Get(CodexThreadIDHeader))
+	}
+	if namedOtherClient(h) || strings.TrimSpace(h.Get(OpenCodeParentSessionIDHeader)) == "" {
+		return ""
+	}
+	return strings.TrimSpace(h.Get(OpenCodeSessionIDHeader))
+}
+
+// namedOtherClient reports a client that context-guru names before it reads OpenCode's headers:
+// Claude Code (a User-Agent with claude-code or claude-cli), Bob (bobshell/) and pi
+// (X-Context-Guru-Client: pi).
+func namedOtherClient(h http.Header) bool {
+	ua := strings.ToLower(h.Get("User-Agent"))
+	return strings.Contains(ua, "claude-code") || strings.Contains(ua, "claude-cli") ||
+		strings.HasPrefix(strings.TrimSpace(ua), "bobshell/") ||
+		strings.EqualFold(strings.TrimSpace(h.Get("X-Context-Guru-Client")), "pi")
+}
+
+func hasPrefixFold(s, prefix string) bool {
+	s = strings.TrimSpace(s)
+	return len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix)
 }
 
 // SubagentKind returns the kind of a Bob child task: SubagentKindSubtask when the
