@@ -817,7 +817,7 @@ def savings():
             kind="bargauge",
             instant=True,
             sort_desc=True,
-            desc="Saved minus added of each component's operations. Cache effects are not in it: they have no component label (see Cache effects). So the keeper (ping cost only) and context-guru (the plugin's own model calls, whose saving is on the component rows) are not shown. The keeper's whole net is under Cache management in the Fleet dashboard's Net saved by source. A red bar is a component whose operations cost more than they save.",
+            desc="Saved minus added of each component's operations. Cache effects are not in it: they have no component label (see Cache effects). So the keeper (ping cost only) and context-guru (the plugin's own model calls, whose saving is on the component rows) are not shown. The keeper's whole net is under Cache management in the Fleet dashboard's Net saved by source. A red value (no bar) is a component whose operations cost more than they save.",
         )
     )
     P.append(
