@@ -7,6 +7,7 @@ import (
 	cgconfig "github.com/rossoctl/context-guru/config"
 	"github.com/rossoctl/context-guru/dispatch"
 	"github.com/rossoctl/context-guru/keepalive"
+	"github.com/rossoctl/context-guru/thread"
 	"github.com/rossoctl/cortex/core/internal/parsercommon"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
@@ -59,16 +60,22 @@ func cachePolicy(cache cgconfig.CacheConfig) keepalive.Policy {
 const agentThreadPrefix = "a:"
 
 // keeperKey is the keeper entry a request belongs to: one per thread, not per session (engine
-// #423), because each thread of a session has its own provider cache entry. A request from a named
-// Claude Code agent (pctx.Subagent: a subagent's, or an agent-team teammate's) is its agent's own
-// thread; every other request is the session's main thread, Thread "".
+// #423), because each thread of a session has its own provider cache entry. The thread is the one
+// OnRequest resolved (resolveThread), the same thread the engine and the accountant use: a named
+// agent's "a:<agent id>", a prefix-continuity thread "p:<hash>", or the main thread "". So a
+// session's one-shot call no longer replaces the main thread's entry with a turn that called no
+// tool, which the keeper never pings (#858).
 //
-// ok is false for a request marked as a subagent's that names no agent: it is not the main thread,
-// and no key tells it apart from the session's other subagents, so it has no entry of its own.
-//
-// pctx.Subagent reads headers only, so OnRequest and OnFinish get the same key, also when
-// Extensions.Inference is not parsed yet at OnRequest.
+// A request with no resolved thread (one OnRequest did not see, or one with no session) falls back
+// to the header rule, and so does one the resolver could not place (thread.SourceSession: no
+// usable message list, so prefix continuity had nothing to match). The header rule: a named agent
+// (pctx.Subagent) is its own thread, and every other request is the main thread. ok is false
+// there for a request marked as a subagent's that names no agent: no key tells it apart from the
+// session's other subagents, so it has no entry of its own.
 func keeperKey(pctx *pipeline.Context, sid string) (keepalive.Key, bool) {
+	if res, ok := requestThread(pctx); ok && res.Source != thread.SourceSession {
+		return keepalive.Key{Session: sid, Thread: res.ID}, true
+	}
 	if agent := pctx.Subagent(); agent != "" {
 		return keepalive.Key{Session: sid, Thread: agentThreadPrefix + agent}, true
 	}

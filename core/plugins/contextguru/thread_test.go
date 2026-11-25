@@ -10,6 +10,7 @@ import (
 
 	cgstore "github.com/rossoctl/context-guru/store"
 	"github.com/rossoctl/context-guru/thread"
+	"github.com/rossoctl/cortex/core/accounting"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
@@ -201,5 +202,96 @@ func TestOnFinish_OpensTheSummarizerSizeGateOnTheNextTurn(t *testing.T) {
 				t.Fatalf("turn 2 is 95%% full but the size gate stayed closed:\n%s", line)
 			}
 		})
+	}
+}
+
+// bodyPctx is a finished 200 main-agent request (finishedPctx) with body as its messages.
+func bodyPctx(body []byte) *pipeline.Context {
+	p := finishedPctx(200, pipeline.AgentRoleMain)
+	p.Body = body
+	return p
+}
+
+// A session's one-shot call (here a title request, with a first message of its own) is its own
+// keeper entry. Before, every request without an agent id was the main thread's, so the call
+// replaced the main thread's last turn in the keeper.
+func TestAOneShotCallHasItsOwnKeeperEntry(t *testing.T) {
+	p := keepAlivePlugin(t)
+	for _, b := range [][]byte{
+		threadBody(t, "fix the parser"),
+		threadBody(t, "fix the parser", "now run the tests"),
+	} {
+		pctx := bodyPctx(b)
+		invokeReq(p, pctx)
+		p.OnFinish(t.Context(), pctx)
+	}
+	for _, b := range [][]byte{ // turn 0 of a thread is counted but never tracked
+		threadBody(t, "write a five word title for this chat"),
+		threadBody(t, "write a five word title for this chat", "shorter"),
+	} {
+		pctx := bodyPctx(b)
+		invokeReq(p, pctx)
+		key, ok := keeperKey(pctx, sessionID(pctx))
+		if !ok || !strings.HasPrefix(key.Thread, "p:") {
+			t.Fatalf("one-shot call: keeper key %+v (ok %v), want its own p: thread", key, ok)
+		}
+		p.OnFinish(t.Context(), pctx)
+	}
+	if n := p.keeper.Stats().Live; n != 2 {
+		t.Fatalf("live entries = %d, want the main thread's and the one-shot thread's", n)
+	}
+}
+
+// A Codex subagent (Thread-Id with X-Codex-Parent-Thread-Id) is its own thread: in the engine, in
+// the keeper and in the accountant.
+func TestACodexSubagentIsItsOwnThread(t *testing.T) {
+	p := configured(t, `{}`)
+	pctx := inferencePctx("/v1/messages", threadBody(t, "search the repo for parser tests"))
+	pctx.Headers.Set("User-Agent", "codex_cli_rs/0.172.0")
+	pctx.Headers.Set("Thread-Id", "t-sub")
+	pctx.Headers.Set("X-Codex-Parent-Thread-Id", "t-main")
+	id, _ := engineThread(t, p, pctx)
+	if id != agentThreadPrefix+"t-sub" {
+		t.Fatalf("engine thread %q, want %q", id, agentThreadPrefix+"t-sub")
+	}
+	if key, _ := keeperKey(pctx, sessionID(pctx)); key.Thread != id {
+		t.Fatalf("keeper thread %q, want the engine's %q", key.Thread, id)
+	}
+	if got := accounting.ThreadOf(pctx); got.ID != "t-sub" || got.Parent != "main" {
+		t.Fatalf("accountant thread %+v, want {t-sub main}", got)
+	}
+}
+
+// OnRequest removes every x-context-guru-* header, on an inference path and on any other path, and
+// leaves the others. context-guru reads them first: x-context-guru-request-kind still marks the
+// client's compaction request.
+func TestOnRequest_StripsContextGuruHeaders(t *testing.T) {
+	p := configured(t, `{}`)
+	for _, path := range []string{"/v1/messages", "/v1/models"} {
+		pctx := inferencePctx(path, threadBody(t, "fix the parser"))
+		pctx.Headers.Set("x-context-guru-request-kind", "compaction")
+		pctx.Headers.Set("X-Context-Guru-Client", "pi")
+		pctx.Headers.Set("X-Context-Guru-LLM", "a guessed sentinel")
+		pctx.Headers.Set("Anthropic-Version", "2023-06-01")
+		invokeReq(p, pctx)
+		for k := range pctx.Headers {
+			if strings.HasPrefix(strings.ToLower(k), "x-context-guru-") {
+				t.Errorf("%s: header %s was forwarded", path, k)
+			}
+		}
+		if pctx.Headers.Get("Anthropic-Version") == "" {
+			t.Errorf("%s: an unrelated header was removed", path)
+		}
+	}
+}
+
+// The plugin's own calls keep their sentinel: OnRequest skips them before the strip.
+func TestOnRequest_KeepsTheSentinelOnItsOwnCalls(t *testing.T) {
+	p := configured(t, `{}`)
+	pctx := inferencePctx("/v1/messages", threadBody(t, "fix the parser"))
+	pctx.Headers.Set(sentinelHeader, p.sentinel)
+	invokeReq(p, pctx)
+	if pctx.Headers.Get(sentinelHeader) != p.sentinel {
+		t.Fatal("the plugin's own call lost its sentinel")
 	}
 }

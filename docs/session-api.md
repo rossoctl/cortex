@@ -1434,6 +1434,13 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   It is present also on rows from a Bob child task (a subagent or a subtask):
   the child's own `X-Task-Id`, when the request also sends a different, usable
   `X-Parent-Task-Id`. The Claude Code header wins when a request sends both.
+  It is present also on rows from a Codex subagent (its own `Thread-Id`, when
+  it sends `X-Codex-Parent-Thread-Id`, on a User-Agent or `Originator` that
+  starts with `codex`) and from an OpenCode subagent (its own
+  `X-Opencode-Session-Id`, when it sends `X-Opencode-Parent-Session-Id`).
+  `parentSubagent` stays absent on both. This is context-guru's rule
+  (`agent.Client.SubagentID`), and a test in `core/plugins/contextguru` fails
+  when the two disagree.
 - `subagentKind` — Bob only: `subtask` when the request's tool list has
   `end_subtask`, else `subagent`. It is `subagent` also when no inference
   parser ran. Absent on Claude Code rows and on every row without a Bob

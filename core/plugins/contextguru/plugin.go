@@ -43,7 +43,7 @@ import (
 	"github.com/rossoctl/context-guru/apply"
 	"github.com/rossoctl/context-guru/cheapmodel"
 	cgcomponents "github.com/rossoctl/context-guru/components"
-	_ "github.com/rossoctl/context-guru/components/offload"  // register offload components
+	"github.com/rossoctl/context-guru/components/offload"    // also registers the offload components
 	_ "github.com/rossoctl/context-guru/components/reformat" // register reformat components
 	cgconfig "github.com/rossoctl/context-guru/config"
 	"github.com/rossoctl/context-guru/dispatch"
@@ -647,21 +647,25 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 		pctx.Skip("self_call")
 		return cont
 	}
+	// Every x-context-guru-* header is context-guru's, not the upstream's: context-guru's host
+	// contract (agent/agent.go) is that a host removes them before it forwards a request. Deferred,
+	// so this call reads them first (agentall.IsClientCompaction reads x-context-guru-request-kind).
+	defer stripOwnHeaders(pctx)
 	if !p.gated(pctx.Path) {
 		return cont
 	}
 	sid := sessionID(pctx)
+	// The request's thread, found once, before anything keys by it (resolveThread).
+	p.resolveThread(pctx, sid, pctx.Body)
 	// A real request on a thread ends that thread's idle span: the keeper drops the entry (and the
 	// credential it held) before this request goes upstream, so no ping races it. Only THIS
 	// request's thread (keeperKey): a subagent's request says nothing about whether the main
 	// thread is idle, and the reverse.
 	//
-	// keeperKey reads the agent id from headers, so it gives OnFinish the same key. Its one
-	// fallback reads Extensions.Inference — nil when, as here, this plugin runs before
-	// inference-parser's own OnRequest — so a subagent that names no agent can still open an
-	// arrival on the main thread here and be skipped by recordFor. The kaArrived marker holds the
-	// key THIS call arrived on, so OnFinish departs exactly the arrivals this call made — never
-	// fewer, never (on a thread a concurrent request shares) one too many.
+	// keeperKey reads the thread resolveThread kept on pctx, so OnFinish gets the same key. The
+	// kaArrived marker holds the key THIS call arrived on, so OnFinish departs exactly the
+	// arrivals this call made — never fewer, never (on a thread a concurrent request shares) one
+	// too many.
 	//
 	// UNDER on_error: observe NOTHING IS HELD: a held turn is pinged upstream with the caller's own
 	// credential, and that ping is real, billed spend — the opposite of a shadow run, where
@@ -712,6 +716,9 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 	// HeadTTL1h/HeadTTLMinBytes are cache.strategy: 1-hour-head's whole effect (cachePolicy):
 	// without them here, that strategy resolved a policy nothing read, and OnRequest asked for
 	// the plain 5-minute tier regardless (review finding).
+	// Taken BEFORE the pipeline: the clear below must spare a keep-alive candidate this request's
+	// own run wrote (offload.ClearStaleKeepAliveCandidate; lifecycle.Prepare's order).
+	startedAt := time.Now()
 	res := apply.BodyOpts(ctx, p.pipe, p.store, apply.Opts{
 		Provider:        provider,
 		Body:            pctx.Body,
@@ -725,13 +732,13 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 		HeadTTL1h:       p.kaPol.HeadTTL1h,
 		HeadTTLMinBytes: p.kaPol.HeadTTLMinBytes,
 		OneHourFirst:    p.oneHourFirstFor(pctx, provider, pctx.Host),
-		ThreadOf:        p.threadOf(pctx, pctx.Body),
+		ThreadOf:        threadOfFor(pctx),
 	})
 	if res.Trace.Session != "" {
 		p.cgSessions.set(sid, res.Trace.Session)
-	}
-	if res.Trace.Session != "" {
-		pipeline.SetState(pctx, cgThreadStateKey, &cgThread{session: res.Trace.Session, id: res.Trace.Thread.ID})
+		th, _ := requestThread(pctx)
+		pipeline.SetState(pctx, cgThreadStateKey, &cgThread{session: res.Trace.Session, id: th.ID})
+		offload.ClearStaleKeepAliveCandidate(thread.Key(res.Trace.Session, th.ID), startedAt)
 	}
 	out, changed, ops := reportResult(pctx, res)
 	if changed && len(out) > 0 {
@@ -973,24 +980,19 @@ func dialectFor(path string) (bschemas.ModelProvider, string) {
 // oneHourRoute keys this call's st.off/st.costly lookups the same way the keeper's own
 // bookkeeping does.
 //
-// threadID is captured from pctx here, at the same call that reads it for keeperKey
-// (keepalive.go), rather than taken from the library's res.Trace.Thread (the threadID argument
-// apply passes). The keeper keys a thread by its agent header only: a named agent is
-// agentThreadPrefix + pctx.Subagent(), and every other request is the main thread. The engine's
-// thread (threadOf) agrees on a named agent, but it also splits prefix-continuity threads, which
-// the keeper does not track apart. So this call's Key{Thread:...} uses the keeper's own rule, and
-// it keys the same entry as the keeper's Arrive/Depart/Record calls for the same request.
+// threadID is the keeper's key for this request (keeperKey: the thread resolveThread found), not
+// the library's threadID argument, so this call's Key{Thread:...} keys the same entry as the
+// keeper's own Arrive/Depart/Record calls for the same request. The two are equal whenever apply
+// resolved the thread, because apply's thread is the same resolveThread result (threadOfFor).
 func (p *ContextGuru) oneHourFirstFor(pctx *pipeline.Context, provider bschemas.ModelProvider, endpoint string) func(session, threadID, model string, toolsDeclared bool) bool {
 	if p.keeper == nil || (!p.kaPol.OneHourOnWait && !p.kaPol.OneHourAlways) {
 		return nil
 	}
 	mode := keepalive.OneHourMode{Always: p.kaPol.OneHourAlways, RebuildTokens: int64(p.kaPol.OneHourRebuildTokens)}
-	threadID := ""
-	if agent := pctx.Subagent(); agent != "" {
-		threadID = agentThreadPrefix + agent
-	}
+	key, _ := keeperKey(pctx, sessionID(pctx))
+	threadID := key.Thread
 	route := pctx.Path
-	return func(session, _ /* the engine thread; the keeper keys by keeperKey */, model string, toolsDeclared bool) bool {
+	return func(session, _ /* the same thread; see threadID above */, model string, toolsDeclared bool) bool {
 		return p.keeper.OneHourFirst("", session, threadID, provider, endpoint, route, model, toolsDeclared, mode)
 	}
 }
