@@ -244,6 +244,7 @@ def ratio(num, den):
 PING_FAILED = ',outcome=~"failed|timeout"'
 PING_SENT = ',outcome=~"ok|failed|timeout"'
 
+
 def failure_colors(d):
     """A failure share is green at 0, orange from 1 %, red from 5 %. A fixed red showed 0 % in red."""
     d["fieldConfig"]["defaults"]["color"] = {"mode": "thresholds"}
@@ -253,12 +254,14 @@ def failure_colors(d):
     }
     return d
 
+
 def ping_failure_ratio():
     """Failed and timed-out pings divided by sent pings, over the range. A fleet whose pings all
     succeed has no failed or timeout series, and an unpadded numerator then shows no data, not 0 %.
     So the numerator is padded with the denominator times zero."""
     sent = inc("llm_keepalive_pings_total", extra=PING_SENT)
-    return ratio(f'({inc("llm_keepalive_pings_total", extra=PING_FAILED)} or {sent} * 0)', sent)
+    return ratio(f"({inc('llm_keepalive_pings_total', extra=PING_FAILED)} or {sent} * 0)", sent)
+
 
 def unattributed(expr, label):
     """expr with an empty label filled in as "unattributed". A by-label panel otherwise names a
@@ -1016,7 +1019,7 @@ def cache():
                 desc="Share of the sent pings that failed or timed out over the selected range. A failed or timed-out ping "
                 "does not keep the cache warm, and a timeout is still booked at its projected cost (#754). A skipped ping "
                 "was not sent, and an unattributed ping (an older cortex build) has no outcome, so neither is in the ratio. "
-                "No data means no ping was sent in the range.",
+                "No data means no ping with a known outcome was sent in the range.",
             )
         )
     )

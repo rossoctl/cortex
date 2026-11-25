@@ -229,7 +229,7 @@
       "id": 4,
       "type": "stat",
       "title": "Ping failure ratio",
-      "description": "Share of the sent pings that failed or timed out over the selected range. A failed or timed-out ping does not keep the cache warm, and a timeout is still booked at its projected cost (#754). A skipped ping was not sent, and an unattributed ping (an older cortex build) has no outcome, so neither is in the ratio. No data means no ping was sent in the range.",
+      "description": "Share of the sent pings that failed or timed out over the selected range. A failed or timed-out ping does not keep the cache warm, and a timeout is still booked at its projected cost (#754). A skipped ping was not sent, and an unattributed ping (an older cortex build) has no outcome, so neither is in the ratio. No data means no ping with a known outcome was sent in the range.",
       "datasource": {
         "type": "prometheus",
         "uid": "central-prom"

@@ -151,4 +151,4 @@ stat takes their place:
 - The denominator is the sent pings: `ok`, `failed` and `timeout`.
 - A `skipped` ping was not sent, and a ping with no `outcome` (a build before 2026-11-20) has an
   unknown outcome. Neither is in the ratio.
-- A fleet whose pings all succeed reads 0 %. No ping in the range reads no data.
+- A fleet whose pings all succeed reads 0 %. No ping with a known outcome in the range reads no data.

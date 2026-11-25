@@ -267,6 +267,7 @@ class PingFailureRatioTest(unittest.TestCase):
         self.assertIn('outcome=~"failed|timeout"', e)
         self.assertIn('outcome=~"ok|failed|timeout"', e)
 
+
 class DescriptionTest(unittest.TestCase):
     def test_estimated_ping_cost_names_both_meanings(self):
         p = next(p for p in g.cache()["panels"] if p["title"] == "Estimated ping cost")
