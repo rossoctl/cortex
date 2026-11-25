@@ -781,18 +781,15 @@ func stampDryRun(ops []accountant.Operation, dryRun bool) {
 func reportResult(pctx *pipeline.Context, res apply.Result) (out []byte, changed bool, ops []accountant.Operation) {
 	threadParent, _ := res.Trace.Thread.InheritsFrom()
 	pctx.SetAccountingThread(res.Trace.Thread.ID, threadParent)
-	// res.Changed itself misses a head-TTL relabel (cache.strategy: 1-hour-head, or a
-	// 1-hour-always/-on-wait OneHourFirst relabel) on a request that has a messages array:
-	// apply.BodyOpts folds the relabel into Changed on its two early returns (no messages, or no
-	// restore plan to splice), but the full-pipeline path at the bottom overwrites Changed from
-	// the message rewrite alone, dropping the tools/system edit res.Body already carries (review
-	// finding, reproduced — Trace.HeadTTL1h true, Changed false, with the relabelled bytes
-	// sitting unread in res.Body). Trace.HeadTTL1h is authoritative here regardless of which path
-	// set Changed, so ORing it in recovers exactly the one case this library gap drops — guarded
-	// by a byte comparison, because a body already at ttl "1h" sets Trace.HeadTTL1h too (apply's
-	// own doc: "count it as head all the same") with nothing actually rewritten (review
-	// suggestion), and reporting that as a change would call SetBody on identical bytes.
-	out, changed = res.Body, res.Changed || (res.Trace.HeadTTL1h && !bytes.Equal(res.Body, pctx.Body))
+	// A head-TTL relabel (cache.strategy: 1-hour-head, or a 1-hour-always/-on-wait OneHourFirst
+	// relabel) sets Trace.HeadTTL1h. Since context-guru v0.7.8 (#1356) it also sets res.Changed on
+	// every return path, and ORing Trace.HeadTTL1h in still covers an older engine. But a body
+	// already at ttl "1h" sets both with nothing rewritten (apply's own doc: "count it as head all
+	// the same"). The byte comparison keeps that case from calling SetBody on identical bytes.
+	out, changed = res.Body, res.Changed || res.Trace.HeadTTL1h
+	if res.Trace.HeadTTL1h && bytes.Equal(res.Body, pctx.Body) {
+		changed = false
+	}
 	if changed && len(out) > 0 {
 		ops = append(ops, res.Trace.Ops...)
 		// The tools and system changes apply makes report no op of their own; they are found
