@@ -1583,11 +1583,26 @@ def inference():
             ],
             12,
             21,
-            12,
+            8,
             8,
             unit="s",
             colors={"p50": GREEN, "p95": YELLOW, "p99": RED},
             desc="What the proxy's own work added on top of the upstream time (R46).",
+        )
+    )
+    P.append(
+        stat(
+            14,
+            "Average time the proxy added",
+            ratio(inc("llm_inference_added_seconds_sum"), inc("llm_inference_added_seconds_count")),
+            20,
+            21,
+            w=4,
+            h=8,
+            unit="s",
+            decimals=1,
+            desc="Mean of the time the proxy's own work added before the request went upstream, over the selected range. "
+            "Sum of the time divided by the number of requests. Response-side work is not in it.",
         )
     )
     P.append(

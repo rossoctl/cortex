@@ -152,3 +152,13 @@ stat takes their place:
 - A `skipped` ping was not sent, and a ping with no `outcome` (a build before 2026-11-20) has an
   unknown outcome. Neither is in the ratio.
 - A fleet whose pings all succeed reads 0 %. No ping with a known outcome in the range reads no data.
+
+## Amendment, 2026-11-25: the average time the proxy added
+
+The central Inference dashboard has an **Average time the proxy added** stat next to the
+"Time the proxy added (seconds)" graph:
+
+- It is `llm_inference_added_seconds_sum` divided by `llm_inference_added_seconds_count`, both
+  over the selected range. So it is the mean of `model.SessionEvent.Added` for each request.
+- It uses the same `inc()` and `ratio()` as the other stats. No request in the range reads no data.
+- Like the graph, it counts only the request-side work. Response-side work is not in it.
