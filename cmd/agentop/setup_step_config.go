@@ -76,17 +76,19 @@ func (configStep) plan(env *setupEnv) (stepPlan, *problem) {
 		p.done, p.doneMsg = true, env.tilde(cfg)+" (kept)"
 		return p, nil
 	}
-	// The praxis block, as the pins, takes effect only on a restart.
-	env.configPinsPending = listenerPinsPending(cfg) || praxisPending
+	// The praxis block, the metrics push and accounting for a new context-guru
+	// entry, as the pins, take effect only on a restart.
+	env.configPinsPending = listenerPinsPending(cfg) || praxisPending || configRestartPending(cfg)
 	p.verb, p.what, p.where = "update", "the cortex config", env.tilde(cfg)+" (previous kept)"
 	return p, nil
 }
 
-// apply snapshots the config and both migration backups, so the undo puts back
+// apply snapshots the config and every migration backup, so the undo puts back
 // exactly what was there. Its migration failures follow service install's rule.
 // A failed pin migration fails the step only when the config binds a listener on
 // every interface, and otherwise warns in the detail line. A Bob pricing failure
-// only warns, because an unpriced Bob exposes nothing.
+// only warns, because an unpriced Bob exposes nothing. A context-guru or metrics
+// push failure also only warns: the proxy runs as it did before.
 func (configStep) apply(env *setupEnv, _ *checklist.Running) (string, undo, error) {
 	cfg := env.configPath()
 	// Whether ~/.cortex was there before this step, not before this run: the undo
@@ -94,7 +96,8 @@ func (configStep) apply(env *setupEnv, _ *checklist.Running) (string, undo, erro
 	_, statErr := os.Stat(env.cortexDir)
 	dirExisted := statErr == nil
 	var snaps []fileSnapshot
-	for _, f := range []string{cfg, cfg + ".before-agentop-migrate", cfg + ".before-agentop-pricing"} {
+	for _, f := range []string{cfg, cfg + ".before-agentop-migrate", cfg + ".before-agentop-pricing",
+		cfg + ".before-agentop-context-guru", cfg + ".before-agentop-metrics"} {
 		s, err := snapshotFile(f)
 		if err != nil {
 			return "", undo{}, err
@@ -146,10 +149,21 @@ func (configStep) apply(env *setupEnv, _ *checklist.Running) (string, undo, erro
 		}
 	}
 	priced, bobErr := migrateBobPricing(cfg, &log)
-	if !changed && priced {
-		// .before-agentop-migrate is written once, so it may be older than this
-		// run; Bob's backup is rewritten by each pricing migration.
+	cgChanged, cgRestart, cgErr := migrateContextGuru(cfg, &log)
+	metricsChanged, metricsErr := migrateMetricsPush(cfg, &log)
+	// Not a context-guru change alone: a running proxy reloads it from the file.
+	env.configPinsChanged = env.configPinsChanged || metricsChanged || cgRestart
+	// The backup of the first migration that ran holds the file from before this
+	// run. .before-agentop-migrate is written once, so it may be older than this
+	// run; each later migration rewrites its own backup.
+	switch {
+	case changed:
+	case priced:
 		u.manual = manual(".before-agentop-pricing")
+	case cgChanged:
+		u.manual = manual(".before-agentop-context-guru")
+	case metricsChanged:
+		u.manual = manual(".before-agentop-metrics")
 	}
 	praxisOn := false
 	if env.opts.praxis {
@@ -160,7 +174,7 @@ func (configStep) apply(env *setupEnv, _ *checklist.Running) (string, undo, erro
 		}
 		env.configPinsChanged = env.configPinsChanged || praxisOn
 	}
-	if !env.configFresh && (changed || priced || praxisOn) {
+	if !env.configFresh && (changed || priced || cgChanged || metricsChanged || praxisOn) {
 		detail += " · updated"
 	}
 	if praxisOn {
@@ -171,6 +185,25 @@ func (configStep) apply(env *setupEnv, _ *checklist.Running) (string, undo, erro
 	}
 	if bobErr != nil {
 		detail += " · IBM Bob left unpriced (" + firstLine(bobErr) + ")"
+	}
+	if cgErr != nil {
+		detail += " · context-guru not added (" + firstLine(cgErr) + ")"
+	}
+	if metricsErr != nil {
+		detail += " · metrics push not added (" + firstLine(metricsErr) + ")"
+	}
+	// What each new feature does goes under the row, as the migrations print it.
+	var notes []string
+	if cgChanged {
+		detail += " · context-guru on"
+		notes = append(notes, contextGuruOnLine)
+	}
+	if metricsChanged {
+		detail += " · metrics push on"
+		notes = append(notes, metricsPushSendsLine, metricsPushStopLine)
+	}
+	if len(notes) > 0 {
+		detail += "\n" + strings.Join(notes, "\n")
 	}
 	return detail, u, nil
 }

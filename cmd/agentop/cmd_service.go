@@ -426,6 +426,23 @@ func runServiceInstall(p servicePaths, adopt int, forceRestart, announceUnit boo
 			p.configFile, bErr)
 	}
 
+	// A context-guru change needs a restart only when it turns accounting on (no
+	// context operator was there); a running proxy reloads the rest from the file.
+	// The metrics push always needs one. A failure only warns: the proxy runs as
+	// it did before.
+	if cgChanged, cgRestart, cgErr := migrateContextGuru(p.configFile, stdout); cgErr != nil {
+		fmt.Fprintf(stderr, "agentop: could not add context-guru to %s (%v); continuing without it\n",
+			p.configFile, cgErr)
+	} else if cgChanged && cgRestart {
+		configChanged = true
+	}
+	if mChanged, mErr := migrateMetricsPush(p.configFile, stdout); mErr != nil {
+		fmt.Fprintf(stderr, "agentop: could not add metrics push to %s (%v); continuing without it\n",
+			p.configFile, mErr)
+	} else if mChanged {
+		configChanged = true
+	}
+
 	// Nothing to do is a valid outcome, and the common one: this command is what the
 	// one-liner runs every time, including when everything is already current. Without
 	// this it went ahead with bootout + bootstrap, which restarts the proxy and cuts every

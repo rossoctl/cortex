@@ -47,6 +47,13 @@ var metricsPushLines = []string{
 	"  # interval: 30s              # or METRICS_PUSH_INTERVAL",
 }
 
+// metricsPushSendsLine and metricsPushStopLine say what the push sends and how to
+// stop it. migrateMetricsPush prints them, and so does agentop setup's config row.
+const (
+	metricsPushSendsLine = "It sends the savings, inference, keep-alive and cache counters, with a random machine id as service.instance.id. It sends no prompt, path, host, session or key."
+	metricsPushStopLine  = "To stop it, set metrics_push.enabled: false, or METRICS_PUSH=false in the proxy's environment."
+)
+
 // migrateMetricsPush adds the metrics_push block to a config that has no
 // metrics_push key. It reports whether it changed the file.
 func migrateMetricsPush(path string, stdout io.Writer) (changed bool, err error) {
@@ -73,8 +80,7 @@ func migrateMetricsPush(path string, stdout io.Writer) (changed bool, err error)
 
 	fmt.Fprintf(stdout, "Updated %s (previous kept as %s):\n", path, bak)
 	fmt.Fprintf(stdout, "  + metrics_push: on, to %s\n", metricsPushURL)
-	fmt.Fprintf(stdout, "  It sends the savings, inference, keep-alive and cache counters, with a random machine id as service.instance.id. It sends no prompt, path, host, session or key.\n")
-	fmt.Fprintf(stdout, "  To stop it, set metrics_push.enabled: false, or METRICS_PUSH=false in the proxy's environment.\n")
+	fmt.Fprintf(stdout, "  %s\n  %s\n", metricsPushSendsLine, metricsPushStopLine)
 	fmt.Fprintf(stdout, "  Metrics push starts only after a restart of the proxy.\n")
 	return true, nil
 }

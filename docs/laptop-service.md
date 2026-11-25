@@ -885,8 +885,8 @@ writes the backup again. A run with nothing to change does not touch the file.
 
 **context-guru.** The step adds the `context-guru` entry when the outbound list has none. It
 puts the entry after every body reader (the parsers). When the list has no parser, or a
-body reader such as `sparc` comes after the parsers, the step stops with an error: add the
-entry by hand, as in the built-in config. A `tool-prune` entry moves into context-guru: its
+body reader such as `sparc` comes after the parsers, the step changes nothing and prints a
+warning: add the entry by hand, as in the built-in config. The other steps still run. A `tool-prune` entry moves into context-guru: its
 names go to `engine.components.toolfilter.remove`, and the `tool-prune` entry goes. The
 names move only when all of these are true:
 
