@@ -172,7 +172,7 @@ func (c *Config) AccountingOn() bool {
 //	  enabled: true     # default true, but with no URL nothing is sent
 //	  url: ""           # no default; METRICS_PUSH_URL overrides
 //	  token: ""         # METRICS_PUSH_TOKEN; sent as Authorization: Bearer <token>
-//	  interval: 30s     # METRICS_PUSH_INTERVAL
+//	  interval: 60s     # METRICS_PUSH_INTERVAL
 //
 // There is no default URL in code: with no URL nothing leaves the machine. The built-in
 // ~/.cortex/config.yaml (cmd/cortex/local.go) writes the central collector's URL. The block is the same in a cluster and on a laptop.
@@ -194,7 +194,7 @@ type MetricsPushConfig struct {
 
 // DefaultMetricsPushInterval is metrics_push.interval when the block and the environment leave
 // it unset.
-const DefaultMetricsPushInterval = 30 * time.Second
+const DefaultMetricsPushInterval = 60 * time.Second
 
 // Resolve returns the block with the environment applied: METRICS_PUSH (a boolean),
 // METRICS_PUSH_URL, METRICS_PUSH_TOKEN and METRICS_PUSH_INTERVAL (a Go duration) override the

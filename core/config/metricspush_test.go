@@ -16,8 +16,8 @@ func envOf(m map[string]string) func(string) string {
 
 func TestMetricsPushConfig_ResolveDefaults(t *testing.T) {
 	got := (*MetricsPushConfig)(nil).Resolve(envOf(nil))
-	if !got.IsEnabled() || got.URL != "" || got.Token != "" || got.Interval != 30*time.Second {
-		t.Errorf("Resolve(nil) = %+v, want enabled, no URL, no token, 30s", got)
+	if !got.IsEnabled() || got.URL != "" || got.Token != "" || got.Interval != 60*time.Second {
+		t.Errorf("Resolve(nil) = %+v, want enabled, no URL, no token, 60s", got)
 	}
 	if got.On() {
 		t.Error("On() with no URL, want false: nothing is sent without a URL")
