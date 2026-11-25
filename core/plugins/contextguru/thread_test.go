@@ -257,8 +257,9 @@ func TestACodexSubagentIsItsOwnThread(t *testing.T) {
 	if key, _ := keeperKey(pctx, sessionID(pctx)); key.Thread != id {
 		t.Fatalf("keeper thread %q, want the engine's %q", key.Thread, id)
 	}
-	if got := accounting.ThreadOf(pctx); got.ID != "t-sub" || got.Parent != "main" {
-		t.Fatalf("accountant thread %+v, want {t-sub main}", got)
+	// The parent is Codex's own parent thread id: no Codex header tells the main thread apart.
+	if got := accounting.ThreadOf(pctx); got.ID != "t-sub" || got.Parent != "t-main" {
+		t.Fatalf("accountant thread %+v, want {t-sub t-main}", got)
 	}
 }
 

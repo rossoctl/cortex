@@ -113,7 +113,10 @@ func (c *Context) resolveSubagents() {
 		c.bobChild = true
 		return
 	}
-	c.subagent = subagentHeader(otherClientSubagent(c.Headers))
+	own, parent := otherClientSubagent(c.Headers)
+	if c.subagent = subagentHeader(own); c.subagent != "" {
+		c.parentSubagent = subagentHeader(parent)
+	}
 }
 
 // The headers Codex and OpenCode name a subagent with. context-guru reads the same headers
@@ -132,25 +135,35 @@ const (
 	OpenCodeParentSessionIDHeader = "X-Opencode-Parent-Session-Id"
 )
 
-// otherClientSubagent is the subagent id a Codex or an OpenCode request names, or "":
+// otherClientSubagent is the subagent a Codex or an OpenCode request names, and its parent, or
+// two "":
 //   - Codex (a User-Agent or Originator that starts with "codex"): its own Thread-Id, when it
 //     names a parent thread. The ids have no vendor prefix, so they are read only for Codex.
+//     The parent is X-Codex-Parent-Thread-Id as sent. Codex names the main conversation's thread
+//     there too, and no Codex header tells that thread apart (its Session-Id is a cache key, not
+//     the root thread id). So a reader takes a parent that no row of the session has as its
+//     subagent to mean the main conversation.
 //   - OpenCode, for a client that is not Codex, Claude Code, Bob or pi: its own session id, when it
-//     names a parent session.
-//
-// The parent is not recorded (ParentSubagent stays ""). Both clients name the parent even when
-// it is the main conversation, and ParentSubagent's "" already means "the conversation".
-func otherClientSubagent(h http.Header) string {
+//     names a parent session. The parent is X-Opencode-Parent-Session-Id, or "" when it is the
+//     session the row is filed in (X-Session-Id, OpenCode's affinity id): that parent is the main
+//     conversation, which ParentSubagent's "" already means.
+func otherClientSubagent(h http.Header) (own, parent string) {
 	if hasPrefixFold(h.Get("User-Agent"), "codex") || hasPrefixFold(h.Get("Originator"), "codex") {
-		if strings.TrimSpace(h.Get(CodexParentThreadIDHeader)) == "" {
-			return ""
+		parent = strings.TrimSpace(h.Get(CodexParentThreadIDHeader))
+		if parent == "" {
+			return "", ""
 		}
-		return strings.TrimSpace(h.Get(CodexThreadIDHeader))
+		return strings.TrimSpace(h.Get(CodexThreadIDHeader)), parent
 	}
-	if namedOtherClient(h) || strings.TrimSpace(h.Get(OpenCodeParentSessionIDHeader)) == "" {
-		return ""
+	parent = strings.TrimSpace(h.Get(OpenCodeParentSessionIDHeader))
+	if namedOtherClient(h) || parent == "" {
+		return "", ""
 	}
-	return strings.TrimSpace(h.Get(OpenCodeSessionIDHeader))
+	// X-Session-Id is session.SessionIDHeader; session imports pipeline, so it is spelled here.
+	if parent == strings.TrimSpace(h.Get("X-Session-Id")) {
+		parent = ""
+	}
+	return strings.TrimSpace(h.Get(OpenCodeSessionIDHeader)), parent
 }
 
 // namedOtherClient reports a client that context-guru names before it reads OpenCode's headers:

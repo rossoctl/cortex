@@ -46,3 +46,31 @@ func TestSubagentMatchesContextGuru(t *testing.T) {
 		})
 	}
 }
+
+// The parent of a Codex or OpenCode subagent (pipeline.Context.ParentSubagent) is context-guru's
+// agent.Client.ParentID, except one case: an OpenCode parent that is the session the row is filed
+// in (X-Session-Id) is the main conversation, so ParentSubagent is "" there.
+func TestParentSubagentMatchesContextGuru(t *testing.T) {
+	codexUA := "codex_cli_rs/0.172.0"
+	for _, tc := range []struct {
+		name     string
+		h        http.Header
+		wantMain bool // ParentSubagent is "" although context-guru names a parent
+	}{
+		{"codex subagent", http.Header{"User-Agent": {codexUA}, "Thread-Id": {"t-sub"}, "X-Codex-Parent-Thread-Id": {"t-main"}}, false},
+		{"codex nested subagent", http.Header{"User-Agent": {codexUA}, "Thread-Id": {"t-sub2"}, "X-Codex-Parent-Thread-Id": {"t-sub"}}, false},
+		{"opencode subagent of the session", http.Header{"X-Session-Id": {"ses-main"}, "X-Opencode-Session-Id": {"ses-sub"}, "X-Opencode-Parent-Session-Id": {"ses-main"}}, true},
+		{"opencode nested subagent", http.Header{"X-Session-Id": {"ses-main"}, "X-Opencode-Session-Id": {"ses-sub2"}, "X-Opencode-Parent-Session-Id": {"ses-sub"}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want := agent.Identify(tc.h).ParentID
+			if tc.wantMain {
+				want = ""
+			}
+			pctx := &pipeline.Context{Headers: tc.h}
+			if got := pctx.ParentSubagent(); got != want {
+				t.Fatalf("pipeline ParentSubagent() = %q, want %q", got, want)
+			}
+		})
+	}
+}

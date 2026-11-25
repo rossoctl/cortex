@@ -1438,7 +1438,7 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   it sends `X-Codex-Parent-Thread-Id`, on a User-Agent or `Originator` that
   starts with `codex`) and from an OpenCode subagent (its own
   `X-Opencode-Session-Id`, when it sends `X-Opencode-Parent-Session-Id`).
-  `parentSubagent` stays absent on both. This is context-guru's rule
+  `parentSubagent` follows below. This is context-guru's rule
   (`agent.Client.SubagentID`), and a test in `core/plugins/contextguru` fails
   when the two disagree.
 - `subagentKind` — Bob only: `subtask` when the request's tool list has
@@ -1450,6 +1450,13 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   only when the spawner was itself an agent, so on a row that names a
   `subagent` an absent `parentSubagent` means the conversation started it. The
   two keys together give a row's place in the session's tree of agents.
+  - **Codex:** the `X-Codex-Parent-Thread-Id` the subagent sent. Codex names
+    the main conversation's thread there too, and no Codex header tells that
+    thread apart. So if no row of the session has this value as its
+    `subagent`, the conversation started the subagent.
+  - **OpenCode:** the `X-Opencode-Parent-Session-Id` the subagent sent. It is
+    absent when that parent is the session the row is filed in
+    (`X-Session-Id`), because that parent is the conversation.
 
 ## Invocation action vocabulary
 
