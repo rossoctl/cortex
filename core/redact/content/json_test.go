@@ -321,6 +321,20 @@ func TestJSON_RandomDocuments(t *testing.T) {
 	}
 }
 
+// A number under a password key in raw JSON: String keeps the JSON valid (an unquoted marker
+// would not be), and JSON redacts the number as a string.
+func TestJSON_NumberUnderASecretKey(t *testing.T) {
+	for _, in := range []string{`{"password":12345678}`, `{"a":1,"password": 87654321,"b":2}`} {
+		if out, _ := New().String(in); !json.Valid([]byte(out)) {
+			t.Errorf("String: %s -> %s: invalid JSON", in, out)
+		}
+		out, _ := New().JSON([]byte(in))
+		if !json.Valid(out) || bytes.Contains(out, []byte("12345678")) || bytes.Contains(out, []byte("87654321")) {
+			t.Errorf("JSON: %s -> %s: want valid JSON without the number", in, out)
+		}
+	}
+}
+
 // JSON redacts values only (the open question in the PR). With secrets planted in values AND
 // keys, every value secret that Bytes (the raw body as text) finds, JSON finds too; the secrets
 // Bytes finds that JSON keeps are keys, counted in the log. Values and keys use different

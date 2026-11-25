@@ -259,7 +259,10 @@ func findKeywords(text string, at []int, out []Edit) []Edit {
 		}
 		t := nameTier(name)
 		ok := t != tierNone && secretShaped(t, text[vs:ve], mode) &&
-			!(mode == valueBare && (callAfter(text, ve, vs) || t == tierPassword && proseAfter(text, vs, ve)))
+			!(mode == valueBare && (callAfter(text, ve, vs) || t == tierPassword && proseAfter(text, vs, ve))) &&
+			// A number in raw JSON ("password":12345678) would lose its JSON with an unquoted
+			// marker; the JSON layer redacts it, as a string, instead.
+			!(mode == valueBare && allDigits(text[vs:ve]) && jsonMemberValue(text, vs))
 		covered = rejectedCover(ok, s+m[1], vs, ve)
 		if !ok && ve-vs >= longRejected {
 			// A long rejected URL can still hold an assignment in its query string
@@ -684,6 +687,23 @@ var envNamePattern = regexp.MustCompile(`^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$`)
 // isHex reports whether v is hex digits only, in one case.
 func isHex(v string) bool {
 	return strings.Trim(v, "0123456789abcdef") == "" || strings.Trim(v, "0123456789ABCDEF") == ""
+}
+
+func allDigits(v string) bool { return v != "" && strings.Trim(v, "0123456789") == "" }
+
+// jsonMemberValue reports whether vs starts a raw JSON member's value: after a quoted key and
+// ":" (`"pin":1234`, `"password": 12345678`).
+func jsonMemberValue(text string, vs int) bool {
+	i := vs - 1
+	for i >= 0 && (text[i] == ' ' || text[i] == '\t') {
+		i--
+	}
+	if i < 0 || text[i] != ':' {
+		return false
+	}
+	for i--; i >= 0 && (text[i] == ' ' || text[i] == '\t'); i-- {
+	}
+	return i >= 0 && text[i] == '"'
 }
 
 // tokenShaped reports whether v looks like a generated token rather than words or an
