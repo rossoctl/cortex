@@ -93,7 +93,7 @@ func TestServiceStepUpgradeUndoRestoresTheUnitAndThePrior(t *testing.T) {
 
 	up := *env
 	up.configFresh, up.binaryChanges = false, []string{"cortex"}
-	writeExe(t, filepath.Join(env.binDir, "cortex"), cortexStub("x")+"# v2\n")
+	writeExe(t, filepath.Join(env.binDir, "cortex"), cortexStub(t, "x")+"# v2\n")
 	if p, prob := (serviceStep{}).plan(&up); prob != nil || p.done || !up.priorService {
 		t.Fatalf("upgrade plan = %+v %v prior=%v", p, prob, up.priorService)
 	}
@@ -153,7 +153,7 @@ func TestServiceStepFailedRestoreNamesWhatIsLeft(t *testing.T) {
 			up := *env
 			up.configFresh, up.binaryChanges = false, []string{"cortex"}
 			// New bytes, so the install replaces the job rather than finding it current.
-			writeExe(t, filepath.Join(env.binDir, "cortex"), cortexStub("x")+"# v2\n")
+			writeExe(t, filepath.Join(env.binDir, "cortex"), cortexStub(t, "x")+"# v2\n")
 			if p, prob := (serviceStep{}).plan(&up); prob != nil || p.done || !up.priorService {
 				t.Fatalf("upgrade plan = %+v %v prior=%v", p, prob, up.priorService)
 			}
@@ -431,7 +431,7 @@ func logSupervisorCalls(t *testing.T, loaded string) string {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if b, _ := os.ReadFile(fake); !strings.Contains(string(b), loaded) { //nolint:gosec
+		if b, _ := os.ReadFile(fake); !isFakeSupervisorStub(b, loaded) { //nolint:gosec
 			t.Fatalf("%s on PATH is not fakeSupervisor's", fake)
 		}
 		installStub(t, tool, "#!/bin/sh\necho '"+tool+" '\"$*\" >> '"+calls+"'\nexec '"+fake+"' \"$@\"\n")
@@ -773,7 +773,7 @@ func notRunning(t *testing.T, loaded string) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if b, _ := os.ReadFile(fake); !strings.Contains(string(b), loaded) { //nolint:gosec
+		if b, _ := os.ReadFile(fake); !isFakeSupervisorStub(b, loaded) { //nolint:gosec
 			t.Fatalf("%s on PATH is not fakeSupervisor's", fake)
 		}
 		installStub(t, w.tool, "#!/bin/sh\ncase \"$*\" in\n  \""+strings.ReplaceAll(w.ask, "*", "\"*\"")+

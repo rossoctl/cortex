@@ -61,7 +61,9 @@ func TestWaitBootedOut_RealLaunchd(t *testing.T) {
 	requireRealLaunchd(t)
 	skip := launchdSkip(t)
 	uid := strconv.Itoa(os.Getuid())
-	label := "io.rossoctl.cortex.test.bootout"
+	// One label per test process: test runs at the same time on one machine share
+	// the gui domain, and one label made them boot out and bootstrap each other's job.
+	label := "io.rossoctl.cortex.test.bootout." + strconv.Itoa(os.Getpid())
 	target := "gui/" + uid + "/" + label
 	dir := t.TempDir()
 
