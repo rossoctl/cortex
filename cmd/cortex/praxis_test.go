@@ -199,6 +199,8 @@ func TestOutboundEntries_WarnsDeprecatedCpexOnLocalInstall(t *testing.T) {
 }
 
 func TestWarnDeprecatedToolPrune(t *testing.T) {
+	old := localInstall
+	t.Cleanup(func() { localInstall = old })
 	withPrune := praxisCfg(false)
 	withPrune.Pipeline.Outbound.Plugins = []config.PluginEntry{{Name: "tool-prune"}, {Name: "context-guru"}}
 	withoutPrune := praxisCfg(false)
@@ -211,14 +213,17 @@ func TestWarnDeprecatedToolPrune(t *testing.T) {
 		name       string
 		cfg        *config.Config
 		registered []string
+		local      bool
 		want       int
 	}{
-		{"tool-prune listed, context-guru registered", withPrune, cg, 1},
-		{"no tool-prune in the list", withoutPrune, cg, 0},
-		{"context-guru not registered", withPrune, []string{"tool-prune"}, 0},
-		{"praxis mode", praxis, cg, 0},
+		{"tool-prune listed, context-guru registered", withPrune, cg, true, 1},
+		{"no tool-prune in the list", withoutPrune, cg, true, 0},
+		{"context-guru not registered", withPrune, []string{"tool-prune"}, true, 0},
+		{"praxis mode", praxis, cg, true, 0},
+		{"a sidecar", withPrune, cg, false, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			localInstall = tc.local
 			var buf bytes.Buffer
 			warnDeprecatedToolPrune(tc.cfg, tc.registered, slog.New(slog.NewTextHandler(&buf, nil)))
 			if n := strings.Count(buf.String(), deprecatedToolPruneWarning); n != tc.want {

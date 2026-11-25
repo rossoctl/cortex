@@ -487,6 +487,10 @@ func TestConfigStepMigratesAConfigFromBeforeContextGuruAndMetrics(t *testing.T) 
 				t.Fatalf("plan = %+v %v pinsPending=%v, want an update with pinsPending=%v",
 					p, prob, env.configPinsPending, tc.restart)
 			}
+			if wantWhat := "the cortex config"; !tc.push && p.what != wantWhat+" and turn on metrics push" ||
+				tc.push && p.what != wantWhat {
+				t.Errorf("plan.what = %q; it must name the metrics push exactly when it adds one", p.what)
+			}
 			detail, u, err := configStep{}.apply(env, nil)
 			if err != nil || env.configPinsChanged != tc.restart {
 				t.Fatalf("apply: %q %v pinsChanged=%v, want pinsChanged=%v", detail, err, env.configPinsChanged, tc.restart)

@@ -1,7 +1,11 @@
 package all_test
 
 import (
+	"go/parser"
+	"go/token"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"testing"
 
 	"github.com/rossoctl/cortex/core/config"
@@ -48,6 +52,36 @@ func TestBodyReaderPlugins_MatchesTheCatalog(t *testing.T) {
 	for _, name := range got {
 		if !slices.Contains(registered, name) {
 			t.Errorf("BodyReaderPlugins has %q, which no plugin registers; registered: %v", name, registered)
+		}
+	}
+}
+
+// TestBodyReaderPlugins_ImportsEveryPlugin fails when a plugins_<name>.go file
+// imports a plugin that this file does not, so that the catalog above sees every
+// plugin. cpex is left out: it needs the cpex tag, and it declares both body writes.
+func TestBodyReaderPlugins_ImportsEveryPlugin(t *testing.T) {
+	imports := func(path string) []string {
+		f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, s := range f.Imports {
+			p, _ := strconv.Unquote(s.Path.Value)
+			out = append(out, p)
+		}
+		return out
+	}
+	here := imports("bodyreaders_test.go")
+	files, err := filepath.Glob("plugins_*.go")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no plugins_*.go files (%v)", err)
+	}
+	for _, f := range files {
+		for _, p := range imports(f) {
+			if p != "github.com/rossoctl/cortex/core/plugins/cpex" && !slices.Contains(here, p) {
+				t.Errorf("%s imports %s; import it in bodyreaders_test.go too", f, p)
+			}
 		}
 	}
 }

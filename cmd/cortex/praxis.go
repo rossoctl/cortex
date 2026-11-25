@@ -42,10 +42,11 @@ func warnDeprecatedCpex(c *config.Config, log *slog.Logger) {
 // deprecatedToolPruneWarning is the deprecation sentence for tool-prune on a build that has context-guru.
 const deprecatedToolPruneWarning = "tool-prune is deprecated on this build; put its remove list in context-guru → engine.components.toolfilter.remove (agentop setup moves it)"
 
-// warnDeprecatedToolPrune logs the deprecation once when the outbound list has tool-prune and
-// the build registers context-guru. Praxis mode builds no outbound plugin, so it does not log.
+// warnDeprecatedToolPrune logs the deprecation once when a local install's outbound list has
+// tool-prune and the build registers context-guru. A sidecar does not log it: tool-prune stays
+// supported in the cluster shapes. Praxis mode builds no outbound plugin, so it does not log.
 func warnDeprecatedToolPrune(c *config.Config, registered []string, log *slog.Logger) {
-	if c.PraxisEnabled() || !slices.Contains(registered, "context-guru") {
+	if !localInstall || c.PraxisEnabled() || !slices.Contains(registered, "context-guru") {
 		return
 	}
 	if slices.ContainsFunc(c.Pipeline.Outbound.Plugins, func(e config.PluginEntry) bool { return e.Name == "tool-prune" }) {

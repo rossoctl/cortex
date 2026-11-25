@@ -80,6 +80,10 @@ func (configStep) plan(env *setupEnv) (stepPlan, *problem) {
 	// entry, as the pins, take effect only on a restart.
 	env.configPinsPending = listenerPinsPending(cfg) || praxisPending || configRestartPending(cfg)
 	p.verb, p.what, p.where = "update", "the cortex config", env.tilde(cfg)+" (previous kept)"
+	// The consent row names the push: it starts to send data to a remote collector.
+	if raw, err := os.ReadFile(cfg); err == nil && metricsPushPending(string(raw)) { //nolint:gosec // the user's config
+		p.what += " and turn on metrics push"
+	}
 	return p, nil
 }
 
