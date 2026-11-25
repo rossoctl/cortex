@@ -192,6 +192,10 @@ func TestURLPasswords(t *testing.T) {
 		{"https://u:pw" + "12345@nexus/repository/npm/@scope/pkg", "https://u:[REDACTED:password]@nexus/repository/npm/@scope/pkg"},
 		{"https://user:pw" + "12345@host#/@y", "https://user:[REDACTED:password]@host#/@y"},
 		{"https://alice:" + fill("a", 16) + "@registry.npmjs.org:443/@babel/core", "https://alice:[REDACTED:password]@registry.npmjs.org:443/@babel/core"},
+		// KNOWN over-redaction (the safe side): a dotless host before a "/@" path is taken as
+		// the password's, and loses its name
+		{"https://user:pw" + "12345@localhost/@scope/pkg", "https://user:[REDACTED:password]@scope/pkg"},
+		{"amqp://guest:pw" + "12345@rabbitmq/@vhost", "amqp://guest:[REDACTED:password]@vhost"},
 
 		{`{"dsn":"amqp://guest:` + fill("g", 9) + `@mq/vhost","n":1}`, `{"dsn":"amqp://guest:[REDACTED:password]@mq/vhost","n":1}`},
 	} {

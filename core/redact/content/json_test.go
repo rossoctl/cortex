@@ -321,6 +321,65 @@ func TestJSON_RandomDocuments(t *testing.T) {
 	}
 }
 
+// JSON redacts values only (the open question in the PR). With secrets planted in values AND
+// keys, every value secret that Bytes (the raw body as text) finds, JSON finds too; the secrets
+// Bytes finds that JSON keeps are keys, counted in the log. Values and keys use different
+// secrets, so a survivor tells where it was.
+func TestJSON_ValuesOnlyAgainstBytes(t *testing.T) {
+	rng := rand.New(rand.NewPCG(13, 17))
+	valueSecrets := []string{fakes()["anthropic"], fakes()["aws"], fakeJWT()}
+	keySecret := fakes()["github"]
+	words := []string{"hello", "a\"q", "tab\there", "<b>", "é", "line\nbreak", "x"}
+	var gen func(d int) any
+	gen = func(d int) any {
+		switch n := rng.IntN(8); {
+		case d > 3 || n < 3:
+			s := words[rng.IntN(len(words))]
+			if rng.IntN(3) == 0 {
+				s += " " + valueSecrets[rng.IntN(len(valueSecrets))] + " " + words[rng.IntN(len(words))]
+			}
+			return s
+		case n < 6:
+			a := make([]any, rng.IntN(4))
+			for i := range a {
+				a[i] = gen(d + 1)
+			}
+			return a
+		default:
+			m := map[string]any{}
+			for range rng.IntN(4) {
+				k := words[rng.IntN(len(words))]
+				if rng.IntN(4) == 0 {
+					k = keySecret
+				}
+				m[k] = gen(d + 1)
+			}
+			return m
+		}
+	}
+	keyMisses, valueFinds := 0, 0
+	for range 5000 {
+		in, _ := json.Marshal(gen(0))
+		viaJSON, _ := New().JSON(in)
+		viaBytes, _ := New().Bytes(in)
+		for _, s := range valueSecrets {
+			if bytes.Contains(in, []byte(s)) && !bytes.Contains(viaBytes, []byte(s)) {
+				valueFinds++
+				if bytes.Contains(viaJSON, []byte(s)) {
+					t.Fatalf("Bytes finds a value secret that JSON keeps:\n  in: %s\nJSON: %s", in, viaJSON)
+				}
+			}
+		}
+		if bytes.Contains(viaJSON, []byte(keySecret)) && !bytes.Contains(viaBytes, []byte(keySecret)) {
+			keyMisses++
+		}
+	}
+	t.Logf("5000 documents: %d with a value secret Bytes finds (JSON finds every one); %d with a key secret JSON keeps and Bytes finds", valueFinds, keyMisses)
+	if valueFinds < 500 || keyMisses == 0 {
+		t.Errorf("the generator no longer reaches both cases: %d value finds, %d key misses", valueFinds, keyMisses)
+	}
+}
+
 // sameShape reports whether b has a's structure, and each string of b is a's string redacted by
 // Find with its key.
 func sameShape(a, b any, key string) bool {
@@ -355,14 +414,17 @@ func sameShape(a, b any, key string) bool {
 	}
 }
 
-// A 40 MB image-heavy request takes under a second: its base64 is skipped unread. (The bound is
-// generous, for slow CI runners and the race detector.)
-func TestJSON_ImageBodyIsFast(t *testing.T) {
-	in := []byte(randomImageJSON(40 << 20))
-	d := bestOf(2, func() { New().JSON(in) })
-	t.Logf("40 MB image body: %v", d)
-	if d > 5*time.Second {
-		t.Errorf("40 MB image body took %v", d)
+// An image-heavy request costs time in proportion to its size: its base64 is skipped unread. The
+// test compares 10 MB with 40 MB, a ratio, not a wall-clock bound, so the race detector and a
+// slow runner slow both alike. BenchmarkJSONImage40MB measures the speed itself.
+func TestJSON_ImageBodyIsLinear(t *testing.T) {
+	small, large := []byte(randomImageJSON(10<<20)), []byte(randomImageJSON(40<<20))
+	ds, dl := bestOf(2, func() { New().JSON(small) }), bestOf(2, func() { New().JSON(large) })
+	// timing: compares the cost at two sizes; only their ratio is asserted
+	ratio := float64(dl) / float64(max(ds, time.Microsecond))
+	t.Logf("image body: %v at 10 MB, %v at 40 MB (x%.1f)", ds, dl, ratio)
+	if ratio > 10 && dl > 50*time.Millisecond {
+		t.Errorf("image body: %v at 10 MB but %v at 40 MB, x%.1f for 4 times the input: not linear", ds, dl, ratio)
 	}
 }
 
