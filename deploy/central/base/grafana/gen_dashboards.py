@@ -447,6 +447,10 @@ def series(
             "mode": "absolute",
             "steps": [{"color": RED, "value": None}, {"color": GREEN, "value": 0}],
         }
+        # Every bar starts at zero. With no min, Grafana starts the bars at the smallest value, so one
+        # negative row shifts the start of all the bars. A bar gauge cannot draw below zero: a negative
+        # row shows no bar and a red number.
+        d["fieldConfig"]["defaults"]["min"] = 0
         # A bar that is a cost, not a net saving, has no good side of zero: one fixed colour.
         if fixed_color:
             d["fieldConfig"]["defaults"]["color"] = color(fixed_color)
@@ -795,7 +799,7 @@ def savings():
         series(
             1,
             "Net by component (USD, selected range)",
-            [(net("component", extra=NOT_SPEND_ONLY), "{{component}}")],
+            [(f'sort_desc({net("component", extra=NOT_SPEND_ONLY)})', "{{component}}")],
             0,
             0,
             9,

@@ -83,7 +83,7 @@
       },
       "targets": [
         {
-          "expr": "(((sum by (component)((increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) and last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[30d] offset $__range)) or (increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) >= last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range])) or last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]))) or (sum by (component)((increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) and last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[30d] offset $__range)) or (increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) >= last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range])) or last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]))) * 0) - ((sum by (component)((increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) and last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[30d] offset $__range)) or (increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) >= last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range])) or last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]))) or (sum by (component)((increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) and last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[30d] offset $__range)) or (increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) >= last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range])) or last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]))) * 0))",
+          "expr": "sort_desc((((sum by (component)((increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) and last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[30d] offset $__range)) or (increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) >= last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range])) or last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]))) or (sum by (component)((increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) and last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[30d] offset $__range)) or (increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) >= last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range])) or last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]))) * 0) - ((sum by (component)((increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) and last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[30d] offset $__range)) or (increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) >= last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range])) or last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]))) or (sum by (component)((increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) and last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[30d] offset $__range)) or (increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) >= last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range])) or last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]))) * 0)))",
           "legendFormat": "{{component}}",
           "refId": "A",
           "datasource": {
@@ -116,7 +116,8 @@
                 "value": 0
               }
             ]
-          }
+          },
+          "min": 0
         },
         "overrides": []
       },
@@ -230,7 +231,8 @@
                 "value": 0
               }
             ]
-          }
+          },
+          "min": 0
         },
         "overrides": []
       },
@@ -354,7 +356,8 @@
                 "value": 0
               }
             ]
-          }
+          },
+          "min": 0
         },
         "overrides": []
       },
