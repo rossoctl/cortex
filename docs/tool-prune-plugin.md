@@ -2,6 +2,14 @@
 
 Removes unused tool definitions from outbound inference requests.
 
+> **Deprecated on the local install.** On a laptop, put the prune list in the
+> `context-guru` entry, at `engine.components.toolfilter.remove`. `agentop setup`
+> moves an existing `tool-prune` list there (see
+> [the upgrade migrations](laptop-service.md#the-upgrade-migrations)). In
+> toolfilter, `mcp__<server>` removes every tool of that server. The plugin stays
+> for the cluster shapes: the `envoy` profile builds `tool-prune`, not
+> `context-guru`.
+
 A Claude Code turn carries the full tool manifest on every request — tens of
 thousands of tokens of JSON schema, billed each time, largely for tools the
 agent will never call in a given deployment. The manifest is assembled by the
@@ -290,8 +298,9 @@ It reads `~/.claude/projects/**/*.jsonl`, deduplicates tool calls by their
 unique `tool_use` block id (a transcript is rewritten on every resume, so raw
 occurrences would inflate heavily-resumed sessions), and windows to the last
 `--days` (30 by default). Without `--write` it prints the YAML block; with
-`--write` it patches the `remove:` list of the `tool-prune` entry in place,
-idempotently and without reformatting the rest of the file.
+`--write` it patches the `engine.components.toolfilter.remove:` list of the
+`context-guru` entry in place, or the `remove:` list of the `tool-prune` entry when
+the config has no `context-guru` entry. It does this idempotently and without reformatting the rest of the file.
 With `--write` it refuses to write when the scan observed no tool calls,
 because then each tool that it knows would look unused.
 

@@ -195,8 +195,15 @@ func TestScan_WalksNestedProjectDirs(t *testing.T) {
 func TestYAMLBlock(t *testing.T) {
 	r := &Result{Candidates: []string{"NotebookEdit", "WebSearch"}}
 	got := r.YAMLBlock()
-	if !strings.Contains(got, "remove: [NotebookEdit, WebSearch]") {
-		t.Errorf("block missing remove list:\n%s", got)
+	want := "      - name: context-guru\n" +
+		"        config:\n" +
+		"          engine:\n" +
+		"            preset: xhigh\n" +
+		"            components:\n" +
+		"              toolfilter:\n" +
+		"                remove: [NotebookEdit, WebSearch]\n"
+	if got != want {
+		t.Errorf("block is not the context-guru path:\ngot:\n%s\nwant:\n%s", got, want)
 	}
 	// on_error is intentionally absent: it defaults to enforce, and the remove
 	// list is the gate. Emitting a policy line would imply it is the switch.
@@ -204,7 +211,7 @@ func TestYAMLBlock(t *testing.T) {
 		t.Errorf("block should not emit an on_error line:\n%s", got)
 	}
 	empty := (&Result{}).YAMLBlock()
-	if !strings.Contains(empty, "remove: []") {
+	if !strings.HasSuffix(empty, "              toolfilter:\n                remove: []\n") {
 		t.Errorf("no candidates should render an empty list:\n%s", empty)
 	}
 }

@@ -43,6 +43,8 @@ func stageDir(t *testing.T, cortexScript string) string {
 // systemd: --config <path>), and --fake-start, the line a
 // runningCortex load logs. Its config is deliberately unpinned, as
 // an old built-in one would be, so the config step's migrations have work to do.
+// It has context-guru and a metrics_push key, so the two migrations for those
+// have none: their own tests cover them.
 func cortexStub(healthAddr string) string {
 	return `#!/bin/sh
 case "$*" in
@@ -60,6 +62,13 @@ tls_bridge:
   mode: enabled
   ca_dir: "$HOME/.cortex/ca"
   generate_ca: true
+pipeline:
+  outbound:
+    plugins:
+      - name: inference-parser
+      - name: context-guru
+metrics_push:
+  enabled: false
 EOF
       chmod 600 "$HOME/.cortex/config.yaml"
     fi ;;

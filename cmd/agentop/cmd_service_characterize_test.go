@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
+	"github.com/rossoctl/cortex/core/config"
 )
 
 // These tests pin the output of each `agentop service install|uninstall` path below
@@ -118,7 +119,11 @@ func newServiceSceneWith(t *testing.T, healthz http.HandlerFunc) serviceScene {
 		t.Fatal(err)
 	}
 	cfg := filepath.Join(cfgDir, "config.yaml")
-	body := "mode: proxy-sidecar\nlistener:\n  roles: [forward]\n" +
+	// A parser, as every local install has, so that context-guru has its place.
+	// listener: stays last: a scene appends its own listener keys to the file.
+	body := "mode: proxy-sidecar\n" +
+		"pipeline:\n  outbound:\n    plugins:\n      - name: inference-parser\n" +
+		"listener:\n  roles: [forward]\n" +
 		"  forward_proxy_addr: 127.0.0.1:47600\n" +
 		"  health_addr: " + strings.TrimPrefix(health.URL, "http://") + "\n"
 	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
@@ -255,6 +260,18 @@ func TestCharacterize_ServiceInstall_Declined(t *testing.T) {
 	}
 }
 
+// wantMigratedStdout is what the context-guru and metrics push migrations print
+// for the scene's config: a parser and no context operator, and no metrics_push.
+const wantMigratedStdout = "Updated $HOME/.cortex/config.yaml (previous kept as $HOME/.cortex/config.yaml.before-agentop-context-guru):\n" +
+	"  + pipeline.outbound.plugins: context-guru (preset xhigh)\n" +
+	"  " + contextGuruOnLine + "\n" +
+	"  The running proxy needs a restart to start accounting for it.\n" +
+	"Updated $HOME/.cortex/config.yaml (previous kept as $HOME/.cortex/config.yaml.before-agentop-metrics):\n" +
+	"  + metrics_push: on, to " + metricsPushURL + "\n" +
+	"  It sends the savings, inference, keep-alive and cache counters, with a random machine id as service.instance.id. It sends no prompt, path, host, session or key.\n" +
+	"  To stop it, set metrics_push.enabled: false, or METRICS_PUSH=false in the proxy's environment.\n" +
+	"  Metrics push starts only after a restart of the proxy.\n"
+
 // wantFreshStdout and wantFreshStderr are captured from serviceInstall as it was before
 // the split. To recapture, set both to "" and copy the values the test then prints.
 const (
@@ -264,6 +281,7 @@ const (
 		"Updated $HOME/.cortex/config.yaml (previous kept as $HOME/.cortex/config.yaml.before-agentop-pricing):\n" +
 		"  + pricing.endpoints: api.us-east.bob.ibm.com at 2 Bobcoins per million tokens   (was: unpriced)\n" +
 		"  A running proxy reloads pricing from the file; this needs no restart.\n" +
+		wantMigratedStdout +
 		"Running as a <supervisor>, healthy.\n" +
 		"  Captured session history is cleared: the store is in memory, so any\n" +
 		"  timeline you were reading in agentop starts over.\n"
@@ -374,6 +392,7 @@ const (
 		"Updated $HOME/.cortex/config.yaml (previous kept as $HOME/.cortex/config.yaml.before-agentop-pricing):\n" +
 		"  + pricing.endpoints: api.us-east.bob.ibm.com at 2 Bobcoins per million tokens   (was: unpriced)\n" +
 		"  A running proxy reloads pricing from the file; this needs no restart.\n" +
+		wantMigratedStdout +
 		"Wrote $HOME/unit\n" +
 		"Running as a <supervisor>, healthy.\n" +
 		"  Captured session history is cleared: the store is in memory, so any\n" +
@@ -434,6 +453,7 @@ const (
 		"Updated $HOME/.cortex/config.yaml (previous kept as $HOME/.cortex/config.yaml.before-agentop-pricing):\n" +
 		"  + pricing.endpoints: api.us-east.bob.ibm.com at 2 Bobcoins per million tokens   (was: unpriced)\n" +
 		"  A running proxy reloads pricing from the file; this needs no restart.\n" +
+		wantMigratedStdout +
 		"Running as a <supervisor>, healthy.\n"
 	wantNothingServingStderr = ""
 )
@@ -539,5 +559,61 @@ func TestCharacterize_ServiceInstall_OverAnArchivingProxy(t *testing.T) {
 		"  still lists every session it holds.\n"
 	if run.code != 0 || !strings.HasSuffix(run.out, want) || strings.Contains(run.out, "history is cleared") {
 		t.Fatalf("exit %d, stdout:\n%s\nwant it to end with:\n%s", run.code, run.out, want)
+	}
+}
+
+// On a current service, a config that lost its metrics_push block makes install
+// restart the proxy: the push starts only on a restart. A tool-prune entry that the
+// context-guru migration moves does not: a running proxy reloads it from the file.
+func TestCharacterize_ServiceInstall_RestartsForMetricsPushButNotForAMovedPruneList(t *testing.T) {
+	readyOnFirstAnswer(t)
+	loaded := fakeSupervisor(t)
+	sc := newServiceSceneServing(t, loaded)
+	if r := sc.install(t, true, false); r.code != 0 {
+		t.Fatalf("setup install failed: %+v", r)
+	}
+	migrated, err := os.ReadFile(sc.p.configFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(migrated)
+	// The first install appended the metrics push block, its comment first, at the
+	// end of the file, and put context-guru last in the outbound list, which ends
+	// where listener: starts.
+	pushAt := strings.Index(text, "# Metrics push.")
+	cgAt := strings.Index(text, "      - name: context-guru\n")
+	listenerAt := strings.Index(text, "listener:\n")
+	if pushAt < 0 || cgAt < 0 || listenerAt < cgAt {
+		t.Fatalf("the first install did not migrate the scene's config as expected:\n%s", text)
+	}
+
+	for _, tc := range []struct {
+		name, config string
+		restart      bool
+	}{
+		{"metrics_push removed", text[:pushAt], true},
+		{"tool-prune in place of context-guru", text[:cgAt] +
+			"      - name: tool-prune\n        on_error: enforce\n        config:\n          remove: [Bash]\n" +
+			text[listenerAt:], false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(sc.p.configFile, []byte(tc.config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			r := sc.install(t, true, false)
+			if r.code != 0 || r.errOut != "" {
+				t.Fatalf("install: exit %d, stderr %q", r.code, r.errOut)
+			}
+			if current := strings.Contains(r.out, "Already current"); current == tc.restart {
+				t.Errorf("restart = %v, want %v; stdout:\n%s", !current, tc.restart, r.out)
+			}
+			c, err := config.Load(sc.p.configFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !hasOutbound(c, "context-guru") || hasOutbound(c, "tool-prune") || c.MetricsPush == nil || !c.MetricsPush.IsEnabled() {
+				t.Errorf("install left the config not current:\n%s", tc.config)
+			}
+		})
 	}
 }

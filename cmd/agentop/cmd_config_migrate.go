@@ -129,8 +129,9 @@ func missingListenerPins(raw []byte) ([]pinnedListener, error) {
 	return missing, nil
 }
 
-// configMigrationPending reports true exactly when migrateConfig or
-// migrateBobPricing would change the file at path. agentop setup asks it before
+// configMigrationPending reports true exactly when migrateConfig,
+// migrateBobPricing, migrateContextGuru or migrateMetricsPush would change the
+// file at path. agentop setup asks it before
 // consent, so a re-run with an up-to-date config can report "nothing to do" while
 // one with an older config still gets its migration.
 //
@@ -159,10 +160,22 @@ func configMigrationPending(path string) (bool, error) {
 		return pins, err
 	}
 	// migrateConfig would leave the file as it is, so migrateBobPricing reads raw.
+	if bob, err := bobPricingPending(cfg, string(raw)); err != nil || bob {
+		return bob, err
+	}
+	// The same holds for the Bob half, so the last two migrations read raw too.
+	cg, _ := contextGuruPending(cfg, string(raw))
+	return cg || metricsPushPending(string(raw)), nil
+}
+
+// bobPricingPending is configMigrationPending's Bob half. Pricing that will not
+// build, or a result insertBobEndpoint refuses, is not pending. The error is
+// loadCandidate's own temp file's.
+func bobPricingPending(cfg *config.Config, raw string) (bool, error) {
 	if priced, perr := bobPriced(cfg); perr != nil || priced {
 		return false, nil
 	}
-	updated, ierr := insertBobEndpoint(string(raw))
+	updated, ierr := insertBobEndpoint(raw)
 	if ierr != nil {
 		return false, nil
 	}
@@ -171,6 +184,50 @@ func configMigrationPending(path string) (bool, error) {
 		return false, lerr
 	}
 	return bobPricedVerify(c) == nil, nil
+}
+
+// contextGuruPending reports whether migrateContextGuru would change raw, by the
+// steps it takes before it writes, and whether that change needs a restart. A
+// refusal, a result that will not load and a temp-file error read as not pending.
+func contextGuruPending(cfg *config.Config, raw string) (pending, restart bool) {
+	updated, restart, _, err := planContextGuru(raw)
+	if err != nil || updated == "" {
+		return false, false
+	}
+	c, loaded, err := loadCandidate(updated)
+	if err != nil || !loaded || contextGuruVerify(toolPruneNames(cfg))(c) != nil {
+		return false, false
+	}
+	return true, restart
+}
+
+// metricsPushPending reports whether migrateMetricsPush would change raw, with the
+// same reading of a refusal and an error as contextGuruPending.
+func metricsPushPending(raw string) bool {
+	updated, err := insertMetricsPush(raw)
+	if err != nil || updated == "" {
+		return false
+	}
+	c, loaded, err := loadCandidate(updated)
+	return err == nil && loaded && metricsPushVerify(c) == nil
+}
+
+// configRestartPending reports whether the context-guru or the metrics push
+// migration would make a change that a running proxy takes only on a restart:
+// context-guru added where no context operator was (accounting turns on), or the
+// metrics_push block added. agentop setup asks it before consent, as it asks
+// listenerPinsPending. A config that will not load reads as false.
+func configRestartPending(path string) bool {
+	raw, err := os.ReadFile(path) //nolint:gosec // the user's config
+	if err != nil {
+		return false
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		return false
+	}
+	_, cgRestart := contextGuruPending(cfg, string(raw))
+	return cgRestart || metricsPushPending(string(raw))
 }
 
 // pinsMigrationPending is configMigrationPending's pins half: whether

@@ -11,7 +11,7 @@ import (
 )
 
 // praxisBase is a config that praxis mode accepts once the block is added.
-const praxisBase = "mode: proxy-sidecar\nlistener:\n  roles: [forward]\n  bind_loopback_only: true\n"
+const praxisBase = "mode: proxy-sidecar\nlistener:\n  roles: [forward]\n  bind_loopback_only: true\n" + pushOff
 
 func loadText(t *testing.T, src string) *config.Config {
 	t.Helper()
@@ -179,7 +179,7 @@ func praxisEnv(t *testing.T, src string) (*setupEnv, string) {
 
 func TestConfigStep_PraxisKeepsEverythingElse(t *testing.T) {
 	src := praxisBase + "pipeline:\n  outbound:\n    plugins:\n      - name: inference-parser\n" +
-		"      - name: tool-prune\n        on_error: enforce\n        config:\n          remove: []\n"
+		"      - name: context-guru\n        on_error: enforce\n        config:\n          engine:\n            preset: xhigh\n"
 	env, before := praxisEnv(t, src)
 	env.opts.praxis = true
 	p, prob := configStep{}.plan(env)

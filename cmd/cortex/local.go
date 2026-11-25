@@ -23,8 +23,8 @@ const (
 	cortexDirName = ".cortex"
 	// localConfigName is the one config a local install has. There is deliberately
 	// no second "cost-optimised" config: this one already carries both the parsers
-	// and tool-prune, and writeBuiltinConfig preserves edits, so filling in
-	// tool-prune's remove list is all the difference ever amounted to. Two configs
+	// and context-guru, and writeBuiltinConfig preserves edits, so filling in
+	// context-guru's toolfilter remove list is all the difference ever amounted to. Two configs
 	// meant two CAs, two sets of paths, and two pages of instructions that read
 	// identically.
 	localConfigName = "config.yaml"
@@ -230,7 +230,7 @@ tls_bridge:
   # npm keep working without being told to trust anything.
   #
   # That is not a compromise: no plugin can read that traffic anyway. The parsers
-  # and tool-prune act on agent<->LLM and agent<->tool messages, so forging a leaf
+  # and context-guru act on agent<->LLM and agent<->tool messages, so forging a leaf
   # for a module download buys nothing and breaks every Go tool, which on macOS
   # cannot be pointed at a CA file by environment at all.
   #
@@ -359,36 +359,26 @@ pipeline:
       - name: inference-parser
       - name: mcp-parser
       - name: a2a-parser
-      # tool-prune drops unused tool definitions from the outbound manifest.
-      # The empty remove list is the off switch: with nothing named it does
-      # nothing at all. Fill it in and it takes effect immediately --
-      #   agentop tools scan --write <this file>
-      # -- and the config is hot-reloaded, so no restart.
-      #
-      # Watch the Metrics section of agentop's plugin pane for what it saved. If
-      # you ever suspect the plugin of breaking a request, set
-      # on_error: observe here: it then counts what it *would* remove while
-      # leaving every byte on the wire untouched, which settles the question
-      # without unconfiguring anything.
-      #
-      # Keep it after every body reader: it rewrites the request body, and a
-      # reader must see the bytes the client sent.
-      - name: tool-prune
-        on_error: enforce
-        config:
-          remove: []
       # context-guru compacts the request context before it reaches the LLM.
       # Preset xhigh: its LLM steps use model.source: incoming, so they reuse
-      # the agent's own endpoint and key; no key is stored here. Like
-      # tool-prune it rewrites the request body, so it stays after every
-      # reader. on_error: observe measures without changing any bytes and
-      # without the model calls -- under observe no model is built, so the
-      # model-backed steps degrade to deterministic/no-op.
+      # the agent's own endpoint and key; no key is stored here. It rewrites
+      # the request body, so it stays after every body reader.
+      # on_error: observe measures without changing any bytes and without the
+      # model calls. To turn it off, keep this entry and set on_error: off:
+      # agentop setup then leaves it alone. If you delete the entry, the next
+      # agentop setup adds it again.
       - name: context-guru
         on_error: enforce
         config:
           engine:
             preset: xhigh
+            components:
+              toolfilter:
+                # The prune list: tool definitions to stop sending. Empty does
+                # nothing. agentop tools scan --write <this file> fills it, and
+                # the config is hot-reloaded, so no restart. mcp__<server>
+                # removes every tool of that server.
+                remove: []
 `
 }
 

@@ -5,9 +5,10 @@ doc, which holds its configuration and behavior.
 
 ## Plugins on a laptop
 
-A local install runs five plugins on the outbound pipeline: `inference-parser`,
-`mcp-parser`, `a2a-parser`, `tool-prune` and [`context-guru`](#context-guru).
-`tool-prune` does nothing until its `remove` list names a tool. `context-guru` runs
+A local install runs four plugins on the outbound pipeline: `inference-parser`,
+`mcp-parser`, `a2a-parser` and [`context-guru`](#context-guru). The prune list is
+context-guru's `engine.components.toolfilter.remove`. It does nothing until it
+names a tool. On the local install, `tool-prune` is deprecated. `context-guru` runs
 preset `xhigh`, so it makes the request context smaller and makes extra model calls
 on the agent's own endpoint. Set its `on_error` to `observe` to measure it without
 changing any bytes **and without the model calls**: under `observe`, context-guru
@@ -38,15 +39,14 @@ pipeline:
       - name: inference-parser
       - name: mcp-parser
       - name: a2a-parser
-      - name: tool-prune
-        on_error: enforce
-        config:
-          remove: []
       - name: context-guru
         on_error: enforce
         config:
           engine:
             preset: xhigh
+            components:
+              toolfilter:
+                remove: []
 ```
 
 ## Plugins

@@ -38,8 +38,9 @@ Flags:
   --all           no window: every tool call in every transcript counts
   --keep LIST     comma-separated tool names to withhold from the candidate list
   --dir PATH      transcript directory (default ~/.claude/projects)
-  --write CONFIG  patch the remove: list of the tool-prune entry in CONFIG in
-                  place; without it, the YAML block is printed for you to paste
+  --write CONFIG  patch the context-guru toolfilter remove: list (or tool-prune's,
+                  when the config has no context-guru entry) in CONFIG in place;
+                  without it, the YAML block is printed for you to paste
 
 Transcripts record tools that were called, never tools that were offered, so a
 name agentop does not recognise is never proposed for removal.
@@ -88,7 +89,7 @@ func runTools(args []string, stdout, stderr io.Writer) int {
 	all := fs.Bool("all", false, "consider every transcript, with no recency window")
 	keep := fs.String("keep", "", "comma-separated tool names to keep")
 	dir := fs.String("dir", "", "transcript directory (default ~/.claude/projects)")
-	write := fs.String("write", "", "patch the tool-prune remove: list in this config file")
+	write := fs.String("write", "", "patch the context-guru toolfilter remove: list (or tool-prune's, when the config has no context-guru entry) in CONFIG")
 	if err := fs.Parse(args[1:]); err != nil {
 		// ErrHelp means Parse saw -h/--help, which is a successful answer and belongs
 		// on stdout at exit 0. Every other parse failure is a usage error: Parse has

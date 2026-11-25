@@ -335,7 +335,7 @@ var eventColumns = []eventColumn{
 	// A cap, not the width: fitsContent renders the column as wide as the session's widest
 	// cell, and without a saving most cells are "70.6k→9".
 	{id: colTokens, width: 20, defaultOn: true, keep: keepLow, rightAlign: true, fitsContent: true,
-		desc:    "prompt→output tokens, and what tool-prune saved",
+		desc:    "prompt→output tokens, and what the context operators saved",
 		cell:    func(c cellContext) string { return exchangeTokensCell(c.row) },
 		sortKey: func(c cellContext) sortValue { return numKey(rowTokens(c)) }},
 	// 19 fits the widest cell the formatter can produce: "<$0.0001(−<$0.0001)",
@@ -344,7 +344,7 @@ var eventColumns = []eventColumn{
 	//
 	// A cap, like TOKENS': without a saving the ordinary cell is "$0.2546", at 7.
 	{id: colCost, width: 19, defaultOn: true, keep: keepLow, rightAlign: true, fitsContent: true,
-		desc:    "the exchange's estimated cost, and what tool-prune saved",
+		desc:    "the exchange's estimated cost, and what the context operators saved",
 		cell:    func(c cellContext) string { return exchangeCostCell(c.row) },
 		sortKey: func(c cellContext) sortValue { return numKey(rowCostUSD(c)) }},
 	// keepHigh: the column #866 was filed about. Last in display order, so without

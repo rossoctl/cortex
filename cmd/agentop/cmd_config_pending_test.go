@@ -42,6 +42,14 @@ func TestConfigMigrationPending_AgreesWithTheMigrations(t *testing.T) {
 		t.Fatal(err)
 	}
 	pending, err = configMigrationPending(path)
+	if err != nil || !pending {
+		t.Fatalf("priced but no metrics_push: pending=%v err=%v, want true", pending, err)
+	}
+
+	if _, err := migrateMetricsPush(path, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = configMigrationPending(path)
 	if err != nil || pending {
 		t.Fatalf("fully migrated: pending=%v err=%v, want false", pending, err)
 	}
@@ -97,20 +105,20 @@ func TestConfigMigrationPending_NotPendingWhenNoMigrationWouldApply(t *testing.T
 		"  transparent_proxy_addr: 127.0.0.1:47603\n"
 	for _, tc := range []struct{ name, body string }{
 		// insertBobEndpoint refuses a flow-style pricing block.
-		{"flow-style pricing", "mode: proxy-sidecar\n" + pins + "pricing: {endpoints: []}\n"},
+		{"flow-style pricing", "mode: proxy-sidecar\n" + pins + "pricing: {endpoints: []}\n" + pushOff},
 		// insertListenerKeys refuses a flow-style listener block.
-		{"flow-style listener", "mode: proxy-sidecar\nlistener: {roles: [forward]}\npricing: {endpoints: []}\n"},
+		{"flow-style listener", "mode: proxy-sidecar\nlistener: {roles: [forward]}\npricing: {endpoints: []}\n" + pushOff},
 		// A comment indented past the keys sets the inserted keys' indentation, and
 		// the result does not parse.
-		{"pins would not parse", "mode: proxy-sidecar\nlistener:\n    # note\n  roles: [forward]\npricing: {endpoints: []}\n"},
+		{"pins would not parse", "mode: proxy-sidecar\nlistener:\n    # note\n  roles: [forward]\npricing: {endpoints: []}\n" + pushOff},
 		// An explicit null on the line after the key: the entry goes in above it, and
 		// the result does not parse.
-		{"Bob entry would not parse", "mode: proxy-sidecar\n" + pins + "pricing:\n  ~\n"},
+		{"Bob entry would not parse", "mode: proxy-sidecar\n" + pins + "pricing:\n  ~\n" + pushOff},
 		// The operator prices Bob's host in USD for another model, so premium-ide is
 		// unpriced, and a Bobcoins entry for the same host would not build.
 		{"Bob entry would not price", "mode: proxy-sidecar\n" + pins + "pricing:\n  endpoints:\n" +
 			"  - hosts: [\"" + bobHost + "\"]\n    models:\n      \"other-model\":\n" +
-			"        input_cost_per_million: 1.00\n        output_cost_per_million: 1.00\n"},
+			"        input_cost_per_million: 1.00\n        output_cost_per_million: 1.00\n" + pushOff},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -179,7 +187,8 @@ func TestConfigMigrationPending_APricingBlockThatWillNotBuildIsNotPending(t *tes
 	body := "mode: proxy-sidecar\nlistener:\n  bind_loopback_only: true\n  health_addr: 127.0.0.1:47604\n" +
 		"  transparent_proxy_addr: 127.0.0.1:47603\npricing:\n  endpoints:\n" +
 		"  - hosts: [\"gw.example.com\"]\n" + model +
-		"  - hosts: [\"gw.example.com\"]\n    unit: Credits\n" + model
+		"  - hosts: [\"gw.example.com\"]\n    unit: Credits\n" + model +
+		"metrics_push:\n  enabled: false\n"
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -222,5 +231,36 @@ func TestConfigMigrationPending_RefusesABrokenConfig(t *testing.T) {
 	}
 	if _, err := configMigrationPending(path); err == nil {
 		t.Error("a config that will not parse reported no error")
+	}
+}
+
+// Each of the context-guru and metrics push migrations is pending alone, and a
+// config that has both is not. configRestartPending is true for a change that a
+// running proxy takes only on a restart, and false for a moved tool-prune list.
+func TestConfigMigrationPending_SeesContextGuruAndMetricsPushAlone(t *testing.T) {
+	cg := "      - name: context-guru\n"
+	toolPrune := "      - name: tool-prune\n        on_error: enforce\n        config:\n          remove: [Bash]\n"
+	for _, tc := range []struct {
+		name, tail, push string
+		pending, restart bool
+	}{
+		{"current", cg, pushOff, false, false},
+		{"no metrics_push", cg, "", true, true},
+		{"no context operator", "", pushOff, true, true},
+		{"tool-prune to move", toolPrune, pushOff, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			b := beforeContextGuru(t, path, tc.tail)
+			if err := os.WriteFile(path, append(b, tc.push...), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if pending, err := configMigrationPending(path); err != nil || pending != tc.pending {
+				t.Errorf("pending=%v err=%v, want %v", pending, err, tc.pending)
+			}
+			if got := configRestartPending(path); got != tc.restart {
+				t.Errorf("configRestartPending = %v, want %v", got, tc.restart)
+			}
+		})
 	}
 }

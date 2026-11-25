@@ -5,11 +5,13 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/rossoctl/cortex/core/bootstrap"
 	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/listener/forwardproxy"
+	"github.com/rossoctl/cortex/core/plugins"
 	"github.com/rossoctl/cortex/core/sessionapi"
 )
 
@@ -37,11 +39,27 @@ func warnDeprecatedCpex(c *config.Config, log *slog.Logger) {
 	}
 }
 
+// deprecatedToolPruneWarning is the deprecation sentence for tool-prune on a build that has context-guru.
+const deprecatedToolPruneWarning = "tool-prune is deprecated on this build; put its remove list in context-guru → engine.components.toolfilter.remove (agentop setup moves it)"
+
+// warnDeprecatedToolPrune logs the deprecation once when a local install's outbound list has
+// tool-prune and the build registers context-guru. A sidecar does not log it: tool-prune stays
+// supported in the cluster shapes. Praxis mode builds no outbound plugin, so it does not log.
+func warnDeprecatedToolPrune(c *config.Config, registered []string, log *slog.Logger) {
+	if !localInstall || c.PraxisEnabled() || !slices.Contains(registered, "context-guru") {
+		return
+	}
+	if slices.ContainsFunc(c.Pipeline.Outbound.Plugins, func(e config.PluginEntry) bool { return e.Name == "tool-prune" }) {
+		log.Warn(deprecatedToolPruneWarning)
+	}
+}
+
 // outboundEntries is the outbound plugin list to build: none in praxis mode, and it logs the
 // skipped names at Warn: no policy plugin runs in praxis mode, because the gateway does not
 // run them and a WebSocket upgrade does not go through the gateway. The config keeps its list.
 func outboundEntries(c *config.Config, log *slog.Logger) []config.PluginEntry {
 	warnDeprecatedCpex(c, log)
+	warnDeprecatedToolPrune(c, plugins.RegisteredPlugins(), log)
 	if !c.PraxisEnabled() {
 		return c.Pipeline.Outbound.Plugins
 	}

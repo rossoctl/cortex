@@ -22,6 +22,10 @@ func configEnv(t *testing.T) *setupEnv {
 
 func asStepError(err error, se *stepError) bool { return errors.As(err, se) }
 
+// pushOff gives a fixture a metrics_push key, so that the metrics push migration
+// has nothing to add and a test sees only the migrations it is about.
+const pushOff = "metrics_push:\n  enabled: false\n"
+
 func TestConfigStepWritesAFreshConfigAndUndoes(t *testing.T) {
 	env := configEnv(t)
 	p, prob := configStep{}.plan(env)
@@ -113,8 +117,8 @@ func TestConfigStepWarnsWhenBobCannotBePriced(t *testing.T) {
 	pins := "listener:\n  bind_loopback_only: true\n  health_addr: 127.0.0.1:47604\n" +
 		"  transparent_proxy_addr: 127.0.0.1:47603\n"
 	for _, tc := range []struct{ name, body string }{
-		{"pins present", "mode: proxy-sidecar\n" + pins + "pricing: {endpoints: []}\n"},
-		{"pins missing", "mode: proxy-sidecar\nlistener:\n  roles: [forward]\npricing: {endpoints: []}\n"},
+		{"pins present", "mode: proxy-sidecar\n" + pins + "pricing: {endpoints: []}\n" + pushOff},
+		{"pins missing", "mode: proxy-sidecar\nlistener:\n  roles: [forward]\npricing: {endpoints: []}\n" + pushOff},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env := configEnv(t)
@@ -204,8 +208,8 @@ func TestConfigStepRefusesAFailedPinMigrationThatLeavesListenersExposed(t *testi
 // or Bob is priced already, which would make it done.
 func TestConfigStepPlanRefusesExposedListenersThePinsCannotBind(t *testing.T) {
 	for _, tc := range []struct{ name, body string }{
-		{"no listener block", "mode: proxy-sidecar\n"},
-		{"flow-style listener", "mode: proxy-sidecar\nlistener: {roles: [forward]}\n"},
+		{"no listener block", "mode: proxy-sidecar\n" + pushOff},
+		{"flow-style listener", "mode: proxy-sidecar\nlistener: {roles: [forward]}\n" + pushOff},
 	} {
 		for _, priced := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s, Bob priced %v", tc.name, priced), func(t *testing.T) {
@@ -327,6 +331,9 @@ func TestConfigStepDoneWhenCurrentAndRefusesABrokenOne(t *testing.T) {
 	if _, err := migrateBobPricing(env.configPath(), io.Discard); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := migrateMetricsPush(env.configPath(), io.Discard); err != nil {
+		t.Fatal(err)
+	}
 	if p, prob := (configStep{}).plan(env); prob != nil || !p.done {
 		t.Errorf("a current config planned a change: %+v %v", p, prob)
 	}
@@ -401,7 +408,7 @@ func TestConfigStepFlagsNewPinsButNotBobsRate(t *testing.T) {
 		backup     string // the one that holds the file from before the run
 	}{
 		{"pins missing", "mode: proxy-sidecar\nlistener:\n  roles: [forward]\n  forward_proxy_addr: 127.0.0.1:47600\n", true, ".before-agentop-migrate"},
-		{"only Bob's rate missing", "mode: proxy-sidecar\n" + pins, false, ".before-agentop-pricing"},
+		{"only Bob's rate missing", "mode: proxy-sidecar\n" + pins + pushOff, false, ".before-agentop-pricing"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env := configEnv(t)
@@ -421,5 +428,131 @@ func TestConfigStepFlagsNewPinsButNotBobsRate(t *testing.T) {
 				t.Errorf("undo manual = %q, want it to name %s", u.manual, tc.backup)
 			}
 		})
+	}
+}
+
+// beforeContextGuru writes a config that has the listener pins and Bob's rate, an
+// outbound list of a parser and then tail, and no metrics_push key. Only the
+// context-guru and the metrics push migrations have work to do on it.
+func beforeContextGuru(t *testing.T, path, tail string) []byte {
+	t.Helper()
+	body := "mode: proxy-sidecar\npipeline:\n  outbound:\n    plugins:\n      - name: inference-parser\n" + tail +
+		"listener:\n  roles: [forward]\n"
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := migrateConfig(path, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := migrateBobPricing(path, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// One setup run brings a config from before context-guru and the metrics push to
+// both, and a second run keeps it. A moved tool-prune list alone needs no restart,
+// because a running proxy reloads it. A new context-guru entry where no context
+// operator was, or the metrics push, needs one.
+func TestConfigStepMigratesAConfigFromBeforeContextGuruAndMetrics(t *testing.T) {
+	toolPrune := "      - name: tool-prune\n        on_error: enforce\n        config:\n          remove: [Bash]\n"
+	for _, tc := range []struct {
+		name, tail string
+		push       bool // the fixture already has a metrics_push key
+		restart    bool
+		backup     string // the one that holds the file from before the run
+	}{
+		{"tool-prune and no metrics push", toolPrune, false, true, ".before-agentop-context-guru"},
+		{"no context operator", "", true, true, ".before-agentop-context-guru"},
+		{"only tool-prune moves", toolPrune, true, false, ".before-agentop-context-guru"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := configEnv(t)
+			old := beforeContextGuru(t, env.configPath(), tc.tail)
+			if tc.push {
+				old = append(old, pushOff...)
+				if err := os.WriteFile(env.configPath(), old, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			p, prob := configStep{}.plan(env)
+			if prob != nil || p.verb != "update" || env.configPinsPending != tc.restart {
+				t.Fatalf("plan = %+v %v pinsPending=%v, want an update with pinsPending=%v",
+					p, prob, env.configPinsPending, tc.restart)
+			}
+			if wantWhat := "the cortex config"; !tc.push && p.what != wantWhat+" and turn on metrics push" ||
+				tc.push && p.what != wantWhat {
+				t.Errorf("plan.what = %q; it must name the metrics push exactly when it adds one", p.what)
+			}
+			detail, u, err := configStep{}.apply(env, nil)
+			if err != nil || env.configPinsChanged != tc.restart {
+				t.Fatalf("apply: %q %v pinsChanged=%v, want pinsChanged=%v", detail, err, env.configPinsChanged, tc.restart)
+			}
+			// The row names each change, and the lines under it say what it does.
+			row, notes, _ := strings.Cut(detail, "\n")
+			wantRow, wantNotes := "~/.cortex/config.yaml · updated · context-guru on", contextGuruOnLine
+			if !tc.push {
+				wantRow += " · metrics push on"
+				wantNotes += "\n" + metricsPushSendsLine + "\n" + metricsPushStopLine
+			}
+			if row != wantRow || notes != wantNotes {
+				t.Errorf("detail = %q, want row %q and notes %q", detail, wantRow, wantNotes)
+			}
+			c, err := config.Load(env.configPath())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !hasOutbound(c, "context-guru") || hasOutbound(c, "tool-prune") {
+				t.Errorf("outbound = %+v, want context-guru and no tool-prune", c.Pipeline.Outbound.Plugins)
+			}
+			if on := c.MetricsPush != nil && c.MetricsPush.IsEnabled(); on == tc.push {
+				t.Errorf("metrics push on = %v, want %v", on, !tc.push)
+			}
+			if want := "from ~/.cortex/config.yaml" + tc.backup + ","; !strings.Contains(u.manual, want) {
+				t.Errorf("undo manual = %q, want it to name %s", u.manual, tc.backup)
+			}
+			next := *env
+			next.configPinsPending = false // a fresh run's env; a done plan does not set it
+			if p, prob := (configStep{}).plan(&next); prob != nil || !p.done || next.configPinsPending {
+				t.Errorf("a second run = %+v %v pinsPending=%v, want (kept)", p, prob, next.configPinsPending)
+			}
+			if err := u.fn(); err != nil {
+				t.Fatal(err)
+			}
+			if b, _ := os.ReadFile(env.configPath()); !bytes.Equal(b, old) {
+				t.Errorf("undo left %q, want %q", b, old)
+			}
+			for _, f := range []string{".before-agentop-context-guru", ".before-agentop-metrics"} {
+				if _, err := os.Stat(env.configPath() + f); err == nil {
+					t.Errorf("undo left %s", f)
+				}
+			}
+		})
+	}
+}
+
+// A failed context-guru migration only warns, and the metrics push still goes in.
+func TestConfigStepWarnsWhenContextGuruCannotBeAdded(t *testing.T) {
+	env := configEnv(t)
+	writeExe(t, env.configPath(), "mode: proxy-sidecar\nlistener:\n  roles: [forward]\n")
+	if err := os.Chmod(env.configPath(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	detail, _, err := configStep{}.apply(env, nil)
+	if err != nil {
+		t.Fatalf("a context-guru error failed the step: %v", err)
+	}
+	if !strings.Contains(detail, " · context-guru not added (pipeline.outbound.plugins has no place") {
+		t.Errorf("detail = %q, want it to say context-guru was not added, and why", detail)
+	}
+	if c, err := config.Load(env.configPath()); err != nil || c.MetricsPush == nil || !c.MetricsPush.IsEnabled() {
+		t.Errorf("the metrics push did not go in after the context-guru failure: %v", err)
 	}
 }

@@ -173,19 +173,24 @@ func scanFile(path string, since time.Time, seenIDs map[string]struct{}, res *Re
 }
 
 // YAMLBlock renders the candidate list as the config fragment an operator
-// pastes (or --write patches) into the tool-prune entry.
+// pastes (or --write patches) into the context-guru entry.
 func (r *Result) YAMLBlock() string {
 	var b strings.Builder
-	// on_error is omitted: it defaults to enforce, and the empty remove list
-	// below is what gates the plugin. Set on_error: observe only when you want
-	// a projection instead of a saving.
-	b.WriteString("      - name: tool-prune\n")
+	// on_error is omitted: it defaults to enforce, and the remove list below
+	// is what gates the tool filter.
+	b.WriteString("      - name: context-guru\n")
 	b.WriteString("        config:\n")
+	b.WriteString("          engine:\n")
+	// An engine with components but no preset runs no preset, which turns
+	// every compaction off. So the block names the built-in preset.
+	b.WriteString("            preset: xhigh\n")
+	b.WriteString("            components:\n")
+	b.WriteString("              toolfilter:\n")
 	if len(r.Candidates) == 0 {
-		b.WriteString("          remove: []\n")
+		b.WriteString("                remove: []\n")
 		return b.String()
 	}
-	fmt.Fprintf(&b, "          remove: [%s]\n", strings.Join(r.Candidates, ", "))
+	fmt.Fprintf(&b, "                remove: [%s]\n", strings.Join(r.Candidates, ", "))
 	return b.String()
 }
 
