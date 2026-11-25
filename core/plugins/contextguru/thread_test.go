@@ -303,3 +303,30 @@ func engineKey(pctx *pipeline.Context) string {
 	}
 	return ""
 }
+
+// An agent id that Cortex accepts and the engine refuses (thread.HeaderAgentID takes only
+// [A-Za-z0-9_.:@-]) gets a prefix-continuity thread in the engine. Accounting still names the
+// request by its subagent id, as it did before threads (review finding).
+func TestAnAgentIDTheEngineRefusesKeepsItsAccountingThread(t *testing.T) {
+	for _, id := range []string{"agent 7", "name%40team", "agent/7"} {
+		t.Run(id, func(t *testing.T) {
+			p := configured(t, `{}`)
+			invokeReq(p, inferencePctx("/v1/messages", threadBody(t, "fix the parser")))
+			pctx := inferencePctx("/v1/messages", threadBody(t, "search the repo for parser tests"))
+			pctx.Headers.Set(pipeline.ClaudeCodeAgentIDHeader, id)
+			if pctx.Subagent() != id {
+				t.Fatalf("setup: Subagent() = %q, want %q", pctx.Subagent(), id)
+			}
+			engine, _ := engineThread(t, p, pctx)
+			if !strings.HasPrefix(engine, "p:") {
+				t.Fatalf("setup: engine thread %q, want a p: thread (the engine refuses %q)", engine, id)
+			}
+			if _, _, set := pctx.AccountingThread(); set {
+				t.Fatal("the plugin overrode the accounting thread of a named agent")
+			}
+			if got := accounting.ThreadOf(pctx); got.ID != id || got.Parent != "main" {
+				t.Fatalf("accountant thread %+v, want {%s main}", got, id)
+			}
+		})
+	}
+}

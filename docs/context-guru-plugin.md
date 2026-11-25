@@ -103,7 +103,7 @@ The engine splits each session into threads. It keeps its state, and the account
 The accountant thread follows from it:
 
 - The primary thread is `main`, as before.
-- A named agent keeps `core/accounting`'s rule: its subagent id, with its parent from `pctx.ParentSubagent()` (see `parentSubagent` in [session-api.md](session-api.md)), or `main`.
+- A named agent keeps `core/accounting`'s rule: its subagent id, with its parent from `pctx.ParentSubagent()` (see `parentSubagent` in [session-api.md](session-api.md)), or `main`. This holds also when the engine refuses the agent id (it takes only `[A-Za-z0-9_.:@-]`, and Cortex takes any printable id) and gives the request a `p:` thread.
 - A prefix-continuity thread is the engine's id, `p:<hash>`. If it continues another thread by content (an edited turn, a rewind), that thread is its parent.
 
 The plugin finds the thread once, at the start of `OnRequest`. The keep-alive keeper, the 1-hour cache choice, the engine, the accountant and `OnFinish` all use that one thread. After the pipeline, the plugin clears a stale keep-alive candidate on that thread, as `context-guru-proxy` does (`offload.ClearStaleKeepAliveCandidate`). The thread state is in memory, one tracker per plugin instance. A config hot-reload drops it.

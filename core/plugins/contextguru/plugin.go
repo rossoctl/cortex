@@ -790,7 +790,12 @@ func stampDryRun(ops []accountant.Operation, dryRun bool) {
 // engine merely computed it: reporting here, before SetBody, would price a shadow write (an
 // earlier enforced writer's bytes already in effect) as a real saving.
 func reportResult(pctx *pipeline.Context, res apply.Result) (out []byte, changed bool, ops []accountant.Operation) {
-	if id, parent, ok := accountingThread(res.Trace.Thread); ok {
+	// A request whose agent Cortex names (pctx.Subagent) keeps core/accounting's rule, whatever
+	// thread the engine gave it. The two validate an agent id differently: model.SubagentHeader
+	// takes any printable value up to 128 bytes, and thread.HeaderAgentID only [A-Za-z0-9_.:@-].
+	// For an id only Cortex takes ("agent 7"), the engine resolves a p: thread, and accounting
+	// would lose the subagent id it used before threads (review finding).
+	if id, parent, ok := accountingThread(res.Trace.Thread); ok && pctx.Subagent() == "" {
 		pctx.SetAccountingThread(id, parent)
 	}
 	// A head-TTL relabel (cache.strategy: 1-hour-head, or a 1-hour-always/-on-wait OneHourFirst
