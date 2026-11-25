@@ -239,6 +239,18 @@ def ratio(num, den):
     return f"{num} / (({den}) > 0)"
 
 
+# The ping outcomes that are in the failure ratio. skipped is not: that ping was not sent. A ping with
+# no outcome label (an older cortex build) is not either: its outcome is unknown.
+PING_FAILED = ',outcome=~"failed|timeout"'
+PING_SENT = ',outcome=~"ok|failed|timeout"'
+
+def ping_failure_ratio():
+    """Failed and timed-out pings divided by sent pings, over the range. A fleet whose pings all
+    succeed has no failed or timeout series, and an unpadded numerator then shows no data, not 0 %.
+    So the numerator is padded with the denominator times zero."""
+    sent = inc("llm_keepalive_pings_total", extra=PING_SENT)
+    return ratio(f'({inc("llm_keepalive_pings_total", extra=PING_FAILED)} or {sent} * 0)', sent)
+
 def unattributed(expr, label):
     """expr with an empty label filled in as "unattributed". A by-label panel otherwise names a
     series without the label "Value": cortex builds before feat/ping-miss-labels push
@@ -980,20 +992,22 @@ def cache():
         )
     )
     P.append(
-        series(
+        stat(
             4,
-            "Ping outcomes",
-            [(unattributed(count_bar("llm_keepalive_pings_total", "outcome"), "outcome"), "{{outcome}}")],
+            "Ping failure ratio",
+            ping_failure_ratio(),
             8,
             8,
-            10,
-            8,
-            stack=True,
-            bars=True,
-            interval=BAR,
-            colors={"ok": GREEN, "skipped": BLUE, "failed": RED, "timeout": ORANGE},
-            desc="Pings, by outcome. A timeout is a ping that ran to its 60 s limit; it is booked at its projected cost (#754). A skipped ping leaves no row, so it does not show. unattributed is an older cortex build, which did not label the outcome."
-            + COUNT_DESC,
+            w=10,
+            h=8,
+            unit="percentunit",
+            decimals=1,
+            c=RED,
+            big=True,
+            desc="Share of the sent pings that failed or timed out over the selected range. A failed or timed-out ping "
+            "does not keep the cache warm, and a timeout is still booked at its projected cost (#754). A skipped ping "
+            "was not sent, and an unattributed ping (an older cortex build) has no outcome, so neither is in the ratio. "
+            "No data means no ping was sent in the range.",
         )
     )
     P.append(

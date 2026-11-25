@@ -140,3 +140,15 @@ reversing three of its Non-goals and one Tier 2 bullet above:
 
 Still true from the base spec: no `deploy/central/` change, the OTel dot-naming convention, and
 the Tier 2 byte/duration/ttfb counters as designed.
+
+## Amendment, 2026-11-25: the Ping failure ratio replaces the Ping outcomes bars
+
+The central Cache dashboard no longer draws `llm_keepalive_pings_total` by `outcome` as bars.
+Almost every ping is `ok`, so the bars showed one series and no split. The **Ping failure ratio**
+stat takes their place:
+
+- The numerator is the pings with `outcome` `failed` or `timeout` over the selected range.
+- The denominator is the sent pings: `ok`, `failed` and `timeout`.
+- A `skipped` ping was not sent, and a ping with no `outcome` (a build before 2026-11-20) has an
+  unknown outcome. Neither is in the ratio.
+- A fleet whose pings all succeed reads 0 %. No ping in the range reads no data.

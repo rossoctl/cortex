@@ -192,7 +192,7 @@ class PromtoolTestInStepTest(unittest.TestCase):
         with open(PROMTOOL_TEST) as f:
             tested = f.read()
         for _, title, e in exprs():
-            if title in ("Pings that paid", "Estimated ping cost"):
+            if title in ("Pings that paid", "Estimated ping cost", "Ping failure ratio"):
                 self.assertIn(filled(e), tested, title)
 
 
@@ -254,11 +254,18 @@ class LegendTest(unittest.TestCase):
         for title, label in (
             ("Misses by cause", "cause"),
             ("Miss cost by cause (USD, selected range)", "cause"),
-            ("Ping outcomes", "outcome"),
         ):
             p = next(p for p in cache["panels"] if p["title"] == title)
             self.assertIn(f'"{label}", "unattributed", "{label}", ""', p["targets"][0]["expr"], title)
 
+
+class PingFailureRatioTest(unittest.TestCase):
+    def test_skipped_and_unattributed_pings_are_not_in_the_ratio(self):
+        p = next(p for p in g.cache()["panels"] if p["title"] == "Ping failure ratio")
+        e = p["targets"][0]["expr"]
+        self.assertNotIn("skipped", e)
+        self.assertIn('outcome=~"failed|timeout"', e)
+        self.assertIn('outcome=~"ok|failed|timeout"', e)
 
 class DescriptionTest(unittest.TestCase):
     def test_estimated_ping_cost_names_both_meanings(self):

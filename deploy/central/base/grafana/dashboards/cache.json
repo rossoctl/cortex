@@ -227,9 +227,9 @@
     },
     {
       "id": 4,
-      "type": "timeseries",
-      "title": "Ping outcomes",
-      "description": "Pings, by outcome. A timeout is a ping that ran to its 60 s limit; it is booked at its projected cost (#754). A skipped ping leaves no row, so it does not show. unattributed is an older cortex build, which did not label the outcome. Each bar is the count in that bar's time span. The span grows with the dashboard range and is at least 5 minutes.",
+      "type": "stat",
+      "title": "Ping failure ratio",
+      "description": "Share of the sent pings that failed or timed out over the selected range. A failed or timed-out ping does not keep the cache warm, and a timeout is still booked at its projected cost (#754). A skipped ping was not sent, and an unattributed ping (an older cortex build) has no outcome, so neither is in the ratio. No data means no ping was sent in the range.",
       "datasource": {
         "type": "prometheus",
         "uid": "central-prom"
@@ -242,96 +242,38 @@
       },
       "targets": [
         {
-          "expr": "label_replace(sum by (outcome)((increase(llm_keepalive_pings_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval] anchored) and last_over_time(llm_keepalive_pings_total{proxy=~\"$proxy\", machine=~\"$machine\"}[30d] offset $__interval)) or (increase(llm_keepalive_pings_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval] anchored) >= last_over_time(llm_keepalive_pings_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval])) or last_over_time(llm_keepalive_pings_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval])), \"outcome\", \"unattributed\", \"outcome\", \"\")",
-          "legendFormat": "{{outcome}}",
+          "expr": "(sum((increase(llm_keepalive_pings_total{proxy=~\"$proxy\", machine=~\"$machine\",outcome=~\"failed|timeout\"}[$__range]) and last_over_time(llm_keepalive_pings_total{proxy=~\"$proxy\", machine=~\"$machine\",outcome=~\"failed|timeout\"}[30d] offset $__range)) or (increase(llm_keepalive_pings_total{proxy=~\"$proxy\", machine=~\"$machine\",outcome=~\"failed|timeout\"}[$__range]) >= last_over_time(llm_keepalive_pings_total{proxy=~\"$proxy\", machine=~\"$machine\",outcome=~\"failed|timeout\"}[$__range])) or last_over_time(llm_keepalive_pings_total{proxy=~\"$proxy\", machine=~\"$machine\",outcome=~\"failed|timeout\"}[$__range])) or sum((increase(llm_keepalive_pings_total{proxy=~\"$proxy\", machine=~\"$machine\",outcome=~\"ok|failed|timeout\"}[$__range]) and last_over_time(llm_keepalive_pings_total{proxy=~\"$proxy\", machine=~\"$machine\",outcome=~\"ok|failed|timeout\"}[30d] offset $__range)) or (increase(llm_keepalive_pings_total{proxy=~\"$proxy\", machine=~\"$machine\",outcome=~\"ok|failed|timeout\"}[$__range]) >= last_over_time(llm_keepalive_pings_total{proxy=~\"$proxy\", machine=~\"$machine\",outcome=~\"ok|failed|timeout\"}[$__range])) or last_over_time(llm_keepalive_pings_total{proxy=~\"$proxy\", machine=~\"$machine\",outcome=~\"ok|failed|timeout\"}[$__range])) * 0) / ((sum((increase(llm_keepalive_pings_total{proxy=~\"$proxy\", machine=~\"$machine\",outcome=~\"ok|failed|timeout\"}[$__range]) and last_over_time(llm_keepalive_pings_total{proxy=~\"$proxy\", machine=~\"$machine\",outcome=~\"ok|failed|timeout\"}[30d] offset $__range)) or (increase(llm_keepalive_pings_total{proxy=~\"$proxy\", machine=~\"$machine\",outcome=~\"ok|failed|timeout\"}[$__range]) >= last_over_time(llm_keepalive_pings_total{proxy=~\"$proxy\", machine=~\"$machine\",outcome=~\"ok|failed|timeout\"}[$__range])) or last_over_time(llm_keepalive_pings_total{proxy=~\"$proxy\", machine=~\"$machine\",outcome=~\"ok|failed|timeout\"}[$__range]))) > 0)",
           "refId": "A",
+          "instant": true,
           "datasource": {
             "type": "prometheus",
             "uid": "central-prom"
-          },
-          "interval": "5m"
+          }
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
-          "custom": {
-            "stacking": {
-              "mode": "normal"
-            },
-            "drawStyle": "bars",
-            "fillOpacity": 80,
-            "lineWidth": 0,
-            "barAlignment": -1
+          "unit": "percentunit",
+          "noValue": "no data",
+          "decimals": 1,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#F2495C"
           }
         },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "ok"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "#73BF69"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "skipped"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "#5794F2"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "failed"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "#F2495C"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "timeout"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "#FF9830"
-                }
-              }
-            ]
-          }
-        ]
+        "overrides": []
       },
       "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom"
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value",
+        "text": {
+          "valueSize": 56
         }
       }
     },
