@@ -139,6 +139,37 @@ func TestPlanContextGuru(t *testing.T) {
 			names:  []string{"inference-parser", "mcp-parser", "a2a-parser", "context-guru"},
 			remove: []string{"Bash", "mcp__gh__issue"}, preset: "xhigh",
 		},
+		{
+			name: "20 engine with no preset", note: "has no preset",
+			src: cgDoc("      - name: context-guru\n        config:\n          engine:\n            components: {}\n" + tpBashGh),
+		},
+		{
+			name: "21 engine with its own pipeline", note: "its own pipeline",
+			src: cgDoc("      - name: context-guru\n        config:\n          engine:\n            preset: xhigh\n            pipeline: [toolfilter]\n" + tpBashGh),
+		},
+		{
+			name:     "22 flow-style plugin list",
+			src:      "mode: proxy-sidecar\npipeline:\n  outbound:\n    plugins: [inference-parser, tool-prune]\n",
+			errorHas: "pipeline.outbound.plugins is written in flow style",
+		},
+		{
+			name: "23 flow-style context-guru entry", errorHas: "the context-guru entry is written in flow style",
+			src: cgDoc("      - {name: context-guru}\n" + tpBashGh),
+		},
+		{
+			name: "24 flow-style context-guru config", errorHas: "context-guru config is written in flow style",
+			src: cgDoc("      - name: context-guru\n        config: {engine: {preset: xhigh}}\n" + tpBashGh),
+		},
+		{
+			name: "25 flow-style toolfilter", errorHas: "context-guru config.engine.components.toolfilter is written in flow style",
+			src: cgDoc("      - name: context-guru\n        config:\n          engine:\n            preset: xhigh\n" +
+				"            components:\n              toolfilter: {remove: [Read]}\n" + tpBashGh),
+		},
+		{
+			name: "26 flow remove on two lines", errorHas: "spans more than one line",
+			src: cgDoc("      - name: context-guru\n        config:\n          engine:\n            preset: xhigh\n" +
+				"            components:\n              toolfilter:\n                remove: [Read,\n                  Grep]\n" + tpBashGh),
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -194,6 +225,39 @@ func TestPlanContextGuru(t *testing.T) {
 				t.Errorf("second plan: err %v, changed:\n%s", err, again)
 			}
 		})
+	}
+}
+
+// TestContextGuruVerifyRefuses gives rule 4 one bad candidate per check.
+func TestContextGuruVerifyRefuses(t *testing.T) {
+	withRemove := cgDoc("      - name: context-guru\n        config:\n          engine:\n            preset: xhigh\n" +
+		"            components:\n              toolfilter:\n                remove: [Bash]\n")
+	cases := []struct {
+		name, src string
+		moved     []string
+		errorHas  string
+	}{
+		{name: "no context-guru entry", src: cgDoc(""), errorHas: "has no context-guru entry"},
+		{name: "body reader after context-guru", src: cgDoc(cgPlain + "      - name: ibac\n"),
+			errorHas: "the body reader ibac comes after context-guru"},
+		{name: "moved name missing", src: withRemove, moved: []string{"Bash", "mcp__gh__issue"},
+			errorHas: `does not hold "mcp__gh__issue"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, loaded, err := loadCandidate(tc.src)
+			if err != nil || !loaded {
+				t.Fatalf("fixture does not load (err %v)", err)
+			}
+			if err := contextGuruVerify(tc.moved)(cfg); err == nil || !strings.Contains(err.Error(), tc.errorHas) {
+				t.Fatalf("verify err = %v, want it to contain %q", err, tc.errorHas)
+			}
+		})
+	}
+	// The same candidate with every moved name passes, so each refusal above is its own check.
+	cfg, _, _ := loadCandidate(withRemove)
+	if err := contextGuruVerify([]string{"Bash"})(cfg); err != nil {
+		t.Fatalf("good candidate: %v", err)
 	}
 }
 
