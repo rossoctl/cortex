@@ -106,7 +106,13 @@ The accountant thread follows from it:
 
 The keep-alive keeper does not use prefix continuity. It keys a thread by the agent header only (see **Threads** under keep-alive above). The thread state is in memory, one tracker per plugin instance. A config hot-reload drops it.
 
-The engine also reads each thread's last billed input (`Ctx.PrevBilledInputThread`). `OnFinish` writes it under the thread `OnRequest` resolved, for every thread. The session figure (`Ctx.PrevBilledInput`) stays main-agent only.
+After each response, `OnFinish` runs context-guru's `lifecycle.Finish`, with the session and thread that the engine used on the request. It does these steps:
+
+1. It releases a `cache_aware_summarizer` summary that the turn deferred. Without this step, the summary waits for the thread's next request or a fallback timer.
+2. It runs the warm sweep's question, if the turn registered one.
+3. If the response has usage, it keeps the billed input (fresh + cache read + cache write) under the session and under the thread.
+
+The summarizer's size trigger reads only the thread's figure (`Ctx.PrevBilledInputThread`). Before this change Cortex wrote only the session figure, so the trigger declined on every turn and the summarizer never fired (#2130).
 
 ## Where its own model calls go
 

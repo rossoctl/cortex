@@ -67,9 +67,11 @@ func accountingThread(res thread.Result) (id, parent string, ok bool) {
 	return res.ID, parent, true
 }
 
-// cgThread holds, on pctx, the engine thread OnRequest resolved, so OnFinish records the billed
-// input under the thread the engine read it from (apply.Opts.ThreadOf's host contract).
-type cgThread struct{ id string }
+// cgThread holds, on pctx, the engine session key (Trace.Session) and thread (Trace.Thread.ID)
+// of this request, so OnFinish (finishEngine) writes under the pair the engine read from
+// (apply.Opts.ThreadOf's host contract). id is thread.Primary when the engine returned before it
+// resolved a thread.
+type cgThread struct{ session, id string }
 
 // cgThreadStateKey is this plugin's key for cgThread (see pipeline.SetState).
 const cgThreadStateKey = "context-guru-thread"

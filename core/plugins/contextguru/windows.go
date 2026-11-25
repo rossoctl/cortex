@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rossoctl/context-guru/apply"
+	"github.com/rossoctl/context-guru/lifecycle"
 	"github.com/rossoctl/context-guru/models"
 	"github.com/rossoctl/context-guru/models/litellm"
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -97,40 +97,45 @@ func (p *ContextGuru) windowFor(ctx context.Context, pctx *pipeline.Context) (wi
 	return w, ex
 }
 
-// recordBilled stores the provider-billed input of a finished request, which the next request
-// reads as Ctx.PrevBilledInput. Without it a fraction trigger has nothing to compare against
-// and declines on every turn. Billed input is fresh + cache read + cache write: the ruler a
-// context window is stated in.
+// finishEngine runs context-guru's steps after a response (lifecycle.Finish), with the session and
+// thread the engine used on this request's OnRequest (cgThread). The engine reads every one of
+// them back under that pair (apply.Opts.ThreadOf's host contract), so OnFinish must write them
+// under it too:
 //
-// The session figure records only a successful main-agent request. A subagent shares the session
-// id but carries its own, much smaller transcript, and recording it would understate the main
-// thread's fill.
+//   - It releases a cache-aware summary that the turn deferred
+//     (offload.ResolveDeferredCacheAwareSummary). This plugin sets Ctx.PrefixAsk on Anthropic, and
+//     without this call such a summary waits for the thread's next request or a fallback timer.
+//     The caller runs stashSent first, because the summary's side call reads this turn's stashed
+//     body.
+//   - It runs the warm sweep's question, if the trigger registered one (offload.ResolveWarmQuestion).
+//   - When the response has usage, it keeps the billed input for the next turn, under the session
+//     and under the thread. The size trigger reads only the thread's figure
+//     (Ctx.PrevBilledInputThread, Trigger.FracResolvable). Without it the trigger declines on
+//     every turn, and cache_aware_summarizer never fires (#2130). Billed input is fresh + cache
+//     read + cache write: the ruler a context window is stated in.
 //
-// The per-thread figure (Ctx.PrevBilledInputThread) is recorded for every thread, subagents
-// included, under the thread the engine resolved on this request's OnRequest (cgThread): the
-// engine reads it under that thread, so the write must use the same one.
-func (p *ContextGuru) recordBilled(pctx *pipeline.Context, sid string) {
+// A request the engine did not run on (no cgThread) has nothing to finish.
+func (p *ContextGuru) finishEngine(pctx *pipeline.Context) {
+	th := pipeline.GetState[cgThread](pctx, cgThreadStateKey)
+	if th == nil {
+		return
+	}
+	var billed int64
+	cacheRead := 0
 	inf := pctx.Extensions.Inference
-	if inf == nil || pctx.StatusCode >= 400 {
-		return
+	if inf != nil {
+		billed = int64(inf.InputTokens) + int64(inf.CacheReadTokens) + int64(inf.CacheWriteTokens)
+		cacheRead = inf.CacheReadTokens
 	}
-	billed := int64(inf.InputTokens) + int64(inf.CacheReadTokens) + int64(inf.CacheWriteTokens)
-	if billed <= 0 {
-		return
-	}
-	// The key the pipeline derived on the request (Trace.Session), not one re-derived here: the
-	// engine scopes and validates the id, and the two must match for the next request to read it.
-	key, ok := p.cgSessions.get(sid)
-	if !ok {
-		return
-	}
-	if th := pipeline.GetState[cgThread](pctx, cgThreadStateKey); th != nil {
-		apply.RecordBilledInputThread(p.store, key, th.id, billed)
-	}
-	if isSubagent(pctx) {
-		return
-	}
-	apply.RecordBilledInput(p.store, key, billed)
+	lifecycle.Finish(lifecycle.Fin{
+		Store:     p.store,
+		Session:   th.session,
+		ThreadID:  th.id,
+		UsageOK:   inf != nil && pctx.StatusCode < 400 && billed > 0,
+		Billed:    billed,
+		Forwarded: pctx.StatusCode >= 200 && pctx.StatusCode < 300,
+		CacheRead: cacheRead,
+	})
 }
 
 // sessionKeysCap and sessionKeysTrimTo bound sessionKeys the way core/accounting bounds its

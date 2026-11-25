@@ -566,13 +566,13 @@ func TestOneCallersRefusedKeyDoesNotStopAnotherCallersPings(t *testing.T) {
 	}
 }
 
-// panicStore is an engine store whose Put panics: recordBilled's write is the first thing
-// OnFinish does before Record, so this stands in for any panic on that path.
+// panicStore is an engine store whose Put panics: finishEngine's billed-input write comes before
+// Record in OnFinish, so this stands in for any panic on that path.
 type panicStore struct{ cgstore.Store }
 
 func (panicStore) Put(string, []byte) { panic("panicStore.Put") }
 
-// A panic in OnFinish before Record (here recordBilled, on a store that panics) is
+// A panic in OnFinish before Record (here finishEngine, on a store that panics) is
 // recovered by the pipeline's dispatchFinish; the request's arrival must still be departed, or the
 // thread reads as in flight until a restart and is never pinged again.
 func TestAPanicInOnFinishStillDeparts(t *testing.T) {
@@ -584,8 +584,8 @@ func TestAPanicInOnFinishStillDeparts(t *testing.T) {
 	if n := p.keeper.Stats().Live; n != 1 {
 		t.Fatalf("setup: %d live entries, want 1", n)
 	}
-	p.cgSessions.set(sessionID(a), "engine-key") // so recordBilled reaches the store
-	p.store = panicStore{p.store}                // and its write panics
+	pipeline.SetState(a, cgThreadStateKey, &cgThread{session: "engine-key"}) // so finishEngine reaches the store
+	p.store = panicStore{p.store}                                            // and its write panics
 	func() {
 		defer func() {
 			if recover() == nil {

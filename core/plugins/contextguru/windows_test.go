@@ -48,40 +48,45 @@ func TestWindowFor_NoModelNoWindow(t *testing.T) {
 	}
 }
 
-// billedFor runs one request and its finish through the plugin and returns what the engine's
-// store holds for the session afterwards.
-func billedFor(t *testing.T, fin *pipeline.Context) (string, bool) {
+// billedFor runs one request and its finish through the plugin, on one pctx as the pipeline does,
+// and returns what the engine's store holds afterwards: the session figure and the thread figure.
+// The request's usage is finishedPctx's, with status and role as given.
+func billedFor(t *testing.T, status int, role pipeline.AgentRole, cacheWrite int) (session, thread string, ok bool) {
 	t.Helper()
 	p := configured(t, `{`+offline+`}}`)
-	invokeReq(p, modelPctx("claude-sonnet-5"))
-	key, ok := p.cgSessions.get("s1")
-	if !ok {
-		t.Fatal("OnRequest did not record the engine's session key")
+	pctx := modelPctx("claude-sonnet-5")
+	invokeReq(p, pctx)
+	th := pipeline.GetState[cgThread](pctx, cgThreadStateKey)
+	if th == nil {
+		t.Fatal("OnRequest did not record the engine's session and thread")
 	}
-	p.OnFinish(context.Background(), fin)
-	b, ok := p.store.Get(cgstore.BilledPrefix + key)
-	return string(b), ok
+	fin := finishedPctx(status, role)
+	pctx.StatusCode, pctx.Headers, pctx.StartedAt = fin.StatusCode, fin.Headers, fin.StartedAt
+	pctx.Extensions.Inference = fin.Extensions.Inference
+	pctx.Extensions.Inference.CacheWriteTokens = cacheWrite
+	p.OnFinish(context.Background(), pctx)
+	s, sok := p.store.Get(cgstore.BilledPrefix + th.session)
+	tb, tok := p.store.Get(cgstore.BilledThreadPrefix + th.session) // the primary thread's key is the session
+	if sok != tok {
+		t.Fatalf("session figure present=%v but thread figure present=%v: lifecycle.Finish writes both", sok, tok)
+	}
+	return string(s), string(tb), sok
 }
 
-// The next request's Ctx.PrevBilledInput is read from this key, so a fraction trigger can compare
-// the session's fill against the window. Billed input is fresh + cache read + cache write.
+// The next request's Ctx.PrevBilledInputThread is read from the thread key, so the size trigger
+// can compare the thread's fill against the window (#2130: without it the summarizer never
+// fires). Billed input is fresh + cache read + cache write.
 func TestOnFinish_RecordsBilledInput(t *testing.T) {
-	fin := finishedPctx(200, pipeline.AgentRoleMain)
-	fin.Extensions.Inference.CacheWriteTokens = 1_000
-	got, ok := billedFor(t, fin)
-	if !ok || got != "49003" {
-		t.Fatalf("billed input: got %q (present=%v), want 49003", got, ok)
+	session, thread, ok := billedFor(t, 200, pipeline.AgentRoleMain, 1_000)
+	if !ok || session != "49003" || thread != "49003" {
+		t.Fatalf("billed input: session %q, thread %q (present=%v), want 49003 for both", session, thread, ok)
 	}
 }
 
-func TestOnFinish_SkipsSubagentAndFailedRequests(t *testing.T) {
-	for name, fin := range map[string]*pipeline.Context{
-		"subagent": finishedPctx(200, pipeline.AgentRoleSubagent),
-		"failed":   finishedPctx(500, pipeline.AgentRoleMain),
-	} {
-		if got, ok := billedFor(t, fin); ok {
-			t.Errorf("%s: recorded billed input %q, want nothing", name, got)
-		}
+// A failed request has no usage worth keeping, so the previous turn's figure stays.
+func TestOnFinish_SkipsAFailedRequest(t *testing.T) {
+	if session, _, ok := billedFor(t, 500, pipeline.AgentRoleMain, 0); ok {
+		t.Errorf("failed request: recorded billed input %q, want nothing", session)
 	}
 }
 

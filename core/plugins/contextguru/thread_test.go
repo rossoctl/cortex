@@ -1,7 +1,10 @@
 package contextguru
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -101,8 +104,8 @@ func TestAccountingThread(t *testing.T) {
 }
 
 // OnFinish records the per-thread billed input under the thread OnRequest resolved, so the
-// engine reads it back on that thread's next request. The session figure stays main-agent only.
-func TestRecordBilled_WritesTheResolvedThread(t *testing.T) {
+// engine reads it back on that thread's next request (Ctx.PrevBilledInputThread).
+func TestFinishEngine_WritesTheResolvedThread(t *testing.T) {
 	p := configured(t, `{}`)
 	pctx := inferencePctx("/v1/messages", threadBody(t, "write a five word title for this chat"))
 	invokeReq(p, inferencePctx("/v1/messages", threadBody(t, "fix the failing test in parser.go")))
@@ -112,7 +115,7 @@ func TestRecordBilled_WritesTheResolvedThread(t *testing.T) {
 	}
 	pctx.StatusCode = 200
 	pctx.Extensions.Inference = &pipeline.InferenceExtension{InputTokens: 100, CacheReadTokens: 900}
-	p.recordBilled(pctx, "s1")
+	p.finishEngine(pctx)
 
 	key, _ := p.cgSessions.get("s1")
 	b, found := p.store.Get(cgstore.BilledThreadPrefix + thread.Key(key, id))
@@ -136,5 +139,67 @@ func TestOnRequest_AThreadThatContinuesThePrimaryHasParentMain(t *testing.T) {
 	acct, parent, set := fork.AccountingThread()
 	if !set || acct != id || parent != "main" {
 		t.Fatalf("accounting thread = (%q, %q, %v), want (%q, \"main\", true)", acct, parent, set, id)
+	}
+}
+
+// gatesOf runs one request through OnRequest with a DEBUG logger and returns the gates the
+// engine's cache_aware_summarizer reported on it (apply's logDecisions line).
+func gatesOf(t *testing.T, p *ContextGuru, pctx *pipeline.Context) string {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prev)
+	invokeReq(p, pctx)
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(line, "component=cache_aware_summarizer") {
+			return line
+		}
+	}
+	t.Fatalf("no decision line for cache_aware_summarizer in:\n%s", buf.String())
+	return ""
+}
+
+// #2130 gap 1: the summarizer's size gate needs the thread's billed input from the previous turn
+// (Ctx.PrevBilledInputThread). OnFinish writes it, so on the next turn the gate can resolve the
+// fill against the window. Without OnFinish, the gate stays closed with "window_not_exact".
+func TestOnFinish_OpensTheSummarizerSizeGateOnTheNextTurn(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		finish     bool
+		wantClosed bool
+	}{
+		{"no finish: the gate cannot resolve the fill", false, true},
+		{"finish: the gate resolves the fill", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := configured(t, `{`+offline+`, "windows": {"claude-sonnet-5": 100000}}}`)
+			// A long history, so the summarizer has a span to summarize and reaches its size gate.
+			var turns []string
+			for i := range 30 {
+				turns = append(turns, strconv.Itoa(i)+": "+strings.Repeat("the parser drops the last token when the input ends without a newline. ", 20))
+			}
+			turn1 := inferencePctx("/v1/messages", threadBody(t, turns[:29]...))
+			turn1.Extensions.Inference = &pipeline.InferenceExtension{Model: "claude-sonnet-5"}
+			gatesOf(t, p, turn1)
+			if tc.finish {
+				fin := finishedPctx(200, pipeline.AgentRoleMain)
+				turn1.StatusCode, turn1.Headers, turn1.StartedAt = fin.StatusCode, fin.Headers, fin.StartedAt
+				turn1.Extensions.Inference = fin.Extensions.Inference
+				turn1.Extensions.Inference.InputTokens = 95_000 - turn1.Extensions.Inference.CacheReadTokens
+				p.OnFinish(t.Context(), turn1)
+			}
+			turn2 := inferencePctx("/v1/messages", threadBody(t, turns...))
+			turn2.Extensions.Inference = &pipeline.InferenceExtension{Model: "claude-sonnet-5"}
+			line := gatesOf(t, p, turn2)
+			if closed := strings.Contains(line, "window_not_exact"); closed != tc.wantClosed {
+				t.Fatalf("window_not_exact on turn 2 = %v, want %v\n%s", closed, tc.wantClosed, line)
+			}
+			// 95,000 of a 100,000 window is past the shipped 0.9 fraction: with the fill known, the
+			// size gate opens too, and the summarizer goes on to its model (none in this test).
+			if !tc.wantClosed && strings.Contains(line, "below_request_trigger") {
+				t.Fatalf("turn 2 is 95%% full but the size gate stayed closed:\n%s", line)
+			}
+		})
 	}
 }

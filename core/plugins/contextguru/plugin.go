@@ -305,7 +305,8 @@ type ContextGuru struct {
 	// windows resolves a model's context window; see windows.go.
 	windows models.Resolver
 	// cgSessions maps a Cortex session id to the session key the engine derived for it
-	// (apply.Trace.Session), so OnFinish records billed input under the key OnRequest reads.
+	// (apply.Trace.Session), so stashSent stores the forwarded body under the key the prefix ask
+	// reads. finishEngine reads the key from this request's own cgThread instead.
 	// One entry per session, overwritten on each request, bounded by sessionKeysCap.
 	cgSessions sessionKeys
 	// threads is the engine's thread resolver (thread.go's threadOf), one per plugin instance
@@ -729,8 +730,8 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 	if res.Trace.Session != "" {
 		p.cgSessions.set(sid, res.Trace.Session)
 	}
-	if res.Trace.ThreadResolved {
-		pipeline.SetState(pctx, cgThreadStateKey, &cgThread{id: res.Trace.Thread.ID})
+	if res.Trace.Session != "" {
+		pipeline.SetState(pctx, cgThreadStateKey, &cgThread{session: res.Trace.Session, id: res.Trace.Thread.ID})
 	}
 	out, changed, ops := reportResult(pctx, res)
 	if changed && len(out) > 0 {
@@ -877,7 +878,7 @@ func (p *ContextGuru) OnFinish(_ context.Context, pctx *pipeline.Context) {
 	sid := sessionID(pctx)
 	arrived := pipeline.GetState[kaArrived](pctx, kaArrivedStateKey)
 	// Depart this request's arrival on every path that does not reach Record — the early returns
-	// below, and a panic in recordBilled, stashSent or recordFor, which the pipeline's
+	// below, and a panic in stashSent, finishEngine or recordFor, which the pipeline's
 	// dispatchFinish recovers (without this the arrival would stay open until a restart). Not unconditional:
 	// Record departs for itself, and a second Depart would release a CONCURRENT request's count
 	// on the same thread. `recorded` is set immediately before Record.
@@ -901,8 +902,8 @@ func (p *ContextGuru) OnFinish(_ context.Context, pctx *pipeline.Context) {
 		return
 	}
 	if sid != "" {
-		p.recordBilled(pctx, sid)
 		p.stashSent(pctx, sid)
+		p.finishEngine(pctx)
 	}
 	if p.keeper == nil || pipeline.GetState[kaShadow](pctx, kaShadowStateKey) != nil {
 		return
