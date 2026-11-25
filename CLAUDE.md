@@ -275,8 +275,8 @@ ping re-sends), both masked. The incoming-model holds (one per distinct host+cre
 session that uses it) also hold a masked credential, released on a timer at most
 `holdSweepInterval` (10m) past `incomingHoldTTL` (2h) idle, whether or not any later request
 arrives. The forwarded-body stash DOES hold content — the last body sent upstream, for up to 16
-sessions (main agent only) and 96 MiB total — with no time bound; it is evicted only when a new
-session's body needs the room (`sentStash`, oldest session first). The context-guru state DOES
+threads (main agent only) and 96 MiB total — with no time bound; it is evicted only when a new
+thread's body needs the room (`sentStash`, oldest first). The context-guru state DOES
 hold content (the summary checkpoint and other text the plugin made), and its rows stay 30 days
 after their last write. A keeper entry goes at `(max_pings + 1) × idle_seconds` on a 5-minute cache: 12 minutes with no
 particular wait, 16 waiting on a person, or 36 waiting on its own tool call, since the engine's

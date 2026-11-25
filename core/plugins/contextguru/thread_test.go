@@ -118,8 +118,7 @@ func TestFinishEngine_WritesTheResolvedThread(t *testing.T) {
 	pctx.Extensions.Inference = &pipeline.InferenceExtension{InputTokens: 100, CacheReadTokens: 900}
 	p.finishEngine(pctx)
 
-	key, _ := p.cgSessions.get("s1")
-	b, found := p.store.Get(cgstore.BilledThreadPrefix + thread.Key(key, id))
+	b, found := p.store.Get(cgstore.BilledThreadPrefix + thread.Key(engineKey(pctx), id))
 	if !found || string(b) != "1000" {
 		t.Fatalf("per-thread billed input = %q (found %v), want 1000", b, found)
 	}
@@ -295,4 +294,12 @@ func TestOnRequest_KeepsTheSentinelOnItsOwnCalls(t *testing.T) {
 	if pctx.Headers.Get(sentinelHeader) != p.sentinel {
 		t.Fatal("the plugin's own call lost its sentinel")
 	}
+}
+
+// engineKey is the engine's session key for pctx after OnRequest (cgThread), or "".
+func engineKey(pctx *pipeline.Context) string {
+	if th := pipeline.GetState[cgThread](pctx, cgThreadStateKey); th != nil {
+		return th.session
+	}
+	return ""
 }

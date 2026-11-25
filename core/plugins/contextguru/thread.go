@@ -40,8 +40,9 @@ func (p *ContextGuru) resolveThread(pctx *pipeline.Context, scope string, body [
 	}
 	agentID, ok := thread.HeaderAgentID(pctx.Subagent())
 	if !ok {
-		slog.Debug("context-guru thread header refused; using prefix continuity",
-			"session", pipeline.SanitizeLogValue(pctx.SessionID))
+		// No session attribute: it comes from a request header, and CodeQL's go/clear-text-logging
+		// fails the build on it. The fallback is visible without it.
+		slog.Debug("context-guru thread header refused; using prefix continuity")
 	}
 	// Tenant "": one process, one deployment (oneHourFirstFor passes "" to the keeper the same way).
 	res, err := p.threads.ResolveSession("", scope, agentID, body, agentall.IsClientCompaction(pctx.Headers, body))

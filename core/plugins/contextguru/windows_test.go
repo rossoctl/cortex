@@ -2,9 +2,7 @@ package contextguru
 
 import (
 	"context"
-	"fmt"
 	"testing"
-	"time"
 
 	"github.com/rossoctl/cortex/core/pipeline"
 
@@ -87,28 +85,6 @@ func TestOnFinish_RecordsBilledInput(t *testing.T) {
 func TestOnFinish_SkipsAFailedRequest(t *testing.T) {
 	if session, _, ok := billedFor(t, 500, pipeline.AgentRoleMain, 0); ok {
 		t.Errorf("failed request: recorded billed input %q, want nothing", session)
-	}
-}
-
-// cgSessions holds one entry per session for the life of the process; past sessionKeysCap the
-// sessions seen longest ago are dropped down to sessionKeysTrimTo, and the newest survive.
-func TestSessionKeysIsBounded(t *testing.T) {
-	var s sessionKeys
-	at := time.Unix(1_700_000_000, 0)
-	s.now = func() time.Time { return at }
-	for i := 0; i <= sessionKeysCap; i++ {
-		at = at.Add(time.Second)
-		s.set(fmt.Sprintf("s%d", i), fmt.Sprintf("k%d", i))
-	}
-	if n := s.len(); n != sessionKeysTrimTo {
-		t.Fatalf("sessionKeys holds %d after crossing the cap, want %d", n, sessionKeysTrimTo)
-	}
-	if _, ok := s.get("s0"); ok {
-		t.Error("the oldest session survived the trim")
-	}
-	newest := fmt.Sprintf("s%d", sessionKeysCap)
-	if k, ok := s.get(newest); !ok || k != fmt.Sprintf("k%d", sessionKeysCap) {
-		t.Errorf("the newest session = %q, %v; want kept", k, ok)
 	}
 }
 

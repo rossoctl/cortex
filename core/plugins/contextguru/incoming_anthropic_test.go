@@ -17,12 +17,17 @@ import (
 	"github.com/rossoctl/context-guru/apply"
 	"github.com/rossoctl/context-guru/cheapmodel"
 	cgcomponents "github.com/rossoctl/context-guru/components"
+	"github.com/rossoctl/context-guru/thread"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
+// agentTools is a tools array as an agent's turn declares it.
+const agentTools = `"tools":[{"name":"Read","description":"read a file","input_schema":{"type":"object"}}]`
+
 // anthropicPctx is a Claude Code style request to host, with a credential.
 func anthropicPctx(host string, role pipeline.AgentRole) *pipeline.Context {
-	p := inferencePctx("/v1/messages", []byte(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}]}`))
+	// An agent's turn declares tools; stashSent stashes only such a request.
+	p := inferencePctx("/v1/messages", []byte(`{"model":"claude-sonnet-5",`+agentTools+`,"messages":[{"role":"user","content":"hi"}]}`))
 	p.Host = host
 	p.Headers = http.Header{"X-Api-Key": {"sk-caller"}}
 	p.Extensions.Inference = &pipeline.InferenceExtension{Model: "claude-sonnet-5", AgentRole: role}
@@ -190,8 +195,7 @@ func TestOnFinishStashesOnlySuccessfulMainRequests(t *testing.T) {
 		invokeReq(p, pctx)
 		pctx.StatusCode = tc.status
 		p.OnFinish(context.Background(), pctx)
-		k, _ := p.cgSessions.get("s1")
-		if got := p.stash.get(k) != nil; got != tc.want {
+		if got := p.stash.get(engineKey(pctx)) != nil; got != tc.want {
 			t.Errorf("%s: stashed=%v, want %v", name, got, tc.want)
 		}
 	}
@@ -208,9 +212,9 @@ func TestOnFinishStashesOnlySuccessfulMainRequests(t *testing.T) {
 func TestStashedBodyIsNotMixedUpBetweenOverlappingRequestsOnOneSession(t *testing.T) {
 	p := configured(t, `{`+offline+`}}`)
 	pctxA := anthropicPctx("gw", pipeline.AgentRoleMain)
-	pctxA.Body = []byte(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"A-received"}]}`)
+	pctxA.Body = []byte(`{"model":"claude-sonnet-5",` + agentTools + `,"messages":[{"role":"user","content":"A-received"}]}`)
 	pctxB := anthropicPctx("gw", pipeline.AgentRoleMain)
-	pctxB.Body = []byte(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"B-received"}]}`)
+	pctxB.Body = []byte(`{"model":"claude-sonnet-5",` + agentTools + `,"messages":[{"role":"user","content":"B-received"}]}`)
 
 	// B (the one-shot) starts first; A (the main turn) starts on the same session id before B
 	// finishes. With the old session-keyed map, A's Store here would overwrite B's entry.
@@ -221,9 +225,9 @@ func TestStashedBodyIsNotMixedUpBetweenOverlappingRequestsOnOneSession(t *testin
 	pctxB.StatusCode = 200
 	p.OnFinish(context.Background(), pctxB)
 
-	key, ok := p.cgSessions.get("s1")
-	if !ok {
-		t.Fatal("no engine session key for s1")
+	key := engineKey(pctxB)
+	if key == "" {
+		t.Fatal("no engine session key for B")
 	}
 	p.stash.mu.Lock()
 	entry, ok := p.stash.m[key]
@@ -283,9 +287,8 @@ func TestStashSentSkipsARedirectedRequest(t *testing.T) {
 	pctx.StatusCode = 200
 	p.OnFinish(context.Background(), pctx)
 
-	key, _ := p.cgSessions.get("s1")
 	p.stash.mu.Lock()
-	_, stashed := p.stash.m[key]
+	_, stashed := p.stash.m[engineKey(pctx)]
 	p.stash.mu.Unlock()
 	if stashed {
 		t.Error("OnFinish stashed a redirected request's body")
@@ -427,5 +430,54 @@ func TestAnthropicIncomingRefusedCallReportsNothing(t *testing.T) {
 	_, _ = cli.Complete(context.Background(), "summarize this")
 	if ops := pctx.ReportedOps(); len(ops) != 0 {
 		t.Fatalf("reported ops = %+v, want none for a refused call", ops)
+	}
+}
+
+// The prefix-ask stash is keyed by thread (thread.Key(session, thread)), the key the engine asks
+// with once Opts.ThreadOf is set. The review case:
+//  1. The main conversation's turns are the primary thread, stashed under the session.
+//  2. A tool-less side request that extends the main prefix (a title) is a p: thread of its own.
+//     It is not stashed, so the main thread's entry is unchanged.
+//  3. A rewind (an earlier turn edited) moves the main conversation to a p: thread. Its turn is
+//     stashed under that thread's key, so the next prefix ask there finds it. (An edit of the
+//     last turn only stays on the primary thread.)
+func TestStashIsKeyedByThread(t *testing.T) {
+	p := configured(t, `{`+offline+`}}`)
+	send := func(body []byte) *pipeline.Context {
+		pctx := anthropicPctx("gw", pipeline.AgentRoleMain)
+		pctx.Body = body
+		invokeReq(p, pctx)
+		pctx.StatusCode = 200
+		p.OnFinish(context.Background(), pctx)
+		return pctx
+	}
+	long := strings.Repeat("the parser drops the last token when the input ends without a newline. ", 40)
+	history := []string{"fix the parser", long, "now run the tests", long + " again", "and lint", long + " lint"}
+	send(withTools(t, threadBody(t, history[:2]...)))
+	main := send(withTools(t, threadBody(t, history...)))
+	session := engineKey(main)
+	mainBody := p.stash.get(session)
+	if mainBody == nil {
+		t.Fatal("step 1: the main thread's turn was not stashed under the session")
+	}
+
+	side := send(threadBody(t, append(history, "write a five word title for this chat")...))
+	if id, _ := requestThread(side); !strings.HasPrefix(id.ID, "p:") {
+		t.Fatalf("step 2: the side request is on thread %q, want a p: thread", id.ID)
+	}
+	if got := p.stash.get(session); !bytes.Equal(got, mainBody) {
+		t.Fatal("step 2: the side request replaced the main thread's stash")
+	}
+	if sideTh, _ := requestThread(side); p.stash.get(thread.Key(session, sideTh.ID)) != nil {
+		t.Fatal("step 2: the tool-less side request took a stash slot of its own")
+	}
+
+	rewind := send(withTools(t, threadBody(t, history[0], history[1], "run only the parser tests", history[3])))
+	th, _ := requestThread(rewind)
+	if !strings.HasPrefix(th.ID, "p:") {
+		t.Fatalf("step 3: the rewind is on thread %q, want a p: thread", th.ID)
+	}
+	if p.stash.get(thread.Key(session, th.ID)) == nil {
+		t.Fatalf("step 3: nothing stashed under the rewind's thread %q: its prefix ask would find nothing", th.ID)
 	}
 }

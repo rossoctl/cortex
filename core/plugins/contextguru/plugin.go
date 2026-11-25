@@ -304,12 +304,7 @@ type ContextGuru struct {
 
 	// windows resolves a model's context window; see windows.go.
 	windows models.Resolver
-	// cgSessions maps a Cortex session id to the session key the engine derived for it
-	// (apply.Trace.Session), so stashSent stores the forwarded body under the key the prefix ask
-	// reads. finishEngine reads the key from this request's own cgThread instead.
-	// One entry per session, overwritten on each request, bounded by sessionKeysCap.
-	cgSessions sessionKeys
-	// threads is the engine's thread resolver (thread.go's threadOf), one per plugin instance
+	// threads is the engine's thread resolver (thread.go's resolveThread), one per plugin instance
 	// because it holds each session's threads. Set by Configure.
 	threads *thread.Tracker
 
@@ -735,7 +730,6 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 		ThreadOf:        threadOfFor(pctx),
 	})
 	if res.Trace.Session != "" {
-		p.cgSessions.set(sid, res.Trace.Session)
 		th, _ := requestThread(pctx)
 		pipeline.SetState(pctx, cgThreadStateKey, &cgThread{session: res.Trace.Session, id: th.ID})
 		offload.ClearStaleKeepAliveCandidate(thread.Key(res.Trace.Session, th.ID), startedAt)
@@ -909,7 +903,7 @@ func (p *ContextGuru) OnFinish(_ context.Context, pctx *pipeline.Context) {
 		return
 	}
 	if sid != "" {
-		p.stashSent(pctx, sid)
+		p.stashSent(pctx)
 		p.finishEngine(pctx)
 	}
 	if p.keeper == nil || pipeline.GetState[kaShadow](pctx, kaShadowStateKey) != nil {

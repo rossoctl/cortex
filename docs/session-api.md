@@ -448,9 +448,9 @@ host+credential pair, shared across every session that uses it — so it is not 
 session an erase could target. A hold is released, on a timer, at most `holdSweepInterval`
 (10m) past `incomingHoldTTL` (2h) idle, whether or not a later request arrives; until released
 it can still make a billed call on that credential. The forwarded-body stash (`sentStash`) DOES
-hold content: the last body the plugin sent upstream, for up to 16 sessions (main agent only)
-and 96 MiB total. It has no time bound — an erased session's entry is evicted only when a
-newer session's body needs the room, oldest session first — so stop the proxy to clear it for
+hold content: the last body the plugin sent upstream, for up to 16 threads (main agent only)
+and 96 MiB total. It has no time bound — an erased session's entries are evicted only when a
+newer thread's body needs the room, oldest first — so stop the proxy to clear it for
 certain. This applies to both `DELETE` routes.
 
 **The context-guru plugin's session state is not cleared either, and it holds content.**
