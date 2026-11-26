@@ -107,6 +107,15 @@ class NetTest(unittest.TestCase):
         p = [p for p in g.fleet()["panels"] if p["title"] == "NET SAVED"][0]
         self.assertEqual(p["targets"][0]["expr"], g.net())
 
+    def test_net_by_component_sorts_by_value_in_grafana(self):
+        # Grafana does not keep the series order Prometheus returns, so sort_desc() in the query
+        # does not sort the bars. The panel must sort them itself: one row per series
+        # (seriesToRows), then rows by value (sortBy).
+        p = [p for p in g.savings()["panels"] if p["title"] == "Net by component (USD, selected range)"][0]
+        self.assertEqual([t["id"] for t in p["transformations"]], ["reduce", "sortBy"])
+        self.assertEqual(p["options"]["reduceOptions"]["fields"], r"/^Last \*$/")
+        self.assertTrue(p["transformations"][1]["options"]["sort"][0]["desc"])
+
 
 def matches(selector, labels):
     """Whether a series with labels (which holds __name__) matches selector, a string of
