@@ -57,8 +57,9 @@ type Extras struct {
 	Compaction *event.CompactionRecord
 	// Withheld is the W6.5 gate the request's Result failed (accountant.Withhold), or "". With one,
 	// Host.Savings books no saving, no UnattributedBreakUSD and no InteractionUSD (the sink books no
-	// interaction either): the figures come from a list of
-	// operations the library says is wrong, or from an op it did not price. Spends stay: each is
+	// interaction either): the figures come from a list of operations the library says is wrong,
+	// from an op it did not price, or from ops that saved more than the request had (the size
+	// bound). docs/pricing.md#withheld-savings lists all seven reasons. Spends stay: each is
 	// priced from its own model call, not from the Result's attribution.
 	Withheld string
 }

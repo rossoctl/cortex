@@ -736,9 +736,17 @@ the reason, in `savings_withheld` and in the `reason` label of
 | reason | the gate that failed |
 |---|---|
 | `check_sum`, `check_unique_change`, `check_spans`, `check_other` | a fatal accountant check (`CheckFailure.Fatal`). The list of operations or their attribution is wrong. For example, two operators claim the same removal, and the figure would count it twice. A plugin that changes the body and reports no op (today `evolve`, `inference-router`, `script` and `cpex`) makes the `sum` check fail for that section. If no op claims that section, the request is not withheld: the other operators' savings stay. If an op of another operator claims the same section, `check_sum` withholds every saving on the request |
-| `unpriced` | the accountant did not price an operation, or a cache effect has a kind the library does not know. `penalty_unknown` is the exception: the figure is booked and marked `estimated` |
+| `unpriced` | the accountant did not price an operation, or a cache effect has a kind the library does not know. `penalty_unknown` is the exception: the figure is booked and marked `estimated` (see below) |
 | `size_unknown` | an operation saved tokens, but the prompt size before the change is unknown |
 | `implausible_size` | the operations saved more tokens than the client's body had, plus the tokens they caused (an operation can remove what an earlier one inserted). Cortex estimates the body's size from the billed prompt, scaled by the two bodies' sizes in bytes |
+
+**`penalty_unknown` is booked, as an estimate.** The accountant sets it when it priced every
+operation but could not rule out a cache break, for example on a thread's first request, which
+has no history. Cortex keeps such a saving in `avoided[]` and in every total, and marks it
+`estimated` (accountant design §6.4). The context-guru proxy does not: it holds the figure in
+`EstimatedSavedUSD`, outside every total (accountant `docs/cortex-wiring.md` W6.5, gate 7). So on
+such a request the two hosts' totals differ, and only the `estimated` mark tells a reader that
+the Cortex figure is not measured.
 
 A withheld request keeps its `cost_usd` and its `spends[]`, because each spend is priced from
 its own model call. Its `avoided[]` is empty, and its `unattributed_break_usd` and `interaction_usd` are 0.
