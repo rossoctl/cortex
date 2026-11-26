@@ -151,3 +151,20 @@ func TestHasSpend(t *testing.T) {
 		t.Error("SpendPriced(nil) = true")
 	}
 }
+
+// The interaction (the tokens no operator owns on a rescued request) is in the net and on the
+// saved line, as the accountant metrics count it (rossoctl/cortex#2139).
+func TestNetMicros_AddsTheInteraction(t *testing.T) {
+	c := usage.Counts{AvoidedMicros: 100_000, PenaltyMicros: 10_000, KeepAliveMicros: 20_000, InteractionMicros: 40_000}
+	if got := NetMicros(c); got != 110_000 {
+		t.Errorf("NetMicros = %d, want 110000", got)
+	}
+	want := []Line{{Label: "saved", Figure: "$0.10   penalty $0.01   keep-alive $0.02   interaction $0.04   net $0.11"}}
+	if got := AccountantLines(usage.Counts{AvoidedMicros: 100_000, PenaltyMicros: 10_000, KeepAliveMicros: 20_000,
+		InteractionMicros: 40_000}, ""); !reflect.DeepEqual(got[:1], want) {
+		t.Errorf("AccountantLines = %+v, want %+v first", got, want)
+	}
+	if got := NetMicros(usage.Counts{AvoidedMicros: 10_000, InteractionMicros: -30_000}); got != -20_000 {
+		t.Errorf("NetMicros with a negative interaction = %d, want -20000", got)
+	}
+}

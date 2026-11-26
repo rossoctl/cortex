@@ -78,7 +78,9 @@ knowing by name:
   counts include such a resumed session.
 - **`avoidedMicros`** and **`penaltyMicros`** — what the session's context
   operators saved and what they caused, priced by the accountant, basis `usd`
-  only. Net saved is the difference and may be negative. Beside them, absent at
+  only. `interactionMicros` is the value of the tokens no operator owns on the
+  session's rescued requests (signed). Net saved is `avoidedMicros −
+  penaltyMicros + interactionMicros` and may be negative. Beside them, absent at
   zero like every figure here: `avoidedUnits`, `penaltyUnits` and
   `avoidedApiEquivalentMicros` for savings on a subscription login (usage-limit
   milli-units, and their API-equivalent dollars, which are not money),

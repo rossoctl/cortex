@@ -159,6 +159,7 @@ func TestEventJSONTagsArePinned_EveryField(t *testing.T) {
 		Units:                1.5,
 		Estimated:            true,
 		UnattributedBreakUSD: 0.003,
+		InteractionUSD:       0.0041,
 		Thread:               "main",
 		Spends: []SpendRecord{{
 			ChangeID: "s:1", Operator: "context-guru.extract_llm", Thread: "main", Model: "m", Host: "h",
@@ -179,7 +180,7 @@ func TestEventJSONTagsArePinned_EveryField(t *testing.T) {
 		`"avoided":[{"component":"tool-prune",` +
 		`"tokensAvoided":1200,"usd":0.01,"provenance":"configured","penaltyUsd":0.002,` +
 		`"operator":"tool-prune","opsVersion":1,"basis":"subscriptionEquivalent","units":120,` +
-		`"penaltyUnits":4.5}],"purpose":"keep-alive","basis":"subscriptionEquivalent","units":1.5,"estimated":true,"unattributed_break_usd":0.003,"thread":"main",` +
+		`"penaltyUnits":4.5}],"purpose":"keep-alive","basis":"subscriptionEquivalent","units":1.5,"estimated":true,"unattributed_break_usd":0.003,"interaction_usd":0.0041,"thread":"main",` +
 		`"spends":[{"changeId":"s:1","operator":"context-guru.extract_llm","thread":"main","model":"m",` +
 		`"host":"h","input":8000,"cacheWrite5m":1,"cacheWrite1h":2,"cacheRead":3,"output":1000,` +
 		`"usd":0.04,"basis":"usd","units":7,"estimated":true,"projected":true,"refused":true}],` +
@@ -251,7 +252,7 @@ func TestTotalAvoidedMicros_ReadsWhatTheProducerActuallyWrites(t *testing.T) {
 // process.
 func TestEventWireCoversEveryField(t *testing.T) {
 	// Keep in step with the marshal in TestEventJSONTagsArePinned_EveryField.
-	const pinned = 25
+	const pinned = 26
 	if got := reflect.TypeOf(Event{}).NumField(); got != pinned {
 		t.Fatalf("Event has %d fields, %d are pinned on the wire.\n"+
 			"Add the new field to TestEventJSONTagsArePinned_EveryField's marshal AND its "+
@@ -754,5 +755,18 @@ func TestEvent_CompactionWire(t *testing.T) {
 	}
 	if !strings.Contains(string(b), `"compaction":{"trigger":"unknown","ended":[]}`) {
 		t.Errorf("record = %s, want the compaction record with ended []", b)
+	}
+}
+
+// The interaction is money on its own figure, signed, and in no operator's AvoidedMicros
+// (rossoctl/cortex#2139).
+func TestFigures_InteractionIsSignedAndApart(t *testing.T) {
+	ev := Event{InteractionUSD: 0.0041, Avoided: []Saving{{Basis: BasisUSD, USD: 0.01}}}
+	got := ev.Figures()
+	if got.InteractionMicros != 4_100 || got.AvoidedMicros != 10_000 {
+		t.Errorf("InteractionMicros = %d, AvoidedMicros = %d, want 4100 and 10000", got.InteractionMicros, got.AvoidedMicros)
+	}
+	if got := (Event{InteractionUSD: -0.002}).Figures(); got.InteractionMicros != -2_000 || got.IsZero() {
+		t.Errorf("a negative interaction = %d, want -2000 and a figure", got.InteractionMicros)
 	}
 }

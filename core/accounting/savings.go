@@ -34,6 +34,15 @@ type Extras struct {
 	// (accountant.USDFigure.UnownedReRateUSD). That is rare: the ops that moved the prompt size own
 	// the re-rate, so an op that pushes a prompt over a price line pays it.
 	UnattributedBreakUSD float64
+	// InteractionUSD is the net value of the tokens no operation owns on a rescued request:
+	// Result.Interaction minus Result.InteractionCaused, priced (design §6.2). A keep-alive ping kept
+	// the cache warm and an operator changed the body, so the client body would have written these
+	// tokens cold and the forwarded body read them. Positive saves. Signed. It belongs to no
+	// operator's saving, so it is in no Saving: it is counted in the session total only (W7.1's
+	// Event.InteractionUSD). The accountant metrics sink books the same figure as
+	// llm.savings.interaction.usd (rossoctl/cortex#2139). Set on basis "usd" only, the one basis the
+	// metrics price: a subscription request has no figure here, as it has none there.
+	InteractionUSD float64
 	// Thread is the accountant thread of the request. Savings leaves it empty: a Result does not
 	// name its thread. Host.Savings fills it, here and on each Spends entry.
 	Thread string
@@ -124,6 +133,9 @@ func Savings(res accountant.Result, price func(model, host string, tt accountant
 // the bill difference. One no applied op owns goes to Extras.UnattributedBreakUSD. Only an applied
 // (non-DryRun) op owns a ChangeID: a dry run changed nothing upstream, so it caused nothing.
 //
+// Result.Interaction minus Result.InteractionCaused, priced, goes to Extras.InteractionUSD, on
+// basis "usd" only. It is in no Saving: no operator owns it (design §6.2).
+//
 // The saving list is in the order each (operator, projected) pair first appears in res.Ops;
 // KeeperOperator, which has no op on the request, comes last.
 func SavingsBilled(res accountant.Result, price func(model, host string, tt accountant.TierTokens) (float64, bool),
@@ -144,10 +156,13 @@ type figured struct {
 	effects []float64
 	// unownedReRate is the re-rate no op owns, because no op has a net saving: positive saves.
 	unownedReRate float64
+	// interaction is USDFigure.InteractionUSD: positive saves.
+	interaction float64
 }
 
 func newFigured(fig accountant.USDFigure) *figured {
-	f := &figured{saved: map[string]float64{}, caused: map[string]float64{}, unownedReRate: fig.UnownedReRateUSD}
+	f := &figured{saved: map[string]float64{}, caused: map[string]float64{}, unownedReRate: fig.UnownedReRateUSD,
+		interaction: fig.InteractionUSD}
 	for _, l := range fig.Lines {
 		if l.Kind == accountant.KindSpend {
 			continue
@@ -248,6 +263,16 @@ func savingsBilled(res accountant.Result, fig *figured, price func(model, host s
 			get(key{opName, false}).saving.PenaltyUSD += usd
 		}
 		ex.UnattributedBreakUSD -= fig.unownedReRate
+	}
+
+	// The interaction, at the one size Figure prices it at: the size without the ops. With no
+	// figure, every dollar is priced at one size, so the interaction is too.
+	if basis == BasisUSD {
+		if fig != nil {
+			ex.InteractionUSD = fig.interaction
+		} else if net := res.Interaction.Sub(res.InteractionCaused); !net.IsZero() {
+			ex.InteractionUSD, _ = price(reqModel, reqHost, net)
+		}
 	}
 
 	for i, ce := range res.CacheEffects {

@@ -11,21 +11,24 @@ import (
 // The accountant's figures beside the money totals (Cortex design §5.7a, §5.9), rendered once for
 // `agentop cost` and the TUI.
 //
-// Only AvoidedMicros, PenaltyMicros, PluginSpendMicros and KeepAliveMicros are money in the
+// Only AvoidedMicros, PenaltyMicros, InteractionMicros, PluginSpendMicros and KeepAliveMicros are money in the
 // window's unit. A subscription saving is in usage-limit units, with its API-equivalent dollars
 // beside it and labelled so; a figure whose billing mode is unknown is shown and never added; the
 // plugins' own model-call spend has its own line, and so does keep-alive spend, split by basis the
 // same way. Keep-alive spend is ALSO in the spend total (SpendMicros) and off every net saving of
 // its basis (NetMicros), because the keeper's rescue is in the saving.
 
-// NetMicros is saved minus penalty minus the keep-alive pings' spend: what the context operators
-// saved net of what they caused and of what keeping the caches warm cost. The keeper's rescue is
-// in AvoidedMicros, so its pings come off the same figure, or the keeper's saving would be
-// counted without its cost. Usd basis only, like every term. Not floored — a negative net means
-// they cost more than they saved.
+// NetMicros is saved minus penalty minus the keep-alive pings' spend, plus the interaction: what
+// the context operators saved net of what they caused and of what keeping the caches warm cost.
+// The keeper's rescue is in AvoidedMicros, so its pings come off the same figure, or the keeper's
+// saving would be counted without its cost. The interaction (usage.Counts.InteractionMicros) is
+// the value of the tokens no operator owns on a rescued request: in no operator's figure, but in
+// the net, as the accountant metrics count it (rossoctl/cortex#2139). Usd basis only, like every
+// term. Not floored — a negative net means they cost more than they saved.
 func NetMicros(c usage.Counts) int64 {
 	n, _ := event.AddSat(c.AvoidedMicros, -c.PenaltyMicros)
 	n, _ = event.AddSat(n, -c.KeepAliveMicros)
+	n, _ = event.AddSat(n, c.InteractionMicros)
 	return n
 }
 
@@ -77,10 +80,13 @@ type Line struct {
 // plugin model calls. Nil when there is none. unit is the window's money unit.
 func AccountantLines(c usage.Counts, unit string) []Line {
 	var out []Line
-	if c.AvoidedMicros != 0 || c.PenaltyMicros != 0 {
+	if c.AvoidedMicros != 0 || c.PenaltyMicros != 0 || c.InteractionMicros != 0 {
 		f := Signed(c.AvoidedMicros, unit) + "   penalty " + Signed(c.PenaltyMicros, unit)
 		if c.KeepAliveMicros != 0 {
 			f += "   keep-alive " + Signed(c.KeepAliveMicros, unit)
+		}
+		if c.InteractionMicros != 0 {
+			f += "   interaction " + Signed(c.InteractionMicros, unit)
 		}
 		out = append(out, Line{"saved", f + "   net " + Signed(NetMicros(c), unit)})
 	}

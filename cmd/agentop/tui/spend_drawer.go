@@ -1109,9 +1109,9 @@ func drawerFigures(r drawerRow) []stripFigure {
 	// NET OF THE PENALTY when the operators caused one (design §5.9): "net -$0.02" can be
 	// negative, and is not floored. The gross saving and the penalty go to the row's note, with
 	// the accountant's other figures (money.AccountantLines), so the column stays one figure.
-	if r.counts.AvoidedMicros != 0 || r.counts.PenaltyMicros != 0 {
+	if r.counts.AvoidedMicros != 0 || r.counts.PenaltyMicros != 0 || r.counts.InteractionMicros != 0 {
 		label, micros := "saved ", r.counts.AvoidedMicros
-		if r.counts.PenaltyMicros != 0 {
+		if r.counts.PenaltyMicros != 0 || r.counts.InteractionMicros != 0 {
 			label, micros = "net ", money.NetMicros(r.counts)
 		}
 		figure := money.Mixed
@@ -1123,7 +1123,7 @@ func drawerFigures(r drawerRow) []stripFigure {
 	if unitOK {
 		var extras []string
 		for _, l := range money.AccountantLines(r.counts, unit) {
-			if l.Label == "saved" && r.counts.PenaltyMicros == 0 {
+			if l.Label == "saved" && r.counts.PenaltyMicros == 0 && r.counts.InteractionMicros == 0 {
 				continue // the saved column already says it all
 			}
 			extras = append(extras, l.Label+" "+l.Figure)
