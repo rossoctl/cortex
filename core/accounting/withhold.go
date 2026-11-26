@@ -40,10 +40,11 @@ func penaltyUnknown(res accountant.Result) bool {
 
 // tokensBefore is Cortex's measure of the prompt size, in tokens, of the body the client sent,
 // the size accountant.Withhold bounds the saving by. The library cannot derive it (design §6.7).
-// It is the billed
-// prompt of the forwarded body, scaled by the two bodies' sizes in bytes. A forwarded body larger
-// than the client's (an operator that added bytes) gives the billed prompt itself, so the bound is
-// never tighter than what the provider billed. 0 when the size cannot be known.
+// It is the billed prompt of the body the provider bills (pctx.BilledBody, forwardedBytes —
+// the bytes sent, unless a plugin's hook gave a smaller stub-sized copy), scaled by the two
+// bodies' sizes in bytes. A forwarded body larger than the client's (an operator that added
+// bytes) gives the billed prompt itself, so the bound is never tighter than what the provider
+// billed. 0 when the size cannot be known.
 func tokensBefore(promptTotal, clientBytes, forwardedBytes int) int {
 	if promptTotal <= 0 || forwardedBytes <= 0 {
 		return 0

@@ -4,7 +4,7 @@ Compacts an agent's outbound LLM request context before forwarding,
 using the embedded context-guru engine. `OnResponse` is currently a
 pass-through; model-driven expand/restore is a later integration. The
 plugin also implements `OnFinish`, `Init`, and `Shutdown` for the
-keep-alive feature below. It ships in the `local`, `full` and
+keep-alive feature below, and `Resend` for tool deferral. It ships in the `local`, `full` and
 `fullcpex` build profiles (see `scripts/profile-tags`), because its
 engine pulls a large transitive dependency set and the `local`
 config enables it by default (preset `xhigh`). `lite`, `envoy` and
@@ -115,6 +115,40 @@ After each response, `OnFinish` runs context-guru's `lifecycle.Finish`, with the
 3. If the response has usage, it keeps the billed input (fresh + cache read + cache write) under the session and under the thread.
 
 The summarizer's size trigger reads only the thread's figure (`Ctx.PrevBilledInputThread`). Before this change Cortex wrote only the session figure, so the trigger declined on every turn and the summarizer never fired (#2130).
+
+## Tool deferral (`preset: ultrahigh`)
+
+`ultrahigh` is `xhigh` plus toolfilter's `defer: auto`. A deferred tool stays in the request with `defer_loading: true`. The provider bills no definition for it, and loads it through its own tool search when the model asks. The decision and the rewrite are context-guru's (`tooldefer.Flow`), so Cortex and `context-guru-proxy` defer the same tools. Before #2150, Cortex accepted `ultrahigh` but deferred nothing.
+
+**Where it runs.** All of these must be true:
+
+- The request is Anthropic Messages (`/v1/messages`).
+- The listener can send the original request again when the provider refuses the deferred one (`pipeline.Context.Resendable`). The forward proxy sets it, with no `hop`, and so does `transparentproxy`, which runs on the same `forwardproxy.Server` path. `reverseproxy` and `extproc` (Envoy) do not; there the plugin defers nothing and logs one WARN.
+- The plugin runs under `on_error: enforce`.
+- There is a session-state database (`stateDB` in the `context-guru configured` log line). Deferral keeps its record of each thread there, and its tool history and probe verdicts in `context-guru-tooldefer.db` beside it.
+
+**What decides a tool.** context-guru's rule. An MCP server is deferred whole, from the history of the user's last 3 sessions, and only when its tools weigh at least 200 tokens together. `toolfilter.always_defer` defers a tool without the history rule, and `toolfilter.keep` never defers it. A model is deferred only after a probe passes. The probe is one small request on the agent's own credential. It runs in the background on the first request that needs it, and only for a model that has a price in Cortex's rate table.
+
+**A custom `toolfilter` block turns deferral off.** A `components.toolfilter` block replaces the preset's whole `toolfilter` block, so it must repeat `defer: auto`:
+
+```yaml
+engine:
+  preset: ultrahigh
+  components:
+    toolfilter:
+      defer: auto              # without it, ultrahigh defers nothing
+      always_defer: [mcp__github]
+```
+
+`Configure` logs a WARN when the preset defers tools and the block turned deferral off.
+
+**When the provider refuses.** On a 400 or 422 to a deferred request, the plugin has the forward proxy send the request without deferral (`Resend`, reason `tool_defer_refused`). The client never sees that refusal: Claude Code would turn its tool search off for the session. If the original succeeds, the refusal was deferral's, so the plugin turns deferral off for that model until a restart. If the original is refused because its transcript names a tool that `tools` lacks, the plugin sends it once more with a deferred stub for that tool (`tool_defer_stub`).
+
+**What the accountant books.** The provider bills each deferred tool as a stub, not as the definition that was sent. So the plugin gives the accountant host that billed body (`pipeline.Context.SetBilledBody`, accountant R56), and reports the change as `context-guru.tooldefer` operations. A request sent again books no figure (`upstream_rounds=2`). A deferral that cannot be described as a stub books no figure (`deferral_unplaced`).
+
+**Not ported:** the `ENABLE_TOOL_SEARCH` opt-out (context-guru's `POST /tool-search`), the preset picker's probe ask (`POST /tool-defer/probe`), and the client-search mode for OpenAI wires.
+
+**A side effect, at every preset.** The plugin implements `pipeline.Resender` so it can retry a refused deferred request, but that makes it a `Resender` in every chain it runs in, whatever the preset. On a chain with this plugin, the forward proxy now reads up to 64 KiB of every non-2xx upstream answer before relaying it (`Resendable`'s own cost), even for a request `ultrahigh` never touches. This is unmeasurable for an ordinary error body, but a slow-streaming or open-ended error body is now held back until it ends or that limit is hit, where before it streamed straight through.
 
 ## Where its own model calls go
 

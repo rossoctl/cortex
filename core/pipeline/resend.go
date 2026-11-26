@@ -85,6 +85,17 @@ func resenderOf(plugin Plugin) (Resender, bool) {
 // request of its own on the timeline and must not pair with the first one's answer.
 func (c *Context) RenewRequestID() { c.requestID = newRequestID() }
 
+// SetResendable is listener-facing. A listener calls it before Run when it will ask the
+// Resenders after a refused answer of this request. Only the forward proxy does. A plugin
+// that changes a request in a way the provider may refuse, and that must then send the
+// original instead (context-guru's tool deferral), reads Resendable first: on a listener
+// that never resends, the client would see the refusal.
+func (c *Context) SetResendable() { c.resendable = true }
+
+// Resendable reports whether this request's listener asks the Resenders after a refused
+// answer. A Resender is still asked only under on_error: enforce (Resender).
+func (c *Context) Resendable() bool { return c.resendable }
+
 // MarkResend names why a Resender that returns true wants the request sent again. A
 // plugin that answers more than one kind of refusal reads ResendReasons to answer each
 // kind at most once per request.

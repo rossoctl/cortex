@@ -51,6 +51,7 @@ import (
 	"github.com/rossoctl/context-guru/models"
 	cgstore "github.com/rossoctl/context-guru/store"
 	"github.com/rossoctl/context-guru/thread"
+	"github.com/rossoctl/context-guru/tooldefer"
 	yaml "gopkg.in/yaml.v3"
 )
 
@@ -329,6 +330,12 @@ type ContextGuru struct {
 	// lateModelCalls counts model calls whose spend op was dropped because the call returned
 	// after its request was accounted (cgModel). Reported by Metrics.
 	lateModelCalls atomic.Int64
+
+	// deferOn says the engine's pipeline asks for tool deferral (toolfilter `defer: auto`, which
+	// the ultrahigh preset sets). Set by Configure. defer_ is the deferral state, acquired in Init
+	// and released in Shutdown; nil when deferral is off or has no file. See tooldefer.go.
+	deferOn bool
+	defer_  *deferHost
 }
 
 // Metrics implements pipeline.MetricsProvider.
@@ -434,6 +441,8 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 		return fmt.Errorf("context-guru build pipeline: %w", err)
 	}
 	p.pipe = pipe
+	p.deferOn, _, _ = tooldefer.PipeOn(pipe)
+	warnDeferConfig(cfg.Preset, p.deferOn)
 	// The database is opened here, before the store is built, so the state keys live a day in
 	// memory only when a database backs them, as in context-guru's own proxy: a session that
 	// returns later is loaded from the database. An explicit store.state_ttl_seconds wins.
@@ -633,6 +642,9 @@ func (p *ContextGuru) Init(context.Context) error {
 	if p.holds != nil {
 		p.holds.startSweep()
 	}
+	if p.defer_ == nil {
+		p.startDefer()
+	}
 	return nil
 }
 
@@ -737,7 +749,13 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 		pipeline.SetState(pctx, cgThreadStateKey, &cgThread{session: res.Trace.Session, id: th.ID})
 		offload.ClearStaleKeepAliveCandidate(thread.Key(res.Trace.Session, th.ID), startedAt)
 	}
-	out, changed, ops := reportResult(pctx, res)
+	// Tool deferral runs LAST, on the final tools array, as in the proxy: the names list must see
+	// the tools as they go upstream.
+	body, pre := p.deferTools(pctx, provider, api, sid, res.Body)
+	if !bytes.Equal(body, res.Body) {
+		res.Body, res.Changed = body, true
+	}
+	out, changed, ops := reportResult(pctx, res, pre)
 	if changed && len(out) > 0 {
 		// SetBody decides whether this write actually applies (true unless a non-observe
 		// writer ahead of this plugin already enforced its own bytes — pipeline/plugin-reference.md's
@@ -748,6 +766,10 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 		// observe) is a different, narrower case — see pipeline.Context.ReportOps's doc comment —
 		// and stampDryRun's OR leaves it untouched when it already applies.
 		applied := pctx.SetBody(out)
+		if !applied {
+			// The deferral this body carries did not go upstream, so the accountant reads what did.
+			pctx.SetBilledBody(nil)
+		}
 		stampDryRun(ops, !applied)
 		pctx.ReportOps(ops...)
 		// Per-request byte-level view (the engine's token-level view is logged by
@@ -792,7 +814,8 @@ func stampDryRun(ops []accountant.Operation, dryRun bool) {
 // ordering — and stamp DryRun from whether that write actually applied, not from whether the
 // engine merely computed it: reporting here, before SetBody, would price a shadow write (an
 // earlier enforced writer's bytes already in effect) as a real saving.
-func reportResult(pctx *pipeline.Context, res apply.Result) (out []byte, changed bool, ops []accountant.Operation) {
+// pre is the body tool deferral read, nil when deferral changed nothing (deferTools).
+func reportResult(pctx *pipeline.Context, res apply.Result, pre []byte) (out []byte, changed bool, ops []accountant.Operation) {
 	// A request whose agent Cortex names (pctx.Subagent) keeps core/accounting's rule, whatever
 	// thread the engine gave it. The two validate an agent id differently: model.SubagentHeader
 	// takes any printable value up to 128 bytes, and thread.HeaderAgentID only [A-Za-z0-9_.:@-].
@@ -815,7 +838,11 @@ func reportResult(pctx *pipeline.Context, res apply.Result) (out []byte, changed
 		// The tools and system changes apply makes report no op of their own; they are found
 		// by diffing this plugin's input against its output (envelope.go). pctx.Body is still
 		// the input here: the caller sets the output after this returns.
-		ops = append(ops, envelopeOps(pctx.Body, out)...)
+		if pre != nil {
+			ops = append(ops, deferOps(pctx, pctx.Body, pre, out)...)
+		} else {
+			ops = append(ops, envelopeOps(pctx.Body, out)...)
+		}
 	}
 	return out, changed, ops
 }
@@ -856,6 +883,13 @@ func (p *ContextGuru) Shutdown(context.Context) error {
 	if d := p.stateDisk.Swap(nil); d != nil {
 		_ = d.Close()
 	}
+	// The pointer stays: a request still draining on this instance reads it in OnFinish. Flow.Retry
+	// calls Prober.Forget, which persists through the file (Prober.Persist = hist.SaveVerdict) when
+	// this was the last user and release just closed it — that write then only logs (hist's own
+	// DEBUG), and the forgotten verdict does not survive a restart. The effect is small: the break
+	// Retry records is itself in-memory only and does not survive a restart either. Init acquires
+	// once, so this releases once.
+	p.defer_.release()
 	return nil
 }
 
@@ -914,6 +948,7 @@ func (p *ContextGuru) OnFinish(_ context.Context, pctx *pipeline.Context) {
 		p.stashSent(pctx)
 		p.finishEngine(pctx)
 	}
+	p.finishDefer(pctx)
 	if p.keeper == nil || pipeline.GetState[kaShadow](pctx, kaShadowStateKey) != nil {
 		return
 	}

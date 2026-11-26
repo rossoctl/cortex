@@ -25,8 +25,9 @@ import (
 // the attribution with context-guru: a declaration another plugin (tool-prune) removed before or
 // after it is not in this diff, so the two operators' ops never cover the same bytes.
 //
-// Not ported: the proxy's tooldefer re-attribution (envelopeOpsFor) and messageOps, both for edits
-// the proxy makes after its pipeline, which the plugin does not make.
+// Tool deferral's edits are reported by deferOps (tooldefer.go): its names list as a message op,
+// and its tools change read against the billed body, with the proxy's re-attribution
+// (accrec.EnvelopeOpsFor) ported as deferEnvelopeOps.
 //
 // The forms are the shared cases' (accountant test/cases):
 //   - a declaration the output added is a rewrite at its output index, SizeBefore 0;

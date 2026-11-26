@@ -267,9 +267,14 @@ type pending struct {
 	thread  threadBillingKey
 	tiered  bool
 	asked1h bool
-	// clientBytes and forwardedBytes are the sizes of the two bodies, for the size bound of
+	// clientBytes is the client's own body's size, and forwardedBytes the size of the body the
+	// provider bills (pctx.BilledBody) — the bytes actually sent when no plugin set that hook, a
+	// stub-sized copy when one did (context-guru's tool deferral). Both for the size bound of
 	// accountant.Withhold (tokensBefore).
 	clientBytes, forwardedBytes int
+	// unplaced is true when a plugin's billed-body hook could not describe its change to the
+	// library (pipeline.Context.BilledBody): Compute books no figure (deferral_unplaced).
+	unplaced bool
 
 	computeMu sync.Mutex
 	computed  bool
@@ -340,7 +345,10 @@ func (h *Host) RequestEnd(pctx *pipeline.Context) {
 	if len(client) == 0 {
 		return
 	}
-	forwarded := pctx.Body
+	// The body the provider bills, which the library must read (accountant R56). context-guru's
+	// tool deferral keeps each deferred definition in the bytes sent, and the provider bills none
+	// of it (pipeline.Context.SetBilledBody). Without a hook it is pctx.Body.
+	forwarded, unplaced := pctx.BilledBody(pctx.Body)
 	model := ""
 	ops := pctx.ReportedOps()
 	if inf := pctx.Extensions.Inference; inf != nil {
@@ -368,10 +376,10 @@ func (h *Host) RequestEnd(pctx *pipeline.Context) {
 	if h.metaHook != nil {
 		h.metaHook(meta)
 	}
-	p := &pending{done: make(chan struct{}), meta: meta, firstOnThread: !seen,
+	p := &pending{done: make(chan struct{}), meta: meta, firstOnThread: !seen, unplaced: unplaced,
 		clientBytes: len(client), forwardedBytes: len(forwarded)}
 	pipeline.SetState(pctx, pendingKey, p)
-	go h.end(p, format, meta, client, forwarded, ops, thread, facts.Classify(pctx.Path))
+	go h.end(p, format, meta, client, forwarded, pctx.Body, ops, thread, facts.Classify(pctx.Path))
 }
 
 // ThreadBilling returns the billing mode of the given thread's last request, for a keep-alive
@@ -465,7 +473,7 @@ func (h *Host) trimThreadBillingLocked() {
 // end opens and ends the record. A panic here, on a hostile body or a library bug, costs this
 // request's figure and nothing else: the request is already on its way, and an unrecovered panic
 // on this goroutine would end the process.
-func (h *Host) end(p *pending, format wire.Format, meta accountant.RequestMeta, client, forwarded []byte,
+func (h *Host) end(p *pending, format wire.Format, meta accountant.RequestMeta, client, forwarded, sent []byte,
 	ops []accountant.Operation, thread accountant.Thread, provider facts.Provider) {
 	defer close(p.done)
 	defer func() {
@@ -501,7 +509,8 @@ func (h *Host) end(p *pending, format wire.Format, meta accountant.RequestMeta, 
 		req.Add(op)
 	}
 	// The cache facts come from the bytes sent: the marks there are the ones the provider reads.
-	f := facts.For(provider, meta.Model, wire.AllMarksAsk1h(forwarded))
+	// forwarded is the billed copy (RequestEnd), so the marks are read from sent.
+	f := facts.For(provider, meta.Model, wire.AllMarksAsk1h(sent))
 	// The thread's last ping, if one was sent since its previous request (design §5.8). Kept
 	// until Compute prices this request, so a request that books nothing leaves them.
 	if pf, ok := h.peekPing(meta.Session, thread.ID); ok {
@@ -566,7 +575,8 @@ func (h *Host) compute(pctx *pipeline.Context) (accountant.Result, bool) {
 	}
 	p.computed = true
 
-	in := SkipInput{Status: pctx.StatusCode, Rounds: 1 + len(pctx.ResendReasons()), SessionID: pctx.SessionID}
+	in := SkipInput{Status: pctx.StatusCode, Rounds: 1 + len(pctx.ResendReasons()), SessionID: pctx.SessionID,
+		UnplacedDeferral: p.unplaced}
 	if why := SkipReason(in); why != "" {
 		h.release(p, why)
 		return accountant.Result{}, false
