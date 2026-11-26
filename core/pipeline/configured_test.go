@@ -257,3 +257,47 @@ func TestWrapConfigured_NonStreamingNotPromoted(t *testing.T) {
 		t.Fatal("wrapping a non-streaming plugin must not make it a StreamingResponder")
 	}
 }
+
+type fakeEraser struct {
+	fakePlugin
+	erased []string
+	all    int
+}
+
+func (f *fakeEraser) EraseSession(_ context.Context, id string) error {
+	f.erased = append(f.erased, id)
+	return nil
+}
+func (f *fakeEraser) EraseAllSessions(context.Context) error { f.all++; return nil }
+
+// The session API type-asserts SessionEraser on the plugins it holds, which are wrapped: the
+// wrapper must forward both calls, or a Configurable plugin keeps its data through an erase.
+func TestConfiguredPluginForwardsSessionEraser(t *testing.T) {
+	fake := &fakeEraser{fakePlugin: fakePlugin{name: "x"}}
+	e, ok := WrapConfigured(fake, nil).(SessionEraser)
+	if !ok {
+		t.Fatal("wrapper should implement SessionEraser")
+	}
+	if err := e.EraseSession(context.Background(), "s1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.EraseAllSessions(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.erased) != 1 || fake.erased[0] != "s1" || fake.all != 1 {
+		t.Fatalf("not forwarded: erased=%v all=%d", fake.erased, fake.all)
+	}
+}
+
+func TestConfiguredPluginEraseNoOpForNonEraser(t *testing.T) {
+	e, ok := WrapConfigured(&fakePlugin{name: "x"}, nil).(SessionEraser)
+	if !ok {
+		t.Fatal("wrapper always implements SessionEraser")
+	}
+	if err := e.EraseSession(context.Background(), "s1"); err != nil {
+		t.Fatalf("no-op EraseSession should return nil, got %v", err)
+	}
+	if err := e.EraseAllSessions(context.Background()); err != nil {
+		t.Fatalf("no-op EraseAllSessions should return nil, got %v", err)
+	}
+}

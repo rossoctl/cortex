@@ -1,12 +1,14 @@
 package sessionapi
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/rossoctl/cortex/core/listener/httpx"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // clearWait bounds how long an erase — DELETE /v1/sessions or DELETE /v1/sessions/{id} — waits
@@ -20,6 +22,34 @@ type clearResponse struct {
 	ArchivedSessions int    `json:"archivedSessions"`
 	Bytes            int64  `json:"bytes"`
 	ArchiveError     string `json:"archiveError,omitempty"`
+	// PluginErrors lists, as "<plugin>: <error>", each plugin that failed to erase its own data
+	// (pipeline.SessionEraser). The rest of the erase stands.
+	PluginErrors []string `json:"pluginErrors,omitempty"`
+}
+
+// erasePlugins calls erase on every plugin of the live pipelines that keeps session data of its
+// own (pipeline.SessionEraser), after the store and the archive are cleared, and returns the
+// failures. A plugin in both pipelines is called twice: an erase is idempotent. Every plugin is
+// called, whatever an earlier one returned.
+func (s *Server) erasePlugins(r *http.Request, erase func(context.Context, pipeline.SessionEraser) error) []string {
+	ctx, cancel := context.WithTimeout(r.Context(), clearWait)
+	defer cancel()
+	var failed []string
+	for _, h := range []*pipeline.Holder{s.inbound, s.outbound} {
+		if h == nil {
+			continue
+		}
+		for _, p := range h.Plugins() {
+			e, ok := p.(pipeline.SessionEraser)
+			if !ok {
+				continue
+			}
+			if err := erase(ctx, e); err != nil {
+				failed = append(failed, p.Name()+": "+err.Error())
+			}
+		}
+	}
+	return failed
 }
 
 // WithClearAllowed lets DELETE /v1/sessions clear every session and DELETE /v1/sessions/{id}
@@ -31,7 +61,8 @@ func WithClearAllowed(allowed bool) Option {
 }
 
 // handleClear answers DELETE /v1/sessions: every session goes from memory and, where the archive
-// runs, from disk. The cost ledger stays — it holds spend totals and no content.
+// runs, from disk, and each plugin that keeps session data of its own erases all of it
+// (pipeline.SessionEraser). The cost ledger stays — it holds spend totals and no content.
 //
 // THE FIRST REQUEST ON THIS API THAT CHANGES ANYTHING, and the API is unauthenticated, so what it
 // guards against is a browser: a page the user visits that targets the loopback port, directly
@@ -60,9 +91,15 @@ func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.timelines.clear()
+	body.PluginErrors = s.erasePlugins(r, func(ctx context.Context, e pipeline.SessionEraser) error {
+		return e.EraseAllSessions(ctx)
+	})
+	if len(body.PluginErrors) > 0 {
+		status = http.StatusInternalServerError
+	}
 	slog.Warn("sessionapi: cleared every session", "sessions", body.Sessions,
 		"archivedSessions", body.ArchivedSessions, "bytes", body.Bytes, "archiveError", body.ArchiveError,
-		"remote", r.RemoteAddr)
+		"pluginErrors", body.PluginErrors, "remote", r.RemoteAddr)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(body); err != nil {
@@ -82,9 +119,10 @@ func (s *Server) refuse(w http.ResponseWriter, reason, remote string) {
 }
 
 // handleDelete answers DELETE /v1/sessions/{id}: one session goes from memory and, where the
-// archive runs, from disk — a session only the archive holds too. Guarded exactly as handleClear
-// is, for the reasons given there, and the cost ledger stays here as well. 404 when neither half
-// held the id.
+// archive runs, from disk — a session only the archive holds too — and each plugin that keeps
+// session data of its own erases that session's (pipeline.SessionEraser). Guarded exactly as
+// handleClear is, for the reasons given there, and the cost ledger stays here as well. 404 when
+// neither the store nor the archive held the id; the plugins erase it even then.
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	if reason := s.clearRefusal(r); reason != "" {
 		s.refuse(w, reason, r.RemoteAddr)
@@ -105,6 +143,14 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.timelines.forget(id)
+	// The plugins are asked on every request, before the 404 check: a plugin's own file can hold a
+	// session that neither the store nor the archive holds (after a restart, with the archive off).
+	body.PluginErrors = s.erasePlugins(r, func(ctx context.Context, e pipeline.SessionEraser) error {
+		return e.EraseSession(ctx, id)
+	})
+	if len(body.PluginErrors) > 0 {
+		status = http.StatusInternalServerError
+	}
 	if status == http.StatusOK && body.Sessions == 0 && body.ArchivedSessions == 0 {
 		http.NotFound(w, r)
 		return
@@ -113,7 +159,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	// per session, and a WARN each would bury the log under one action.
 	slog.Info("sessionapi: erased a session", "session", id, "inMemory", body.Sessions == 1,
 		"archivedSessions", body.ArchivedSessions, "bytes", body.Bytes, "archiveError", body.ArchiveError,
-		"remote", r.RemoteAddr)
+		"pluginErrors", body.PluginErrors, "remote", r.RemoteAddr)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(body); err != nil {

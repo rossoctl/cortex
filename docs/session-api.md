@@ -403,10 +403,14 @@ curl -s 'localhost:9094/v1/sessions/<id>/search?q=retry%20budget'
 ## `DELETE /v1/sessions`
 
 Clears every session: the in-memory store, and the session archive where one
-runs. **The cost ledger is kept** — spend totals, no content. Answers
+runs. Each plugin that keeps session data of its own then erases all of it
+(`pipeline.SessionEraser`; today the context-guru plugin, see below). **The cost
+ledger is kept** — spend totals, no content. Answers
 `{sessions, archivedSessions, bytes}`; a failed disk half is a 500 adding
-`archiveError`, with memory cleared regardless. The store clears under its
-lock before the archive is waited on, for up to 10s.
+`archiveError`, with memory cleared regardless. A plugin that fails to erase is a
+500 adding `pluginErrors`, a list of `"<plugin>: <error>"`; the rest of the erase
+stands. The store clears under its lock before the archive is waited on, for up
+to 10s. The plugins are asked after that, with their own 10s bound.
 
 This is the one state-changing route pair on an unauthenticated API, so both
 are guarded against a browser: DELETE only (a cross-site DELETE needs a
@@ -420,49 +424,44 @@ the server must have been built with clearing allowed
 **The accountant's per-session state is not cleared** by either `DELETE` route.
 That is the Tracker state (in memory, and in `~/.cortex/accountant-state.json` on
 a local install), the billing mode of each thread's last request and any keep-alive
-ping facts not yet credited (both in `core/accounting.Host`), and the context-guru
-keeper's entries. The accountant's state holds session and thread ids, content
-hashes and a billing mode, never content. **A keeper entry does hold content:** the
-caller's credential and the thread's last request body, which is the whole
-forwarded conversation, both masked. A keeper entry is released at its hold
-deadline, if no request or reload releases it first:
-
-- on a thread with a 5-minute cache, `(max_pings + 1) × idle_seconds`: 12 minutes with no
-  particular wait, 16 waiting on a person, or 36 waiting on its own tool call, since the
-  engine's wait plan (on by default) raises max_pings for the wait (its background-wait count
-  never applies here, since Cortex gives it no open-task data);
-- on a thread billed at the 1-hour tier, the engine's 1-hour schedule: 118 minutes
-  at its defaults, and never more than 236 minutes.
-
-Until then it can still ping the erased session, which re-sends that conversation
-upstream, and that spend goes to the cost ledger, which the erase keeps anyway. The
-rest has no time bound while the process runs: the in-memory maps keep at most
+ping facts not yet credited (both in `core/accounting.Host`). The accountant's
+state holds session and thread ids, content hashes and a billing mode, never
+content. It has no time bound while the process runs: the in-memory maps keep at most
 10,000 threads and drop the oldest. The snapshot file, rewritten every 60s, holds
 what memory holds, except that it leaves out the threads seen longest ago once the
 file would pass 20 MiB. A snapshot older than 1h is not restored at startup, so a
 proxy stopped for more than an hour starts without it. This applies to both
 `DELETE` routes.
 
-**context-guru's incoming-model credential holds are not cleared either, and neither is its
-forwarded-body stash, which holds content.** A `model.source: incoming` component (on by
-default, preset `xhigh`) holds the Anthropic caller's credential, masked, one hold per distinct
-host+credential pair, shared across every session that uses it — so it is not keyed to a
-session an erase could target. A hold is released, on a timer, at most `holdSweepInterval`
-(10m) past `incomingHoldTTL` (2h) idle, whether or not a later request arrives; until released
-it can still make a billed call on that credential. The forwarded-body stash (`sentStash`) DOES
-hold content: the last body the plugin sent upstream, for up to 16 threads (main agent only)
-and 96 MiB total. It has no time bound — an erased session's entries are evicted only when a
-newer thread's body needs the room, oldest first — so stop the proxy to clear it for
-certain. This applies to both `DELETE` routes.
+**The context-guru plugin erases its own data** (#1962), in every instance still running,
+including one that a config reload left draining:
 
-**The context-guru plugin's session state is not cleared either, and it holds content.**
-Where the plugin runs, its state is kept in `~/.cortex/context-guru-state.db` on a local
-install (see [context-guru-plugin.md](context-guru-plugin.md)): the summary checkpoint and
-other text the plugin made from the conversation, plus counts and ids. Neither `DELETE` route
-touches it, so an erased session's summary stays in the file until its rows expire, 30 days
-after their last write. To remove it now, stop the proxy and delete the file
-(`agentop service stop`, then `rm ~/.cortex/context-guru-state.db*`); the plugin creates a new
-one at the next start. This applies to both `DELETE` routes.
+- **Its session state:** the summary checkpoint, the other text the plugin made from the
+  conversation, and the counts and ids. It goes from memory, from the writes not yet flushed,
+  and from `~/.cortex/context-guru-state.db` on a local install (see
+  [context-guru-plugin.md](context-guru-plugin.md)). A write that was waiting for the disk
+  cannot bring it back.
+- **Its rewind payloads** (the original tool outputs behind a marker) that no other session
+  also stashed, and the records of who stashed them.
+- **Its forwarded-body stash** (`sentStash`): the last body the plugin sent upstream.
+- **Its keep-alive entries:** the masked credential and the thread's last request body, which
+  a ping re-sends. So an erased session gets no more pings.
+
+What it keeps:
+
+- **The incoming-model credential holds.** A `model.source: incoming` component (on by
+  default, preset `xhigh`) holds the Anthropic caller's credential, masked, one hold per
+  distinct host+credential pair, shared across every session that uses it — so it is not keyed
+  to a session an erase could target. A hold is released, on a timer, at most
+  `holdSweepInterval` (10m) past `incomingHoldTTL` (2h) idle, whether or not a later request
+  arrives; until released it can still make a billed call on that credential.
+- **The thread tracker:** hashes and counts, no text.
+- **For one session only** (`DELETE /v1/sessions/{id}`): the engine's results that are keyed by
+  content, not by session (`extract_llm` rewrites, sweep marks). They cannot be told apart by
+  session. `DELETE /v1/sessions` removes them too.
+
+A request of the erased session that arrives during the erase is new traffic, and the plugin
+keeps what it writes after the erase, as the session store does.
 
 An erased session comes back on the next `agentop import` while its transcript
 is still on disk. It comes back as an imported session. The erase keeps a
@@ -475,9 +474,13 @@ This applies to both `DELETE` routes. See
 Erases one session: the store's entry and, where the archive runs, its files —
 a session only the archive holds too. The same four guards as
 `DELETE /v1/sessions` (pinned in `core/sessionapi/delete_test.go`) and the
-same answer shape, each count 0 or 1. **404** when neither half held the id;
-**500** with `archiveError` when the disk half failed (memory is erased
-regardless). The cost ledger, usage totals and inference-router pins are
+same answer shape, each count 0 or 1. Each plugin that keeps session data of
+its own erases that session's (see `DELETE /v1/sessions` for what the
+context-guru plugin removes and keeps). **404** when neither the store nor the
+archive held the id; the plugins erase it even then, because after a restart a
+plugin's file can hold a session that neither one holds. **500** with
+`archiveError` when the disk half failed, or with `pluginErrors` when a plugin
+failed (the rest is erased regardless). The cost ledger, usage totals and inference-router pins are
 kept. An agent still using the session brings it back with its next request.
 agentop's `x` drives it, one request per session for an agent-wide erase —
 see [`laptop-service.md`](laptop-service.md) for the user-facing story.

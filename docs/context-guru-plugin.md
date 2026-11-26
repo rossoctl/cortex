@@ -59,6 +59,9 @@ provider has cached stays the same.
 - How long: a key stays 24 hours in memory (`store.state_ttl_seconds` overrides this), and a
   row stays 30 days on disk after its last write. Writes are batched once a second, off the
   request path.
+- Erase: `DELETE /v1/sessions/{id}` removes the session's rows, and `DELETE /v1/sessions`
+  removes every row, together with what memory holds. See
+  [session-api.md](session-api.md#delete-v1sessions).
 - Fails open: with no usable file, the plugin logs one WARN and keeps the state in memory only,
   where a key keeps the engine's default lifetime (10000s), not 24 hours. With
   `store.enabled: false` there is no state and no file.
