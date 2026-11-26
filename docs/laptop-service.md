@@ -847,7 +847,8 @@ refuses the whole save until the restart.
 What is sent: the `llm.savings.*` counters (tokens saved and added by tier and component, their
 dollar value, cache effects, request and check counts); `llm.inference.tokens` / `cost_usd` /
 `estimated_cost_usd`, `llm.keepalive.pings` / `cost_usd` / `estimated_cost_usd` and
-`llm.cache.misses` / `miss_cost_usd`, each labelled with the model; the transport-level
+`llm.cache.misses` / `miss_cost_usd` and `llm.cache.ttl_downgrades` (requests that asked for the 1h cache tier
+and were billed at 5m), each labelled with the model; the transport-level
 `llm.inference.requests` / `duration_seconds` / `ttfb_seconds` / `added_seconds` /
 `request_bytes` / `response_bytes`, which count every request the listener handles, not only
 the ones the accountant priced; `llm.proxy.export_failures`; and `llm.proxy.info`: a gauge that

@@ -156,6 +156,10 @@ type threadBillingKey struct {
 type threadBillingEntry struct {
 	mode     accountant.BillingMode
 	lastSeen time.Time
+	// tierKnown is true once a priced request of the thread wrote to the cache. billed1h is
+	// whether the last such write was billed at the 1h tier (billedOneHour, #2136).
+	tierKnown bool
+	billed1h  bool
 }
 
 // New builds a Host. With a SnapshotPath it restores the saved Tracker state, when there is a
@@ -257,6 +261,12 @@ type pending struct {
 	// firstOnThread is true when RequestEnd had no earlier request of this (session, thread),
 	// for the cold_start cause of llm.cache.misses (missCause).
 	firstOnThread bool
+	// thread is the (session, thread) of the record, and tiered says its facts have an exact
+	// lifetime (Anthropic), so the billed tier applies to it. asked1h says the facts asked for
+	// the 1h tier. The record's goroutine sets them before it closes done (billedOneHour).
+	thread  threadBillingKey
+	tiered  bool
+	asked1h bool
 
 	computeMu sync.Mutex
 	computed  bool
@@ -384,13 +394,42 @@ func (h *Host) setThreadBilling(session, thread string, mode accountant.BillingM
 		h.threadBilling = map[threadBillingKey]threadBillingEntry{}
 	}
 	key := threadBillingKey{session: session, thread: thread}
-	_, seen = h.threadBilling[key]
-	h.threadBilling[key] = threadBillingEntry{
-		mode:     mode,
-		lastSeen: h.now(),
-	}
+	// The billed tier (tierKnown, billed1h) is the thread's, not this request's: it is kept.
+	e, seen := h.threadBilling[key]
+	e.mode, e.lastSeen = mode, h.now()
+	h.threadBilling[key] = e
 	h.trimThreadBillingLocked()
 	return seen
+}
+
+// billedOneHour reports whether the thread's cache entry is billed at the 1h tier, from the
+// usage of its response and the thread's last write (#2136). A gateway can bill a 1h ask as 5m,
+// and the request's facts hold only the ask.
+//
+//   - A response that wrote to the cache bills its tier on the tokens it wrote: 1h only when all
+//     of them are 1h. The thread remembers that tier.
+//   - A response that wrote nothing keeps the thread's last billed tier.
+//   - A thread with no write yet keeps asked1h, the tier the request asked for.
+//
+// This is context-guru's rule (accrec.BilledTTL, keepalive.BilledOneHour). A thread whose entry
+// was trimmed meets the asked tier again on its next read-only turn.
+func (h *Host) billedOneHour(key threadBillingKey, asked1h bool, cacheWrite, cacheWrite1h int) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	e, ok := h.threadBilling[key]
+	if cacheWrite > 0 {
+		oneHour := cacheWrite1h >= cacheWrite
+		// Only an entry RequestEnd made is updated: one trimmed since has no mode to keep.
+		if ok {
+			e.tierKnown, e.billed1h = true, oneHour
+			h.threadBilling[key] = e
+		}
+		return oneHour
+	}
+	if ok && e.tierKnown {
+		return e.billed1h
+	}
+	return asked1h
 }
 
 // trimThreadBillingLocked drops the (session, thread) pairs seen longest ago, down to
@@ -470,6 +509,10 @@ func (h *Host) end(p *pending, format wire.Format, meta accountant.RequestMeta, 
 	if h.factsHook != nil {
 		h.factsHook(f)
 	}
+	// What Compute needs to check the ask against the bill (billedOneHour, #2136).
+	p.thread = threadBillingKey{session: meta.Session, thread: thread.ID}
+	p.tiered = f.Lifetime == accountant.LifetimeExact
+	p.asked1h = p.tiered && f.TTL >= time.Hour
 	req.EndRequest(thread, fwdBody, fwdBPs, f)
 	h.dirty.Store(true)
 	if h.onEnd != nil {
@@ -547,6 +590,20 @@ func (h *Host) Compute(pctx *pipeline.Context) (accountant.Result, bool) {
 	if h.usageHook != nil {
 		h.usageHook(usage)
 	}
+	// THE BILLED TIER, NOT THE ASKED ONE. facts.For set the TTL from the marks before the
+	// response, so a 1h ask that a gateway billed as 5m still reads 1h. The library would then
+	// judge the next requests by a 1h entry (cortex-wiring.md W6.6, accountant#56). LowerTTL
+	// must run before Compute, and only for a downgrade the bill proves.
+	// billedOneHour runs for every exact-lifetime request, so the thread learns the tier of
+	// each write, also a write that asked 5m.
+	lowered := false
+	if p.tiered {
+		oneHour := h.billedOneHour(p.thread, p.asked1h, usage.CacheWrite, usage.CacheWrite1h)
+		if p.asked1h && !oneHour {
+			p.req.LowerTTL(5 * time.Minute)
+			lowered = true
+		}
+	}
 	p.result, p.ok = h.computeSafe(p.req, usage)
 	h.dirty.Store(true)
 	p.req = nil
@@ -561,6 +618,9 @@ func (h *Host) Compute(pctx *pipeline.Context) (accountant.Result, bool) {
 			endpoint = redirected
 		}
 		h.observe(p.meta, usage, inf.OutputTokens, p.result, endpoint, pricing.UsageFromInference(inf).PromptTotal(), p.firstOnThread)
+		if lowered {
+			h.countTTLDowngrade(p.meta.Model)
+		}
 	}
 	return p.result, p.ok
 }
