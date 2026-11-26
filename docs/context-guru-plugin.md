@@ -11,6 +11,8 @@ config enables it by default (preset `xhigh`). `lite`, `envoy` and
 `cpex` leave it out; a build with none of those tags needs
 `-tags include_plugin_contextguru` to link it.
 
+**Headers it removes:** the plugin removes every `x-context-guru-*` header from each outbound request before it goes upstream, on every path. These headers talk to context-guru (for example, `x-context-guru-request-kind: compaction`), and a provider must not see them. The plugin reads them first. Its own model calls and pings keep their `X-Context-Guru-LLM` sentinel.
+
 Inference request paths are fixed, not configurable: `/v1/chat/completions`, `/v1/completions`, `/v1/messages`, `/v1/responses` — the same routes `context-guru-proxy` itself hardcodes. A `/v1/responses` body (OpenAI Responses API: `instructions` + `input`) is parsed as that shape, not as Chat Completions.
 
 - `cheap_model` (object) — optional "cheap" LLM endpoint for model-backed components (summarize, extract:code); omitted means those degrade to deterministic/no-op.
@@ -27,7 +29,7 @@ Inference request paths are fixed, not configurable: `/v1/chat/completions`, `/v
 **The request's own model (`model.source: incoming`).** A component configured with `model.source: incoming` calls the model the agent itself is using, on the agent's own credential:
 
 - **OpenAI Chat Completions:** through `llmclient`, on the request's endpoint and `Authorization`.
-- **Anthropic Messages** (`/v1/messages`, Claude Code's traffic): through context-guru's `cheapmodel.Anthropic`, on the request's endpoint and credential (`x-api-key` or `Authorization`). The credential is held in memory, masked, one hold per credential, and released 2 hours after its last use (on a timer, not only on the next matching request), on a config reload, or at `Shutdown`. The request's own `Anthropic-Beta` oauth-* values (`tooldefer.AuthBetas`) are held too and sent on the call when `cheapmodel` set none: a Claude subscription (OAuth) token can need one to authenticate directly against `api.anthropic.com`, and without it the call 401s — failing open, but silently, since the summarizer then does nothing that turn. It is held, not borrowed, because `cache_aware_summarizer` commissions its call in the background and the request returns first. On Anthropic the summarizer asks one question appended to the previous turn's forwarded body, so the provider's prompt cache serves the whole transcript. The plugin keeps that body in memory for the last 16 sessions (main agent only, a 200 response only, at most 8 MiB per body and 96 MiB in total).
+- **Anthropic Messages** (`/v1/messages`, Claude Code's traffic): through context-guru's `cheapmodel.Anthropic`, on the request's endpoint and credential (`x-api-key` or `Authorization`). The credential is held in memory, masked, one hold per credential, and released 2 hours after its last use (on a timer, not only on the next matching request), on a config reload, or at `Shutdown`. The request's own `Anthropic-Beta` oauth-* values (`tooldefer.AuthBetas`) are held too and sent on the call when `cheapmodel` set none: a Claude subscription (OAuth) token can need one to authenticate directly against `api.anthropic.com`, and without it the call 401s — failing open, but silently, since the summarizer then does nothing that turn. It is held, not borrowed, because `cache_aware_summarizer` commissions its call in the background and the request returns first. On Anthropic the summarizer asks one question appended to the previous turn's forwarded body, so the provider's prompt cache serves the whole transcript. The plugin keeps that body in memory for the last 16 threads (main agent only, a request that declares tools, a 200 response only, at most 8 MiB per body and 96 MiB in total). It keys the body by thread, the key the summarizer asks with, so a main conversation that moved to a new thread (after a rewind) still finds its body.
 - **OpenAI Responses API:** none. A Responses request uses the `model` block, or the component degrades to deterministic.
 
 Each such call is reported to the request it was made for as a spend op (`pluginSpendMicros`). A call that returns after its request was accounted (the summarizer's background call can) is dropped and counted in the `late_model_calls_dropped` metric.
@@ -72,7 +74,7 @@ There used to be a plugin-level `keep_alive` block here (`enabled`, `idle_second
 
   **Upgrade note for clusters:** a cluster that already runs context-guru (for compaction, for example) gets keep-alive with no config change. From then on Cortex holds each tracked thread's credential and last request, masked, and sends billed pings on those credentials. `session-budget` counts the pings' tokens and calls where accounting is on (so a session can reach its limit sooner than before), `litellm-budget-track` does not count them, and off a local install they go through `HTTPS_PROXY`. To keep the old behaviour, set `engine.cache.strategy: none` before you upgrade. Every decision (whether to ping, how much, when to stop) stays inside the context-guru engine, not this plugin.
 
-  **Threads:** each thread of a session has its own cache entry, so the keeper tracks each one apart. A Claude Code subagent or agent-team teammate is its own thread, keyed by its `X-Claude-Code-Agent-Id`; every other request is the session's main thread. A request on one thread does not end another thread's idle span, and each ping is accounted on its own thread. A request marked as a subagent's (`cc_is_subagent=true`) that sends no agent id is not tracked, because nothing tells it apart from the session's other subagents.
+  **Threads:** each thread of a session has its own cache entry, so the keeper tracks each one apart. The keeper uses the plugin's own thread split ([Threads](#threads)): a named agent (a Claude Code subagent or agent-team teammate, a Bob child, a Codex or OpenCode subagent) is its own thread, and a session's other requests are split by prefix continuity. So a one-shot call (a title, a permission check) is its own entry, and it does not replace the main thread's last turn. The keeper does not ping a thread whose responses called no tool yet. A request on one thread does not end another thread's idle span, and each ping is accounted on its own thread. A request with no usable message list falls back to the agent header: a named agent is its own thread, and any other request is the main thread. Such a request marked as a subagent's (`cc_is_subagent=true`) that sends no agent id is not tracked, because nothing tells it apart from the session's other subagents.
 
   **Ordering:** `OnFinish` reads `pctx.Headers` after the whole outbound chain has run, so the credential a ping holds is whatever actually went upstream — this holds regardless of where `context-guru` sits relative to a token-exchange or credential-injection plugin. A short-lived exchanged token can still expire before the ping fires; the ping then gets a 4xx from the upstream, which stops keep-alive for that session.
 
@@ -89,6 +91,30 @@ There used to be a plugin-level `keep_alive` block here (`enabled`, `idle_second
   **Hot-reload:** every config hot-reload tears down and rebuilds the pipeline, which drops all keep-alive tracking state. During the drain window, the outgoing instance may still send one more ping for a session the new instance no longer tracks.
 
 - `cache_mode` (string) — override whether the engine places prompt-cache breakpoints on the outbound request at all: `"auto"` (default; unset behaves the same), `"on"` or `"off"`. This is `apply.Opts.CacheMode`, threaded through unchanged — the same field and the same three values as `context-guru-proxy`'s `CACHE_MODE` environment variable, so a value means the same thing in both. A bad value is a config error at `Configure`, not a silent fallback to `auto`.
+
+## Threads
+
+The engine splits each session into threads. It keeps its state, and the accountant prices, one thread apart from another. The plugin sets `apply.Opts.ThreadOf` with context-guru's `thread.ResolveSession`, the rule `context-guru-proxy` uses:
+
+1. A request that names its agent is that agent's thread, `a:<agent id>`. The agent id is `pctx.Subagent()`: `X-Claude-Code-Agent-Id`, a Bob child's task id, or a Codex or OpenCode subagent's own id (see `subagent` in [session-api.md](session-api.md)).
+2. Any other request goes by prefix continuity. If it continues a thread's history, it is on that thread. If it continues none, it starts a thread of its own, `p:<hash>`. So a session's one-shot calls (a title, a permission check) get their own threads, and they do not look like the main agent dropped context.
+3. A request with no usable message list is the session's primary thread.
+
+The accountant thread follows from it:
+
+- The primary thread is `main`, as before.
+- A named agent keeps `core/accounting`'s rule: its subagent id, with its parent from `pctx.ParentSubagent()` (see `parentSubagent` in [session-api.md](session-api.md)), or `main`. This holds also when the engine refuses the agent id (it takes only `[A-Za-z0-9_.:@-]`, and Cortex takes any printable id) and gives the request a `p:` thread.
+- A prefix-continuity thread is the engine's id, `p:<hash>`. If it continues another thread by content (an edited turn, a rewind), that thread is its parent.
+
+The plugin finds the thread once, at the start of `OnRequest`. The keep-alive keeper, the 1-hour cache choice, the engine, the accountant and `OnFinish` all use that one thread. After the pipeline, the plugin clears a stale keep-alive candidate on that thread, as `context-guru-proxy` does (`offload.ClearStaleKeepAliveCandidate`). The thread state is in memory, one tracker per plugin instance. A config hot-reload drops it.
+
+After each response, `OnFinish` runs context-guru's `lifecycle.Finish`, with the session and thread that the engine used on the request. It does these steps:
+
+1. It releases a `cache_aware_summarizer` summary that the turn deferred. Without this step, the summary waits for the thread's next request or a fallback timer.
+2. It runs the warm sweep's question, if the turn registered one.
+3. If the response has usage, it keeps the billed input (fresh + cache read + cache write) under the session and under the thread.
+
+The summarizer's size trigger reads only the thread's figure (`Ctx.PrevBilledInputThread`). Before this change Cortex wrote only the session figure, so the trigger declined on every turn and the summarizer never fired (#2130).
 
 ## Where its own model calls go
 

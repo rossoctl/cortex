@@ -43,13 +43,14 @@ import (
 	"github.com/rossoctl/context-guru/apply"
 	"github.com/rossoctl/context-guru/cheapmodel"
 	cgcomponents "github.com/rossoctl/context-guru/components"
-	_ "github.com/rossoctl/context-guru/components/offload"  // register offload components
+	"github.com/rossoctl/context-guru/components/offload"    // also registers the offload components
 	_ "github.com/rossoctl/context-guru/components/reformat" // register reformat components
 	cgconfig "github.com/rossoctl/context-guru/config"
 	"github.com/rossoctl/context-guru/dispatch"
 	"github.com/rossoctl/context-guru/keepalive"
 	"github.com/rossoctl/context-guru/models"
 	cgstore "github.com/rossoctl/context-guru/store"
+	"github.com/rossoctl/context-guru/thread"
 	yaml "gopkg.in/yaml.v3"
 )
 
@@ -303,10 +304,9 @@ type ContextGuru struct {
 
 	// windows resolves a model's context window; see windows.go.
 	windows models.Resolver
-	// cgSessions maps a Cortex session id to the session key the engine derived for it
-	// (apply.Trace.Session), so OnFinish records billed input under the key OnRequest reads.
-	// One entry per session, overwritten on each request, bounded by sessionKeysCap.
-	cgSessions sessionKeys
+	// threads is the engine's thread resolver (thread.go's resolveThread), one per plugin instance
+	// because it holds each session's threads. Set by Configure.
+	threads *thread.Tracker
 
 	// Keep-alive, all nil/zero when keep_alive.enabled is false. The keeper decides when to ping; disp
 	// only sends and holds the credential.
@@ -392,6 +392,7 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 		return fmt.Errorf("context-guru config: cache_mode %q is not one of: auto, on, off", decoded.CacheMode)
 	}
 	p.cfg = decoded
+	p.threads = thread.New()
 
 	// Engine config: default to the xhigh preset when none is supplied. xhigh includes the
 	// model-calling components (cache_aware_summarizer, extract_llm, extract_llm_sweep). They act
@@ -641,21 +642,25 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 		pctx.Skip("self_call")
 		return cont
 	}
+	// Every x-context-guru-* header is context-guru's, not the upstream's: context-guru's host
+	// contract (agent/agent.go) is that a host removes them before it forwards a request. Deferred,
+	// so this call reads them first (agentall.IsClientCompaction reads x-context-guru-request-kind).
+	defer stripOwnHeaders(pctx)
 	if !p.gated(pctx.Path) {
 		return cont
 	}
 	sid := sessionID(pctx)
+	// The request's thread, found once, before anything keys by it (resolveThread).
+	p.resolveThread(pctx, sid, pctx.Body)
 	// A real request on a thread ends that thread's idle span: the keeper drops the entry (and the
 	// credential it held) before this request goes upstream, so no ping races it. Only THIS
 	// request's thread (keeperKey): a subagent's request says nothing about whether the main
 	// thread is idle, and the reverse.
 	//
-	// keeperKey reads the agent id from headers, so it gives OnFinish the same key. Its one
-	// fallback reads Extensions.Inference — nil when, as here, this plugin runs before
-	// inference-parser's own OnRequest — so a subagent that names no agent can still open an
-	// arrival on the main thread here and be skipped by recordFor. The kaArrived marker holds the
-	// key THIS call arrived on, so OnFinish departs exactly the arrivals this call made — never
-	// fewer, never (on a thread a concurrent request shares) one too many.
+	// keeperKey reads the thread resolveThread kept on pctx, so OnFinish gets the same key. The
+	// kaArrived marker holds the key THIS call arrived on, so OnFinish departs exactly the
+	// arrivals this call made — never fewer, never (on a thread a concurrent request shares) one
+	// too many.
 	//
 	// UNDER on_error: observe NOTHING IS HELD: a held turn is pinged upstream with the caller's own
 	// credential, and that ping is real, billed spend — the opposite of a shadow run, where
@@ -706,6 +711,9 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 	// HeadTTL1h/HeadTTLMinBytes are cache.strategy: 1-hour-head's whole effect (cachePolicy):
 	// without them here, that strategy resolved a policy nothing read, and OnRequest asked for
 	// the plain 5-minute tier regardless (review finding).
+	// Taken BEFORE the pipeline: the clear below must spare a keep-alive candidate this request's
+	// own run wrote (offload.ClearStaleKeepAliveCandidate; lifecycle.Prepare's order).
+	startedAt := time.Now()
 	res := apply.BodyOpts(ctx, p.pipe, p.store, apply.Opts{
 		Provider:        provider,
 		Body:            pctx.Body,
@@ -719,9 +727,12 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 		HeadTTL1h:       p.kaPol.HeadTTL1h,
 		HeadTTLMinBytes: p.kaPol.HeadTTLMinBytes,
 		OneHourFirst:    p.oneHourFirstFor(pctx, provider, pctx.Host),
+		ThreadOf:        threadOfFor(pctx),
 	})
 	if res.Trace.Session != "" {
-		p.cgSessions.set(sid, res.Trace.Session)
+		th, _ := requestThread(pctx)
+		pipeline.SetState(pctx, cgThreadStateKey, &cgThread{session: res.Trace.Session, id: th.ID})
+		offload.ClearStaleKeepAliveCandidate(thread.Key(res.Trace.Session, th.ID), startedAt)
 	}
 	out, changed, ops := reportResult(pctx, res)
 	if changed && len(out) > 0 {
@@ -768,9 +779,9 @@ func stampDryRun(ops []accountant.Operation, dryRun bool) {
 // observe state the first call already mutated, not reproduce it.
 //
 // Thread: names the request's accounting thread from the engine's own thread split
-// (design §5.4/§5.5). res.Trace.Thread.ID is empty with no Opts.ThreadOf wired (unchanged
-// in this task), and SetAccountingThread's empty-id no-op then leaves
-// core/accounting.ThreadOf's default rule ("main" for the primary agent) in place.
+// (design §5.4/§5.5, Opts.ThreadOf in OnRequest). accountingThread keeps
+// core/accounting.ThreadOf's default rule for the primary thread ("main") and for a named agent
+// (its subagent id and parent), and names a prefix-continuity thread with the engine's id.
 //
 // Ops: the engine's Trace.Ops plus the envelope ops (envelopeOps), built only when the engine
 // produced a rewrite (changed && non-empty out). The caller must call pctx.SetBody(out) BEFORE
@@ -779,20 +790,23 @@ func stampDryRun(ops []accountant.Operation, dryRun bool) {
 // engine merely computed it: reporting here, before SetBody, would price a shadow write (an
 // earlier enforced writer's bytes already in effect) as a real saving.
 func reportResult(pctx *pipeline.Context, res apply.Result) (out []byte, changed bool, ops []accountant.Operation) {
-	threadParent, _ := res.Trace.Thread.InheritsFrom()
-	pctx.SetAccountingThread(res.Trace.Thread.ID, threadParent)
-	// res.Changed itself misses a head-TTL relabel (cache.strategy: 1-hour-head, or a
-	// 1-hour-always/-on-wait OneHourFirst relabel) on a request that has a messages array:
-	// apply.BodyOpts folds the relabel into Changed on its two early returns (no messages, or no
-	// restore plan to splice), but the full-pipeline path at the bottom overwrites Changed from
-	// the message rewrite alone, dropping the tools/system edit res.Body already carries (review
-	// finding, reproduced — Trace.HeadTTL1h true, Changed false, with the relabelled bytes
-	// sitting unread in res.Body). Trace.HeadTTL1h is authoritative here regardless of which path
-	// set Changed, so ORing it in recovers exactly the one case this library gap drops — guarded
-	// by a byte comparison, because a body already at ttl "1h" sets Trace.HeadTTL1h too (apply's
-	// own doc: "count it as head all the same") with nothing actually rewritten (review
-	// suggestion), and reporting that as a change would call SetBody on identical bytes.
-	out, changed = res.Body, res.Changed || (res.Trace.HeadTTL1h && !bytes.Equal(res.Body, pctx.Body))
+	// A request whose agent Cortex names (pctx.Subagent) keeps core/accounting's rule, whatever
+	// thread the engine gave it. The two validate an agent id differently: model.SubagentHeader
+	// takes any printable value up to 128 bytes, and thread.HeaderAgentID only [A-Za-z0-9_.:@-].
+	// For an id only Cortex takes ("agent 7"), the engine resolves a p: thread, and accounting
+	// would lose the subagent id it used before threads (review finding).
+	if id, parent, ok := accountingThread(res.Trace.Thread); ok && pctx.Subagent() == "" {
+		pctx.SetAccountingThread(id, parent)
+	}
+	// A head-TTL relabel (cache.strategy: 1-hour-head, or a 1-hour-always/-on-wait OneHourFirst
+	// relabel) sets Trace.HeadTTL1h. Since context-guru v0.7.8 (#1356) it also sets res.Changed on
+	// every return path, and ORing Trace.HeadTTL1h in still covers an older engine. But a body
+	// already at ttl "1h" sets both with nothing rewritten (apply's own doc: "count it as head all
+	// the same"). The byte comparison keeps that case from calling SetBody on identical bytes.
+	out, changed = res.Body, res.Changed || res.Trace.HeadTTL1h
+	if res.Trace.HeadTTL1h && bytes.Equal(res.Body, pctx.Body) {
+		changed = false
+	}
 	if changed && len(out) > 0 {
 		ops = append(ops, res.Trace.Ops...)
 		// The tools and system changes apply makes report no op of their own; they are found
@@ -870,7 +884,7 @@ func (p *ContextGuru) OnFinish(_ context.Context, pctx *pipeline.Context) {
 	sid := sessionID(pctx)
 	arrived := pipeline.GetState[kaArrived](pctx, kaArrivedStateKey)
 	// Depart this request's arrival on every path that does not reach Record — the early returns
-	// below, and a panic in recordBilled, stashSent or recordFor, which the pipeline's
+	// below, and a panic in stashSent, finishEngine or recordFor, which the pipeline's
 	// dispatchFinish recovers (without this the arrival would stay open until a restart). Not unconditional:
 	// Record departs for itself, and a second Depart would release a CONCURRENT request's count
 	// on the same thread. `recorded` is set immediately before Record.
@@ -894,8 +908,8 @@ func (p *ContextGuru) OnFinish(_ context.Context, pctx *pipeline.Context) {
 		return
 	}
 	if sid != "" {
-		p.recordBilled(pctx, sid)
-		p.stashSent(pctx, sid)
+		p.stashSent(pctx)
+		p.finishEngine(pctx)
 	}
 	if p.keeper == nil || pipeline.GetState[kaShadow](pctx, kaShadowStateKey) != nil {
 		return
@@ -965,23 +979,19 @@ func dialectFor(path string) (bschemas.ModelProvider, string) {
 // oneHourRoute keys this call's st.off/st.costly lookups the same way the keeper's own
 // bookkeeping does.
 //
-// threadID is captured from pctx here, at the same call that reads it for keeperKey
-// (keepalive.go), rather than taken from the library's own apply.Opts.ThreadOf/res.Trace.Thread,
-// which this plugin does not wire (review finding: that left threadID always "", so a named
-// subagent's request was asked -- and relabelled -- as if it were the main thread). The two
-// agree on one convention, agentThreadPrefix + pctx.Subagent(), so this call's Key{Thread:...}
-// and the keeper's own Arrive/Depart/Record calls for the same request key identically.
+// threadID is the keeper's key for this request (keeperKey: the thread resolveThread found), not
+// the library's threadID argument, so this call's Key{Thread:...} keys the same entry as the
+// keeper's own Arrive/Depart/Record calls for the same request. The two are equal whenever apply
+// resolved the thread, because apply's thread is the same resolveThread result (threadOfFor).
 func (p *ContextGuru) oneHourFirstFor(pctx *pipeline.Context, provider bschemas.ModelProvider, endpoint string) func(session, threadID, model string, toolsDeclared bool) bool {
 	if p.keeper == nil || (!p.kaPol.OneHourOnWait && !p.kaPol.OneHourAlways) {
 		return nil
 	}
 	mode := keepalive.OneHourMode{Always: p.kaPol.OneHourAlways, RebuildTokens: int64(p.kaPol.OneHourRebuildTokens)}
-	threadID := ""
-	if agent := pctx.Subagent(); agent != "" {
-		threadID = agentThreadPrefix + agent
-	}
+	key, _ := keeperKey(pctx, sessionID(pctx))
+	threadID := key.Thread
 	route := pctx.Path
-	return func(session, _ /* unused: the library never resolves this without Opts.ThreadOf */, model string, toolsDeclared bool) bool {
+	return func(session, _ /* the same thread; see threadID above */, model string, toolsDeclared bool) bool {
 		return p.keeper.OneHourFirst("", session, threadID, provider, endpoint, route, model, toolsDeclared, mode)
 	}
 }

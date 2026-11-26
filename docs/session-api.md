@@ -448,9 +448,9 @@ host+credential pair, shared across every session that uses it — so it is not 
 session an erase could target. A hold is released, on a timer, at most `holdSweepInterval`
 (10m) past `incomingHoldTTL` (2h) idle, whether or not a later request arrives; until released
 it can still make a billed call on that credential. The forwarded-body stash (`sentStash`) DOES
-hold content: the last body the plugin sent upstream, for up to 16 sessions (main agent only)
-and 96 MiB total. It has no time bound — an erased session's entry is evicted only when a
-newer session's body needs the room, oldest session first — so stop the proxy to clear it for
+hold content: the last body the plugin sent upstream, for up to 16 threads (main agent only)
+and 96 MiB total. It has no time bound — an erased session's entries are evicted only when a
+newer thread's body needs the room, oldest first — so stop the proxy to clear it for
 certain. This applies to both `DELETE` routes.
 
 **The context-guru plugin's session state is not cleared either, and it holds content.**
@@ -1434,6 +1434,13 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   It is present also on rows from a Bob child task (a subagent or a subtask):
   the child's own `X-Task-Id`, when the request also sends a different, usable
   `X-Parent-Task-Id`. The Claude Code header wins when a request sends both.
+  It is present also on rows from a Codex subagent (its own `Thread-Id`, when
+  it sends `X-Codex-Parent-Thread-Id`, on a User-Agent or `Originator` that
+  starts with `codex`) and from an OpenCode subagent (its own
+  `X-Opencode-Session-Id`, when it sends `X-Opencode-Parent-Session-Id`).
+  `parentSubagent` follows below. This is context-guru's rule
+  (`agent.Client.SubagentID`), and a test in `core/plugins/contextguru` fails
+  when the two disagree.
 - `subagentKind` — Bob only: `subtask` when the request's tool list has
   `end_subtask`, else `subagent`. It is `subagent` also when no inference
   parser ran. Absent on Claude Code rows and on every row without a Bob
@@ -1443,6 +1450,13 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   only when the spawner was itself an agent, so on a row that names a
   `subagent` an absent `parentSubagent` means the conversation started it. The
   two keys together give a row's place in the session's tree of agents.
+  - **Codex:** the `X-Codex-Parent-Thread-Id` the subagent sent. Codex names
+    the main conversation's thread there too, and no Codex header tells that
+    thread apart. So if no row of the session has this value as its
+    `subagent`, the conversation started the subagent.
+  - **OpenCode:** the `X-Opencode-Parent-Session-Id` the subagent sent. It is
+    absent when that parent is the session the row is filed in
+    (`X-Session-Id`), because that parent is the conversation.
 
 ## Invocation action vocabulary
 

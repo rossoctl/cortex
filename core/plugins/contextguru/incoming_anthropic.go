@@ -15,7 +15,9 @@ import (
 	"github.com/rossoctl/context-guru/cheapmodel"
 	cgcomponents "github.com/rossoctl/context-guru/components"
 	"github.com/rossoctl/context-guru/dispatch"
+	"github.com/rossoctl/context-guru/thread"
 	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/tidwall/gjson"
 )
 
 // The incoming model for an Anthropic Messages request, and the prefix asker the summarizer
@@ -271,7 +273,7 @@ const (
 	maxStashBytes    = 96 << 20
 )
 
-// sentStash holds, per engine session key, the last body forwarded upstream and accepted
+// sentStash holds, per engine thread key (thread.Key(session, thread)), the last body forwarded upstream and accepted
 // (forwarded, which Ask appends to) and the body the engine received for it (preBody, which
 // CoversSpan normalizes: the summarizer hashes its span from the messages as the pipeline
 // received them, before any later component rewrote them).
@@ -383,6 +385,19 @@ const pendingBodyStateKey = "context-guru-pending-body"
 // is the body that went upstream. A shadow run (on_error: observe) sent the client's body, which
 // is still pctx.Body, so the stash matches what upstream cached in that case too.
 //
+// KEYED BY THREAD: thread.Key(session, thread), the engine session key and the thread this
+// request's OnRequest used (cgThread). With Opts.ThreadOf set, the engine asks with that key
+// (cache_aware_summarizer, extract_sweep), and context-guru-proxy stashes under it too. A
+// session-keyed stash was right only on the primary thread: after a rewind the main conversation
+// moves to a p: thread, and every prefix ask there found nothing, so its summary never came.
+// thread.Key gives the session itself for the primary thread, so that key is unchanged.
+//
+// A tool-less request on a NON-PRIMARY thread is not stashed (review finding): a session's side
+// calls (a title, a permission check) are always such threads, and the stash holds only
+// maxStashSessions entries. The primary thread is stashed regardless of tools, as main did before
+// this PR: an Anthropic client that declares no tools at all (a plain chat app through Cortex)
+// still gets its prefix ask stashed, and so still gets a summary.
+//
 // Nothing is stashed for a redirected request (review finding): inference-router runs after
 // context-guru (agentop server add appends it last), so the incoming-model hold this plugin took
 // in OnRequest is always on the host and credential the CLIENT named — captured before any
@@ -395,17 +410,17 @@ const pendingBodyStateKey = "context-guru-pending-body"
 // this fix does not answer; it only removes the concrete risk of sending a mismatched body.
 // pctx.Redirected stays false under on_error: observe and after a refused redirect, so neither
 // case is affected.
-func (p *ContextGuru) stashSent(pctx *pipeline.Context, sid string) {
+func (p *ContextGuru) stashSent(pctx *pipeline.Context) {
 	pre := pipeline.GetState[pendingBody](pctx, pendingBodyStateKey)
 	if pre == nil || p.stash == nil || isSubagent(pctx) || pctx.StatusCode != 200 || pctx.Redirected() {
 		return
 	}
-	key, ok := p.cgSessions.get(sid)
-	if !ok {
+	th := pipeline.GetState[cgThread](pctx, cgThreadStateKey)
+	if th == nil || (th.id != thread.Primary && !gjson.GetBytes(pre.body, "tools.0").Exists()) {
 		return
 	}
 	provider, _ := dialectFor(pctx.Path)
-	p.stash.put(key, provider, pre.body, pctx.Body)
+	p.stash.put(thread.Key(th.session, th.id), provider, pre.body, pctx.Body)
 }
 
 // prefixAsker is the components.PrefixAsker the engine receives on an Anthropic request.

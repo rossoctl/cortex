@@ -713,7 +713,7 @@ open-task data), or within 118 minutes (never more than 236) on a thread billed 
 tier. The incoming-model holds (one per distinct host+credential, shared across every session
 on it) are masked too, and go within 2h10m of their last use, on a timer, whether or not a later
 request arrives. The forwarded-body stash DOES hold content — the last body sent upstream, for up
-to 16 sessions and 96 MiB total — evicted only when a newer session's body needs the room, not on
+to 16 threads and 96 MiB total — evicted only when a newer thread's body needs the room, not on
 a timer. The rest stays until newer sessions push it out (at most 10,000 threads are
 kept), and a state file older than 1 hour is not read at startup (see
 [session-api.md](session-api.md#delete-v1sessions)).

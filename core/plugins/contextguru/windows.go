@@ -3,12 +3,10 @@ package contextguru
 import (
 	"context"
 	"net/http"
-	"sort"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/rossoctl/context-guru/apply"
+	"github.com/rossoctl/context-guru/lifecycle"
 	"github.com/rossoctl/context-guru/models"
 	"github.com/rossoctl/context-guru/models/litellm"
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -97,91 +95,43 @@ func (p *ContextGuru) windowFor(ctx context.Context, pctx *pipeline.Context) (wi
 	return w, ex
 }
 
-// recordBilled stores the provider-billed input of a finished request, which the next request
-// reads as Ctx.PrevBilledInput. Without it a fraction trigger has nothing to compare against
-// and declines on every turn. Billed input is fresh + cache read + cache write: the ruler a
-// context window is stated in.
+// finishEngine runs context-guru's steps after a response (lifecycle.Finish), with the session and
+// thread the engine used on this request's OnRequest (cgThread). The engine reads every one of
+// them back under that pair (apply.Opts.ThreadOf's host contract), so OnFinish must write them
+// under it too:
 //
-// Only a successful main-agent request is recorded. A subagent shares the session id but carries
-// its own, much smaller transcript, and recording it would understate the main thread's fill.
-func (p *ContextGuru) recordBilled(pctx *pipeline.Context, sid string) {
+//   - It releases a cache-aware summary that the turn deferred
+//     (offload.ResolveDeferredCacheAwareSummary). This plugin sets Ctx.PrefixAsk on Anthropic, and
+//     without this call such a summary waits for the thread's next request or a fallback timer.
+//     The caller runs stashSent first, because the summary's side call reads this turn's stashed
+//     body.
+//   - It runs the warm sweep's question, if the trigger registered one (offload.ResolveWarmQuestion).
+//   - When the response has usage, it keeps the billed input for the next turn, under the session
+//     and under the thread. The size trigger reads only the thread's figure
+//     (Ctx.PrevBilledInputThread, Trigger.FracResolvable). Without it the trigger declines on
+//     every turn, and cache_aware_summarizer never fires (#2130). Billed input is fresh + cache
+//     read + cache write: the ruler a context window is stated in.
+//
+// A request the engine did not run on (no cgThread) has nothing to finish.
+func (p *ContextGuru) finishEngine(pctx *pipeline.Context) {
+	th := pipeline.GetState[cgThread](pctx, cgThreadStateKey)
+	if th == nil {
+		return
+	}
+	var billed int64
+	cacheRead := 0
 	inf := pctx.Extensions.Inference
-	if inf == nil || isSubagent(pctx) || pctx.StatusCode >= 400 {
-		return
+	if inf != nil {
+		billed = int64(inf.InputTokens) + int64(inf.CacheReadTokens) + int64(inf.CacheWriteTokens)
+		cacheRead = inf.CacheReadTokens
 	}
-	billed := int64(inf.InputTokens) + int64(inf.CacheReadTokens) + int64(inf.CacheWriteTokens)
-	if billed <= 0 {
-		return
-	}
-	// The key the pipeline derived on the request (Trace.Session), not one re-derived here: the
-	// engine scopes and validates the id, and the two must match for the next request to read it.
-	key, ok := p.cgSessions.get(sid)
-	if !ok {
-		return
-	}
-	apply.RecordBilledInput(p.store, key, billed)
-}
-
-// sessionKeysCap and sessionKeysTrimTo bound sessionKeys the way core/accounting bounds its
-// per-thread maps (and accountant.Trackers its threads): past the cap, the sessions seen
-// longest ago are dropped down to the trim mark, so the sort runs once per 1,000 new sessions
-// rather than on every request. A dropped session only loses its billed-input record until its
-// next request sets the key again.
-const (
-	sessionKeysCap    = 10000
-	sessionKeysTrimTo = sessionKeysCap - sessionKeysCap/10
-)
-
-// sessionKeys is cgSessions: Cortex session id to the engine's session key, bounded. Safe for
-// concurrent use; the zero value is ready.
-type sessionKeys struct {
-	mu  sync.Mutex
-	m   map[string]sessionKey
-	now func() time.Time // nil: time.Now
-}
-
-type sessionKey struct {
-	key      string
-	lastSeen time.Time
-}
-
-func (s *sessionKeys) set(sid, key string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.m == nil {
-		s.m = map[string]sessionKey{}
-	}
-	now := time.Now
-	if s.now != nil {
-		now = s.now
-	}
-	s.m[sid] = sessionKey{key: key, lastSeen: now()}
-	if len(s.m) <= sessionKeysCap {
-		return
-	}
-	type aged struct {
-		sid string
-		at  time.Time
-	}
-	all := make([]aged, 0, len(s.m))
-	for k, e := range s.m {
-		all = append(all, aged{k, e.lastSeen})
-	}
-	sort.Slice(all, func(i, j int) bool { return all[i].at.Before(all[j].at) })
-	for _, a := range all[:len(s.m)-sessionKeysTrimTo] {
-		delete(s.m, a.sid)
-	}
-}
-
-func (s *sessionKeys) get(sid string) (string, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.m[sid]
-	return e.key, ok
-}
-
-func (s *sessionKeys) len() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.m)
+	lifecycle.Finish(lifecycle.Fin{
+		Store:     p.store,
+		Session:   th.session,
+		ThreadID:  th.id,
+		UsageOK:   inf != nil && pctx.StatusCode < 400 && billed > 0,
+		Billed:    billed,
+		Forwarded: pctx.StatusCode >= 200 && pctx.StatusCode < 300,
+		CacheRead: cacheRead,
+	})
 }
