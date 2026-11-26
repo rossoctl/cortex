@@ -722,7 +722,26 @@ comes out a release after the rename ships.
 | `basis`, `units`, `estimated` | on a keep-alive ping's record only. `basis` follows the billing mode of the thread's last request, because a ping uses the same credential: `usd` (an API key), `subscriptionEquivalent` (a subscription login: `cost_usd` is what the API would have charged, and `units` is the ping's tokens, output included, times the `accounting.subscription_weights`) or `unknown`. `estimated` is set on every basis but `usd`. A ping recorded before this field has no `basis` and reads as `usd` |
 | `thread`, `unattributed_break_usd` | the accountant thread the request belongs to, and the net cost of the cache effects no operator owns (shown, never charged to an operator) |
 | `interaction_usd` | the value of the tokens no operator owns on a rescued request (accountant design §6.2). A keep-alive ping kept the cache warm and an operator also changed the body, so some tokens the client body would have written cold were read instead. Neither the keeper nor the operator owns them. Signed: positive saves. Never charged to an operator and not in `avoided[]`, but counted in the net saving, as the metrics count `llm.savings.interaction.usd`. Basis `usd` only: a request on a subscription has none |
+| `savings_withheld` | set when the accountant's figure failed a gate, so `avoided[]` is empty and `unattributed_break_usd` and `interaction_usd` are 0. The value is the gate (see [Withheld savings](#withheld-savings)). `spends[]` stay |
 | `daily_total_usd`, `daily_max_usd` | added by `litellm-budget-track` when it is in the pipeline; the budget's business, not the cost owner's |
+
+### Withheld savings
+
+Cortex books no saving for a request when the accountant's figure fails a gate. The library
+decides the gates (`accountant.Withhold`, accountant design §6.7 and `docs/cortex-wiring.md`
+W6.5), so the ledger and the metrics withhold the same requests. The first gate that fails names
+the reason, in `savings_withheld` and in the `reason` label of
+`llm.savings.withheld`:
+
+| reason | the gate that failed |
+|---|---|
+| `check_sum`, `check_unique_change`, `check_spans`, `check_other` | a fatal accountant check (`CheckFailure.Fatal`). The list of operations or their attribution is wrong. For example, two operators claim the same removal, and the figure would count it twice |
+| `unpriced` | the accountant did not price an operation, or a cache effect has a kind the library does not know. `penalty_unknown` is the exception: the figure is booked and marked `estimated` |
+| `size_unknown` | an operation saved tokens, but the prompt size before the change is unknown |
+| `implausible_size` | the operations saved more tokens than the client's body had, plus the tokens they caused (an operation can remove what an earlier one inserted). Cortex estimates the body's size from the billed prompt, scaled by the two bodies' sizes in bytes |
+
+A withheld request keeps its `cost_usd` and its `spends[]`, because each spend is priced from
+its own model call. Its `avoided[]` is empty and its `unattributed_break_usd` is 0.
 
 **How the basis is chosen.** `accountant.BillingFrom` reads the shape of the **client's**
 credential, never its value, before any plugin can rewrite it (`pipeline.Context.BillingSnapshot`):
@@ -833,10 +852,11 @@ counted in a total (accountant R12). A call the accountant refused to price (it 
 `spends[]`, flagged `projected` or `refused`, so you can see it. No spend total and no counter
 includes either.
 
-**A figure that fails a gate is withheld.** The library (`accountant.Withhold`) withholds a request with
-a fatal check or an unpriced operation. The counters then book only the spends of that request. They add 1
-to `llm.savings.withheld{reason}` and count the request as `result="withheld"` in `llm.savings.requests`.
-Cortex does not give the library a size before the change yet, so the size gate is not used.
+**A figure that fails a gate is withheld** ([Withheld savings](#withheld-savings)). The counters then book
+only the spends of that request. They add 1 to `llm.savings.withheld{reason}` and count the request as
+`result="withheld"` in `llm.savings.requests`. Cortex gives the library its size of the client's body, so
+the counters use the same size gate as the ledger. When Cortex cannot know the size, the ledger
+withholds the request as `size_unknown`, and the counters skip the size gate.
 
 `llm.savings.requests` and `llm.savings.estimated` count each result the accountant sink sees.
 That is each priced request, and also each priced keep-alive ping and each detached model call

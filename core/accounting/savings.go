@@ -55,6 +55,12 @@ type Extras struct {
 	// Compaction is Result.Compaction: set on the first request after a client compaction, with
 	// the changes it ended (R55). nil on any other request.
 	Compaction *event.CompactionRecord
+	// Withheld is the W6.5 gate the request's Result failed (accountant.Withhold), or "". With one,
+	// Host.Savings books no saving, no UnattributedBreakUSD and no InteractionUSD (the sink books no
+	// interaction either): the figures come from a list of
+	// operations the library says is wrong, or from an op it did not price. Spends stay: each is
+	// priced from its own model call, not from the Result's attribution.
+	Withheld string
 }
 
 // SpendPrice prices one model call an operator made: its whole bill, output included, at the
@@ -433,6 +439,11 @@ func largestTier(t accountant.TierTokens) string {
 // mismatched usage/body pair cannot corrupt the thread's cache-effect tracking for later
 // requests, which is the actual reason Compute refuses one. Latched like Compute, so a repeated
 // settle gets the same answer either way.
+//
+// A Result that fails a W6.5 gate (withholdReason: a fatal check, an op unpriced for a reason
+// other than penalty_unknown, or the size bound) books no saving: ok is true, the savings are
+// empty, and Extras.Withheld names the gate. Its spends stay. A penalty_unknown op marks every
+// saving Estimated instead. SavingsBilled runs no gate: it converts whatever Result it is given.
 func (h *Host) Savings(pctx *pipeline.Context) ([]event.Saving, Extras, bool) {
 	if h == nil || pctx == nil {
 		return nil, Extras{}, false
@@ -494,6 +505,15 @@ func (h *Host) Savings(pctx *pipeline.Context) ([]event.Saving, Extras, bool) {
 		Result: res,
 	}, sizedRates{r: h.resolver, endpoint: host})
 	ss, ex := savingsBilled(res, newFigured(fig), price, spend, model, host, mode, h.weights)
+	// The W6.5 gates (rossoctl/cortex#2134). Compute ran them once; a failed one books no saving.
+	if why := h.withheld(pctx); why != "" {
+		ss, ex.UnattributedBreakUSD, ex.InteractionUSD, ex.Withheld = nil, 0, 0, why
+	} else if penaltyUnknown(res) {
+		// The library could not rule out a break: the figure stands, as an estimate (§6.4).
+		for i := range ss {
+			ss[i].Estimated = true
+		}
+	}
 	// The rate table's level for the request's own rates, on every saving that has a dollar
 	// figure: event.Saving.Provenance, which a reader (tool-prune's pane, agentop) uses to say
 	// whether the figure came from configured or bundled rates.

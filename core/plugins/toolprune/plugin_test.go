@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/rossoctl/accountant"
 	"github.com/rossoctl/cortex/core/accounting"
 	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/cost/pricing"
@@ -1195,6 +1196,8 @@ func TestMetrics_UnknownTierIsNotInput(t *testing.T) {
 type bodyWriter struct {
 	name    string
 	rewrite func([]byte) []byte
+	// ops, when set, gives the ops the writer reports for its rewrite of the body it is given.
+	ops func(before []byte) []accountant.Operation
 }
 
 func (w *bodyWriter) Name() string { return w.name }
@@ -1202,6 +1205,9 @@ func (w *bodyWriter) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{WritesRequestBody: true}
 }
 func (w *bodyWriter) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
+	if w.ops != nil {
+		pctx.ReportOps(w.ops(pctx.Body)...)
+	}
 	pctx.SetBody(w.rewrite(pctx.Body))
 	return pipeline.Action{Type: pipeline.Continue}
 }
@@ -1238,8 +1244,24 @@ func publishedPrune(t *testing.T, pctx *pipeline.Context) pruneEvent {
 func TestPrune_ObservedAfterAnotherWriterIsStillProjected(t *testing.T) {
 	p := withRates(t, configured(t, "NotebookEdit"), anyEndpoint("*", tierRates(1e-05, 1.25e-05, 1e-06)))
 	pctx := inferenceCtx("/v1/messages", pricedBody, "Read", "NotebookEdit", "Bash")
+	// The other writer reports its rewrite, as an operator must: an unreported change fails the
+	// accountant's sum check, and Cortex then books no saving at all (rossoctl/cortex#2134).
 	enforced := &bodyWriter{name: "enforced", rewrite: func(b []byte) []byte {
 		return []byte(strings.Replace(string(b), "run a command", "run a shell command", 1))
+	}, ops: func(b []byte) []accountant.Operation {
+		var body struct{ Tools []json.RawMessage }
+		if err := json.Unmarshal(b, &body); err != nil {
+			t.Fatalf("body: %v", err)
+		}
+		for i, tool := range body.Tools {
+			if strings.Contains(string(tool), "run a command") {
+				return []accountant.Operation{{Kind: accountant.KindRewrite, ChangeID: "enforced:1",
+					At:         accountant.Position{Section: accountant.SectionTools, Index: i},
+					SizeBefore: accountant.Size{Bytes: len(tool)}, SizeAfter: accountant.Size{Bytes: len(tool) + len(" shell")}}}
+			}
+		}
+		t.Fatal("no tool says \"run a command\"")
+		return nil
 	}}
 	p.runChain(t, pctx, []pipeline.ErrorPolicy{pipeline.ErrorPolicyEnforce, pipeline.ErrorPolicyObserve},
 		enforced, p.ToolPrune)
@@ -1263,13 +1285,18 @@ func TestPrune_ObservedAfterAnotherWriterIsStillProjected(t *testing.T) {
 	pctx.Extensions.Inference.Model = "claude-opus-5"
 	pctx.Extensions.Inference.CacheWriteTokens = 24701
 	avoided := p.avoided(pctx)
-	if len(avoided) == 0 {
-		t.Fatal("settlement priced no saving at all; the projection should still be reported")
-	}
+	pruned := 0
 	for _, s := range avoided {
+		if s.Operator == "enforced" { // the other writer's own figure: not tool-prune's
+			continue
+		}
+		pruned++
 		if !s.Projected {
 			t.Errorf("settlement priced %+v as applied; nothing was pruned", s)
 		}
+	}
+	if pruned == 0 {
+		t.Fatalf("settlement priced no tool-prune saving (%+v); the projection should still be reported", avoided)
 	}
 	p.settle(pctx)
 	p.OnFinish(context.Background(), pctx)
