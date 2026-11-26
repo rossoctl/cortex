@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -38,9 +39,44 @@ func TestPprofMuxMountsTheGuardedSurface(t *testing.T) {
 // (":47603", "0.0.0.0:47603") would hand the heap — the session content the
 // viewer is displaying — to anyone on the network. Checked on the bound
 // address, not the string, so a name that resolves to loopback still works.
+//
+// An empty host or a literal non-loopback IP is refused before any bind: the
+// listen seam fails the test if it is reached, so this test never opens a
+// socket on every interface (which, on Windows, raises a firewall prompt).
 func TestStartPprofRefusesANonLoopbackBind(t *testing.T) {
-	if _, _, err := startPprof("0.0.0.0:0"); err == nil || !strings.Contains(err.Error(), "loopback") {
-		t.Errorf("startPprof on 0.0.0.0:0 = %v, want a refusal naming loopback", err)
+	orig := pprofListen
+	t.Cleanup(func() { pprofListen = orig })
+	pprofListen = func(_ string, a *net.TCPAddr) (net.Listener, error) {
+		t.Errorf("startPprof bound %s before refusing it", a)
+		return nil, errors.New("not bound")
+	}
+	for _, addr := range []string{
+		"0.0.0.0:0", ":0", ":47603", "[::]:0", "[::%1]:0", "[::ffff:0.0.0.0]:0",
+		"192.0.2.1:0", "[2001:db8::1]:0",
+	} {
+		if _, _, err := startPprof(addr); err == nil || !strings.Contains(err.Error(), "loopback") {
+			t.Errorf("startPprof on %s = %v, want a refusal naming loopback", addr, err)
+		}
+	}
+}
+
+// The literal loopback addresses, v4 and v6, still bind and serve.
+func TestStartPprofAcceptsLoopbackLiterals(t *testing.T) {
+	for _, addr := range []string{"127.0.0.1:0", "[::1]:0"} {
+		bound, stop, err := startPprof(addr)
+		if err != nil {
+			if addr == "[::1]:0" && !strings.Contains(err.Error(), "loopback") { // no IPv6 here: a socket or bind error
+				t.Logf("no IPv6 loopback on this machine: %v", err)
+				continue
+			}
+			t.Errorf("startPprof on %s: %v", addr, err)
+			continue
+		}
+		stop()
+		host, port, err := net.SplitHostPort(bound)
+		if ip := net.ParseIP(host); err != nil || port == "0" || ip == nil || !ip.IsLoopback() {
+			t.Errorf("startPprof on %s bound %q, want a loopback host with a real port", addr, bound)
+		}
 	}
 }
 
