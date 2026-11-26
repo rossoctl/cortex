@@ -153,6 +153,9 @@ type Context struct {
 	// resendReasons are the reasons Resenders named, in order, for each resend this
 	// request has had. See MarkResend.
 	resendReasons []string
+	// resendable is set by a listener that asks the Resenders after a refused answer. See
+	// SetResendable.
+	resendable bool
 
 	// client and clientParsed memoize ClientInfo's answer.
 	//
@@ -472,6 +475,8 @@ type Context struct {
 	// clientBody is the request body before the first plugin, kept by Pipeline.Run only when
 	// the pipeline has an accountant. See ClientBody.
 	clientBody []byte
+	// billed maps the forwarded body to the body the provider bills. See SetBilledBody.
+	billed func(forwarded []byte) (billed []byte, unplaced bool)
 	// opsMu guards reportedOps and opsSealed: an engine's model calls report from goroutines
 	// of their own (OpReporter), beside the request goroutine.
 	opsMu sync.Mutex

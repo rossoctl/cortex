@@ -397,3 +397,47 @@ func TestResend_NoThirdRound(t *testing.T) {
 		t.Errorf("plugin was asked %d times, want %d", asked, pipeline.MaxResends)
 	}
 }
+
+// resendableProbe records whether its request was marked resendable (pipeline.Context.Resendable).
+type resendableProbe struct {
+	mu   sync.Mutex
+	seen []bool
+}
+
+func (p *resendableProbe) Name() string { return "resendable-probe" }
+func (p *resendableProbe) Capabilities() pipeline.PluginCapabilities {
+	return pipeline.PluginCapabilities{Description: "test"}
+}
+func (p *resendableProbe) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
+	p.mu.Lock()
+	p.seen = append(p.seen, pctx.Resendable())
+	p.mu.Unlock()
+	return pipeline.Action{Type: pipeline.Continue}
+}
+func (p *resendableProbe) OnResponse(context.Context, *pipeline.Context) pipeline.Action {
+	return pipeline.Action{Type: pipeline.Continue}
+}
+
+// The forward proxy asks the Resenders after a refused answer, so it marks its requests
+// resendable: a plugin may then make a change the provider can refuse (context-guru's tool
+// deferral, rossoctl/cortex#2150).
+func TestResend_TheForwardProxyMarksRequestsResendable(t *testing.T) {
+	probe := &resendableProbe{}
+	postVia(t, probe, "m")
+	if len(probe.seen) != 1 || !probe.seen[0] {
+		t.Fatalf("Resendable = %v, want true on the forward proxy", probe.seen)
+	}
+}
+
+// With a hop, a resend goes on the direct client and would skip the gateway, so a request is
+// not marked resendable.
+func TestResend_AHopRequestIsNotResendable(t *testing.T) {
+	g := newFakeGateway(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	probe := &resendableProbe{}
+	proxy, _ := hopProxy(t, gatewayAddr(g), false, nil, probe)
+	req, _ := http.NewRequest(http.MethodPost, "http://api.example.com/v1/messages", strings.NewReader(`{}`))
+	doVia(t, hopClient(proxy), req)
+	if len(probe.seen) != 1 || probe.seen[0] {
+		t.Fatalf("Resendable = %v, want false with a hop", probe.seen)
+	}
+}

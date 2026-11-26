@@ -219,3 +219,23 @@ func TestResendReasons_KeepEveryReasonNamedForTheRequest(t *testing.T) {
 		t.Errorf("MaxResends = %d, want 2", MaxResends)
 	}
 }
+
+// SetBilledBody under on_error: observe does nothing: the change was not sent.
+func TestSetBilledBody_ObserveIsANoOp(t *testing.T) {
+	c := &Context{}
+	c.setCurrent("p", InvocationPhaseRequest, ErrorPolicyObserve)
+	c.SetBilledBody(func([]byte) ([]byte, bool) { return []byte("billed"), true })
+	c.clearCurrent()
+	if b, unplaced := c.BilledBody([]byte("sent")); string(b) != "sent" || unplaced {
+		t.Fatalf("BilledBody = %q, %v after an observed SetBilledBody", b, unplaced)
+	}
+	c.SetCurrentPlugin("p", InvocationPhaseRequest)
+	c.SetBilledBody(func([]byte) ([]byte, bool) { return []byte("billed"), false })
+	if b, _ := c.BilledBody([]byte("sent")); string(b) != "billed" {
+		t.Fatalf("BilledBody = %q under enforce", b)
+	}
+	c.SetBilledBody(nil)
+	if b, _ := c.BilledBody([]byte("sent")); string(b) != "sent" {
+		t.Fatalf("BilledBody = %q after a nil hook", b)
+	}
+}

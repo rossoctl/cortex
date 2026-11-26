@@ -44,6 +44,31 @@ func WithAccountant(a RequestAccountant) Option {
 // A plugin must not write into pctx.Body in place; none does.
 func (c *Context) ClientBody() []byte { return c.clientBody }
 
+// SetBilledBody sets how the accountant host reads the forwarded body as the provider bills
+// it (accountant R56). The host calls f once, in RequestEnd, with the body that goes upstream,
+// and records the body f returns. unplaced true means the change cannot be described to the
+// library: the host books no figure for the request (SkipInput.UnplacedDeferral).
+//
+// context-guru's tool deferral needs it: a tool with defer_loading stays in the bytes sent, but
+// the provider bills no definition for it. A nil f clears the hook, for a request sent again
+// without the change. Under on_error: observe the call does nothing, because the change was
+// not sent.
+func (c *Context) SetBilledBody(f func(forwarded []byte) (billed []byte, unplaced bool)) {
+	if f != nil && c.Observing() {
+		return
+	}
+	c.billed = f
+}
+
+// BilledBody returns forwarded as the provider bills it: forwarded itself when no plugin set
+// SetBilledBody. See SetBilledBody.
+func (c *Context) BilledBody(forwarded []byte) (billed []byte, unplaced bool) {
+	if c.billed == nil {
+		return forwarded, false
+	}
+	return c.billed(forwarded)
+}
+
 // ReportOps records the context operations a plugin made on this request, for the accountant
 // (accountant/docs/cortex-wiring.md W5.1). The ops are kept in call order, which is pipeline
 // order.

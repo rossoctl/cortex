@@ -634,6 +634,13 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// tr is the conversion a plugin asked for with pctx.Translate, nil for none.
 	var tr *translation
 	if !skipped {
+		// resendIfAsked asks the Resenders after a refused answer, so a plugin may make a change
+		// the provider can refuse (pipeline.Context.Resendable). Not for a WebSocket upgrade,
+		// which never resends, and not with a hop: resendIfAsked sends again on the direct
+		// client, so the second attempt would skip the gateway.
+		if s.Hop == nil && !upgradesToWebSocket(r.Header) {
+			pctx.SetResendable()
+		}
 		action := s.OutboundPipeline.Run(r.Context(), pctx)
 
 		// Send the request where the pipeline pointed it, before any row is recorded,
