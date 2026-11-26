@@ -27,8 +27,22 @@ const pprofAddrEnv = "AGENTOP_PPROF_ADDR"
 // bind on every interface (":47603", "0.0.0.0:47603") would hand the heap to
 // anyone on the network. #1603 gates its pprof the same way, on the stats
 // port's bind_loopback_only.
+//
+// The address is resolved and checked before anything is bound, and the bind
+// uses the resolved address, never the string: a bind on every interface, even
+// one closed at once, is open to the network for that moment. Resolving first
+// catches every spelling of the wildcard: an empty host, "0.0.0.0", "::", a
+// zoned "[::%1]", the shorthand "0", or a name a hosts file maps to 0.0.0.0.
+// The check after the bind stays as a backstop.
 func startPprof(addr string) (bound string, shutdown func(), err error) {
-	ln, err := net.Listen("tcp", addr)
+	ra, err := net.ResolveTCPAddr("tcp", addr)
+	if err != nil {
+		return "", nil, err
+	}
+	if !ra.IP.IsLoopback() {
+		return "", nil, fmt.Errorf("%s is not a loopback address; pprof is served on loopback only", addr)
+	}
+	ln, err := pprofListen("tcp", ra)
 	if err != nil {
 		return "", nil, err
 	}
@@ -42,6 +56,12 @@ func startPprof(addr string) (bound string, shutdown func(), err error) {
 	srv := &http.Server{Handler: pprofMux()}
 	go func() { _ = srv.Serve(ln) }()
 	return ln.Addr().String(), func() { _ = srv.Close() }, nil
+}
+
+// pprofListen binds the resolved address; a test swaps it to prove a refusal
+// never binds.
+var pprofListen = func(network string, a *net.TCPAddr) (net.Listener, error) {
+	return net.ListenTCP(network, a)
 }
 
 // pprofMux is the viewer's /debug/pprof surface: pprofx.RegisterPprof's guarded
