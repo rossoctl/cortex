@@ -719,6 +719,11 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string, ownU
 				if t.KeepAliveMicros != 0 {
 					ka = "   keep-alive " + money.Signed(t.KeepAliveMicros, unit)
 				}
+				// The interaction is in the net too: the tokens no operator owns on a rescued
+				// request (usage.Counts.InteractionMicros).
+				if t.InteractionMicros != 0 {
+					ka += "   interaction " + money.Signed(t.InteractionMicros, unit)
+				}
 				if t.AvoidedMicros == 0 {
 					fmt.Fprintf(stdout, "  ~%-13s penalty %s%s   net %s   estimate; no saving, only a penalty; not deducted above\n",
 						"no saving", money.Signed(t.PenaltyMicros, unit), ka, money.Signed(money.NetMicros(t), unit))

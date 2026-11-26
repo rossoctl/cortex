@@ -392,12 +392,13 @@ func (m *model) rebuildSessionsTable() {
 			s.PenaltyUnits += f.penaltyUnits
 			s.AvoidedAPIEquivalentMicros += f.apiEquivalent
 			s.KeepAliveMicros += f.keepAlive
+			s.InteractionMicros += f.interaction
 		}
 		// SAVED is the net: what the context operators saved minus what they caused and minus what
 		// keeping the session's caches warm cost (design §5.9, money.NetMicros), usd basis only,
 		// and not floored — a negative net renders with a minus sign.
 		counts := usage.Counts{CostMicros: s.CostMicros, AvoidedMicros: s.AvoidedMicros, PenaltyMicros: s.PenaltyMicros,
-			KeepAliveMicros: s.KeepAliveMicros}
+			KeepAliveMicros: s.KeepAliveMicros, InteractionMicros: s.InteractionMicros}
 		net := money.NetMicros(counts)
 		// COST is the session's requests plus its keep-alive pings on an API key (money.SpendMicros).
 		spend := money.SpendMicros(counts)

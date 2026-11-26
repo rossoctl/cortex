@@ -1157,6 +1157,7 @@ func TestFoldInto_CarriesEveryCountsField(t *testing.T) {
 			{Basis: event.BasisSubscriptionEquivalent, USD: 0.02, Units: 3},
 			{Basis: event.BasisUnknown, USD: 0.03},
 		},
+		InteractionUSD: 0.004,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1590,5 +1591,29 @@ func TestRecord_HostGroupingSkipsAPortWithNoHost(t *testing.T) {
 				t.Errorf("series = %v, want only the real host", keys(b.Series))
 			}
 		})
+	}
+}
+
+// AddFigures puts each of event.Figures' fields in the Counts field of the same name, so a new
+// figure cannot reach the ring or the ledger as zero (rossoctl/cortex#2139: InteractionMicros).
+func TestCountsAddFigures_CarriesEveryFigure(t *testing.T) {
+	var f event.Figures
+	fv := reflect.ValueOf(&f).Elem()
+	for i := 0; i < fv.NumField(); i++ {
+		fv.Field(i).SetInt(int64(i + 1))
+	}
+	var c Counts
+	c.AddFigures(f)
+	cv := reflect.ValueOf(c)
+	for i := 0; i < fv.NumField(); i++ {
+		name := fv.Type().Field(i).Name
+		got := cv.FieldByName(name)
+		if !got.IsValid() {
+			t.Errorf("Counts has no field %s", name)
+			continue
+		}
+		if got.Int() != int64(i+1) {
+			t.Errorf("Counts.%s = %d, want %d", name, got.Int(), i+1)
+		}
 	}
 }

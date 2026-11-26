@@ -131,13 +131,13 @@ func TestSettleCost_PublishesTheAccountantsExtras(t *testing.T) {
 	spend := event.SpendRecord{Operator: "context-guru.extract_llm", Model: "m", USD: 0.02, Basis: event.BasisUSD}
 	p := NewInferenceParser() // no rates: nothing priced, so only the spend can publish
 	p.acct = &countingAccountant{extras: accounting.Extras{
-		Thread: "agent-1", UnattributedBreakUSD: 0.003, OpsVersion: 1, Spends: []event.SpendRecord{spend},
+		Thread: "agent-1", UnattributedBreakUSD: 0.003, InteractionUSD: 0.0041, OpsVersion: 1, Spends: []event.SpendRecord{spend},
 	}}
 	pctx := &pipeline.Context{Path: "/v1/messages", ResponseHeaders: http.Header{}}
 	pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "unpriced", InputTokens: 10}
 	p.settleCost(pctx)
 	ev, _ := publishedCost(t, pctx)
-	if ev.Thread != "agent-1" || ev.UnattributedBreakUSD != 0.003 || len(ev.Spends) != 1 || ev.Spends[0] != spend {
+	if ev.Thread != "agent-1" || ev.UnattributedBreakUSD != 0.003 || ev.InteractionUSD != 0.0041 || len(ev.Spends) != 1 || ev.Spends[0] != spend {
 		t.Errorf("record = %+v, want the accountant's thread, unattributed break and spend", ev)
 	}
 	if got := ev.Figures().PluginSpendMicros; got != 20_000 {

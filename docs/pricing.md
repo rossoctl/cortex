@@ -721,6 +721,7 @@ comes out a release after the rename ships.
 | `purpose` | `keep-alive` on the record of a keep-alive ping's spend. Absent on the agent's own requests |
 | `basis`, `units`, `estimated` | on a keep-alive ping's record only. `basis` follows the billing mode of the thread's last request, because a ping uses the same credential: `usd` (an API key), `subscriptionEquivalent` (a subscription login: `cost_usd` is what the API would have charged, and `units` is the ping's tokens, output included, times the `accounting.subscription_weights`) or `unknown`. `estimated` is set on every basis but `usd`. A ping recorded before this field has no `basis` and reads as `usd` |
 | `thread`, `unattributed_break_usd` | the accountant thread the request belongs to, and the net cost of the cache effects no operator owns (shown, never charged to an operator) |
+| `interaction_usd` | the value of the tokens no operator owns on a rescued request (accountant design §6.2). A keep-alive ping kept the cache warm and an operator also changed the body, so some tokens the client body would have written cold were read instead. Neither the keeper nor the operator owns them. Signed: positive saves. Never charged to an operator and not in `avoided[]`, but counted in the net saving, as the metrics count `llm.savings.interaction.usd`. Basis `usd` only: a request on a subscription has none |
 | `daily_total_usd`, `daily_max_usd` | added by `litellm-budget-track` when it is in the pipeline; the budget's business, not the cost owner's |
 
 **How the basis is chosen.** `accountant.BillingFrom` reads the shape of the **client's**
@@ -747,7 +748,8 @@ presence.
 | column | what it sums |
 |---|---|
 | `avoidedMicros` | the `usd` of applied savings with basis `usd`. Gross, as before the accountant |
-| `penaltyMicros` | their `penaltyUsd`. Net saved is `avoidedMicros − penaltyMicros − keepAliveMicros`, and may be negative; nothing floors it. The keeper's `rescue` is in `avoidedMicros`, so the pings that earned it come off the net |
+| `penaltyMicros` | their `penaltyUsd`. Net saved is `avoidedMicros − penaltyMicros − keepAliveMicros + interactionMicros`, and may be negative; nothing floors it. The keeper's `rescue` is in `avoidedMicros`, so the pings that earned it come off the net |
+| `interactionMicros` | the records' `interaction_usd`: money, basis `usd`, **signed**. In no operator's figure and not in `avoidedMicros`, but in the net saving. With it, the net saving equals the net of the `llm.savings.*` metrics for the same requests |
 | `avoidedUnits`, `penaltyUnits` | the `units`/`penaltyUnits` of `subscriptionEquivalent` savings, in milli-units |
 | `avoidedApiEquivalentMicros` | net of its penalty (`usd − penaltyUsd`), for the savings with basis `subscriptionEquivalent`: shown beside `avoidedUnits`/`penaltyUnits` as "API equivalent net", never in a money total. **May be negative** when the penalty exceeds the saving, the same way `avoidedUnits − penaltyUnits` can; nothing floors it |
 | `avoidedUnknownMicros` | net of its penalty (`usd − penaltyUsd`), for savings with basis `unknown`: shown, never added. **May be negative**, for the same reason |

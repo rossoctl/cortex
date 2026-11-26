@@ -253,6 +253,12 @@ type Counts struct {
 	KeepAliveAPIEquivalentMicros int64 `json:"keepAliveApiEquivalentMicros,omitempty"`
 	KeepAliveUnknownMicros       int64 `json:"keepAliveUnknownMicros,omitempty"`
 	KeepAlivePings               int64 `json:"keepAlivePings,omitempty"`
+	// InteractionMicros is the value of the tokens no context operator owns on a rescued request
+	// (event.Event.InteractionUSD, design §6.2), basis "usd" only. Money in the same unit as
+	// AvoidedMicros, but never in it: no operator saved it. SIGNED, so a window can hold a net
+	// cost. A net saving adds it (agentop money.NetMicros), as the accountant metrics add
+	// llm.savings.interaction.usd (rossoctl/cortex#2139).
+	InteractionMicros int64 `json:"interactionMicros,omitempty"`
 	// PricedRequests counts the requests that actually produced a cost. Coverage
 	// is a counter rather than a flag because buckets are summed when a client
 	// asks for a coarser resolution, and because a deployment can price some of
@@ -408,6 +414,7 @@ func (c *Counts) Add(o Counts) {
 	c.addInto(&c.KeepAliveAPIEquivalentMicros, o.KeepAliveAPIEquivalentMicros)
 	c.addInto(&c.KeepAliveUnknownMicros, o.KeepAliveUnknownMicros)
 	c.addInto(&c.KeepAlivePings, o.KeepAlivePings)
+	c.addInto(&c.InteractionMicros, o.InteractionMicros)
 	c.addInto(&c.PricedRequests, o.PricedRequests)
 	// Summed alongside PricedRequests, never out of it: it is a subset disclosure, not a
 	// deduction. See the field's own comment for why the aggregate discloses rather than
@@ -468,6 +475,7 @@ func (c *Counts) AddFigures(f event.Figures) {
 		KeepAliveUnits:               f.KeepAliveUnits,
 		KeepAliveAPIEquivalentMicros: f.KeepAliveAPIEquivalentMicros,
 		KeepAliveUnknownMicros:       f.KeepAliveUnknownMicros,
+		InteractionMicros:            f.InteractionMicros,
 	})
 }
 

@@ -12,10 +12,11 @@ type figureSum struct {
 }
 
 // fields lists f's fields, so Add and Sub cannot miss one.
-func fields(f *event.Figures) [13]*int64 {
-	return [13]*int64{&f.AvoidedMicros, &f.PenaltyMicros, &f.AvoidedUnits, &f.PenaltyUnits, &f.AvoidedAPIEquivalentMicros,
+func fields(f *event.Figures) [14]*int64 {
+	return [14]*int64{&f.AvoidedMicros, &f.PenaltyMicros, &f.AvoidedUnits, &f.PenaltyUnits, &f.AvoidedAPIEquivalentMicros,
 		&f.AvoidedUnknownMicros, &f.PluginSpendMicros, &f.PluginSpendUnits, &f.PluginSpendUnknownMicros,
-		&f.KeepAliveMicros, &f.KeepAliveUnits, &f.KeepAliveAPIEquivalentMicros, &f.KeepAliveUnknownMicros}
+		&f.KeepAliveMicros, &f.KeepAliveUnits, &f.KeepAliveAPIEquivalentMicros, &f.KeepAliveUnknownMicros,
+		&f.InteractionMicros}
 }
 
 // Add accumulates o into s.
@@ -58,4 +59,5 @@ func (s figureSum) setOn(sum *SessionSummary) {
 	sum.KeepAliveUnits = f.KeepAliveUnits
 	sum.KeepAliveAPIEquivalentMicros = f.KeepAliveAPIEquivalentMicros
 	sum.KeepAliveUnknownMicros = f.KeepAliveUnknownMicros
+	sum.InteractionMicros = f.InteractionMicros
 }

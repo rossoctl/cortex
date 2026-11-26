@@ -122,6 +122,10 @@ type SessionSummary struct {
 	KeepAliveAPIEquivalentMicros int64 `json:"keepAliveApiEquivalentMicros,omitempty"`
 	KeepAliveUnknownMicros       int64 `json:"keepAliveUnknownMicros,omitempty"`
 	KeepAlivePings               int64 `json:"keepAlivePings,omitempty"`
+	// InteractionMicros is usage.Counts.InteractionMicros summed over this session's records: the
+	// value of the tokens no operator owns on its rescued requests. Money, basis "usd", signed.
+	// In no operator's figure and not in AvoidedMicros; the session's net saving adds it.
+	InteractionMicros int64 `json:"interactionMicros,omitempty"`
 	// Currencies names the units CostMicros and AvoidedMicros are in, sorted, dollars spelled
 	// "USD" — and is ABSENT when every priced event was in dollars, which is every deployment
 	// with no pricing unit configured, so those serve the bytes they always have.

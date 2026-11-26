@@ -330,6 +330,14 @@ type Event struct {
 	// ADDITIVE and omitempty. core/accounting fills it; no total reads it yet.
 	UnattributedBreakUSD float64 `json:"unattributed_break_usd,omitempty"`
 
+	// InteractionUSD is the net value of the tokens no context operator owns on a rescued
+	// request (W7.1's Event.InteractionUSD, design §6.2): a keep-alive ping kept the cache warm
+	// and an operator changed the body. Positive saves. Signed. Never charged to an operator and
+	// never part of Avoided, but counted in the session's net saving (Figures.InteractionMicros),
+	// as the accountant metrics count it (rossoctl/cortex#2139). core/accounting sets it on basis
+	// "usd" only. ADDITIVE and omitempty.
+	InteractionUSD float64 `json:"interaction_usd,omitempty"`
+
 	// Thread is the accountant thread this request's savings belong to: "main", a subagent id, or
 	// the id the context-guru plugin named (core/accounting.ThreadOf). A subagent's saving is kept
 	// apart from the main thread's (W7.1). ADDITIVE and omitempty.
@@ -542,7 +550,7 @@ func (e Event) IsDetachedSpend() bool { return e.Purpose == PurposeDetachedSpend
 // field is the usage.Counts field of the same name, so the ring, the ledger and the session store
 // fold one function's answer.
 //
-// Only AvoidedMicros, PenaltyMicros and PluginSpendMicros are money. The Units fields value a
+// Only AvoidedMicros, PenaltyMicros, PluginSpendMicros and InteractionMicros are money. The Units fields value a
 // subscriptionEquivalent figure in usage-limit units, and AvoidedAPIEquivalentMicros is the same
 // savings' dollars at API rates — shown beside the units, labelled "API equivalent", never in a
 // money total. The Unknown fields hold a figure whose billing mode is unknown, shown beside the
@@ -577,6 +585,10 @@ type Figures struct {
 	KeepAliveUnits               int64
 	KeepAliveAPIEquivalentMicros int64
 	KeepAliveUnknownMicros       int64
+	// InteractionMicros is InteractionUSD in micros: the value of the tokens no operator owns on
+	// a rescued request. Money, basis "usd". Signed: a negative one is a cost. In no operator's
+	// figure and not in AvoidedMicros; a net saving adds it.
+	InteractionMicros int64
 }
 
 // IsZero reports whether every figure is zero.
@@ -642,6 +654,7 @@ func (e Event) Figures() Figures {
 		PluginSpendMicros:          pricing.MicrosOrZero(spendUSD),
 		PluginSpendUnits:           MilliUnits(spendUnits),
 		PluginSpendUnknownMicros:   pricing.MicrosOrZero(spendUnknown),
+		InteractionMicros:          pricing.SignedMicrosOrZero(e.InteractionUSD),
 	}
 	if e.IsKeepAlive() && e.Priced() {
 		switch e.Basis {

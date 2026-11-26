@@ -445,6 +445,7 @@ type foldJSON struct {
 	PluginSpendMicros          int64                `json:"pluginSpendMicros,omitempty"`
 	PluginSpendUnits           int64                `json:"pluginSpendUnits,omitempty"`
 	PluginSpendUnknownMicros   int64                `json:"pluginSpendUnknownMicros,omitempty"`
+	InteractionMicros          int64                `json:"interactionMicros,omitempty"`
 	Units                      map[string]int       `json:"units,omitempty"`
 	PromptContext              *model.PromptContext `json:"promptContext,omitempty"`
 	// InferenceHost is absent from a session.json written before it existed, which decodes to "".
@@ -522,6 +523,7 @@ func (f *SummaryFold) MarshalJSON() ([]byte, error) {
 		PluginSpendMicros:          f.avoided.Figures.PluginSpendMicros,
 		PluginSpendUnits:           f.avoided.Figures.PluginSpendUnits,
 		PluginSpendUnknownMicros:   f.avoided.Figures.PluginSpendUnknownMicros,
+		InteractionMicros:          f.avoided.Figures.InteractionMicros,
 		Units:                      f.units,
 		PromptContext:              f.promptContext(),
 		InferenceHost:              f.inferenceHost,
@@ -565,6 +567,7 @@ func (f *SummaryFold) UnmarshalJSON(b []byte) error {
 			PluginSpendMicros:          j.PluginSpendMicros,
 			PluginSpendUnits:           j.PluginSpendUnits,
 			PluginSpendUnknownMicros:   j.PluginSpendUnknownMicros,
+			InteractionMicros:          j.InteractionMicros,
 		}},
 		units:           j.Units,
 		titleRank:       rankNone,
