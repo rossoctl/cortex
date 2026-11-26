@@ -240,12 +240,24 @@ accounting:
   publish a record. No figure and no total reads it.
 - **Facts.** `facts.Provider` and `facts.For` (section 5.2). The host is the destination host after
   any redirect, because that is the server that billed.
+- **The billed tier (#2136).** `facts.For` sets the TTL from the marks, before the response. A
+  gateway can bill a 1h ask as 5m. So `Compute` checks the ask against the bill before it calls the
+  library's `Compute`, for a provider with an exact lifetime (Anthropic):
+  1. If the response wrote to the cache, its tier is 1h only when `CacheWrite1h >= CacheWrite`. The
+     thread remembers that tier, in its `threadBilling` entry.
+  2. If the response wrote nothing, the thread's remembered tier applies.
+  3. If the thread has no remembered tier, the asked tier applies.
+  4. If the ask was 1h and the tier is not 1h, call `Request.LowerTTL(5 * time.Minute)` and count
+     `llm.cache.ttl_downgrades`.
+
+  This is context-guru's rule (`accrec.BilledTTL`) and the accountant's W6.6. The tier is not in the
+  snapshot: after a restart, the asked tier applies until the thread's next write.
 - **Persistence (laptop only).** Write a `Snapshot()` every 60s to `~/.cortex/accountant-state.json`
   (mode 0600). `Restore` it at startup. Refuse a snapshot older than 1h, as the proxy does. The
   reason: no provider cache lives longer than 1h, so older state can only price a cache that has
   expired. In a cluster there is no snapshot, and a pod restart starts fresh (design §11 Q13).
-- **Memory.** The library limits `Trackers` to 10,000 threads. The host keeps nothing per thread
-  beyond that.
+- **Memory.** The library limits `Trackers` to 10,000 threads. The host keeps one `threadBilling`
+  entry per thread (billing mode and billed tier), with the same bound.
 
 ### 5.5 Context operators
 

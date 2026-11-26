@@ -130,6 +130,7 @@ type Sink struct {
 	keepaliveEstimatedUSD metric.Float64Counter
 	cacheMisses           metric.Int64Counter
 	cacheMissCostUSD      metric.Float64Counter
+	cacheTTLDowngrades    metric.Int64Counter
 }
 
 // NewSink builds the sink on mp, priced with r through USD, the function the ledger prices with.
@@ -195,6 +196,11 @@ func NewSink(mp metric.MeterProvider, r pricing.Resolver) *Sink {
 		{"llm.cache.miss_cost_usd", func() (err error) {
 			s.cacheMissCostUSD, err = meter.Float64Counter("llm.cache.miss_cost_usd",
 				metric.WithDescription("Write premium of cache-miss requests (docs/metrics/spec.md 5.4): the written prefix priced above a read, by cause."))
+			return err
+		}},
+		{"llm.cache.ttl_downgrades", func() (err error) {
+			s.cacheTTLDowngrades, err = meter.Int64Counter("llm.cache.ttl_downgrades",
+				metric.WithDescription("Priced requests that asked for the 1h cache tier and were billed at 5m (a gateway downgrade): the accountant priced them at 5m."))
 			return err
 		}},
 	}
@@ -288,6 +294,15 @@ func (s *Sink) CountPing(model, endpoint, outcome string, projectedUSD float64, 
 		s.keepaliveCostUSD.Add(ctx, projectedUSD, metric.WithAttributes(modelAttr))
 		s.keepaliveEstimatedUSD.Add(ctx, projectedUSD, metric.WithAttributes(modelAttr))
 	}
+}
+
+// CountTTLDowngrade counts one priced request whose 1h cache ask was billed at 5m (#2136). Safe
+// on a nil Sink.
+func (s *Sink) CountTTLDowngrade(model string) {
+	if s == nil || s.sink == nil {
+		return
+	}
+	s.cacheTTLDowngrades.Add(context.Background(), 1, metric.WithAttributes(attribute.String("model", model)))
 }
 
 // observeInferenceMetrics adds one observation to the Tier 1 counters: llm.inference.* for a
@@ -560,6 +575,15 @@ func (h *Host) countPing(model, endpoint, outcome string, projectedUSD float64, 
 		return
 	}
 	h.goObserve(func() { h.sink.CountPing(model, endpoint, outcome, projectedUSD, mode) })
+}
+
+// countTTLDowngrade counts a lowered tier (Sink.CountTTLDowngrade), off the caller's goroutine
+// like observe.
+func (h *Host) countTTLDowngrade(model string) {
+	if h.sink == nil {
+		return
+	}
+	h.goObserve(func() { h.sink.CountTTLDowngrade(model) })
 }
 
 // goObserve runs fn on a goroutine of its own that Close waits for, unless Close has started. It
