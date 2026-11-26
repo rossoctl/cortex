@@ -3,9 +3,11 @@ package session
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/rossoctl/cortex/core/capabilities"
 	"github.com/rossoctl/cortex/core/model"
+	"github.com/rossoctl/cortex/core/redact/content"
 )
 
 // maxTitleLen caps a title, in RUNES — a user message is unbounded (the largest measured event
@@ -863,15 +865,101 @@ func between(s, open, closing string) string {
 // its base, leaving a dangling accent. core/observe/claude's clip is exempt because its scrubRunes
 // drops every combining mark first; this one keeps them, so "café" survives and the cut is the
 // price. Grapheme clusters need a segmentation library core/ does not have.
+//
+// SECRETS ARE REDACTED (#1921): a title is the first thing a person typed, shown in agentop and
+// served by the session API, and a pasted key there is a key on every screen that shows the list.
+// The secret rules (core/redact/content) run on the RAW text, before the fold, on a window of
+// titleRawBytes wider than the title; the result is then folded and clipped.
+//   - Wider: a key that starts inside the title but runs past rune 80 is seen whole, where a rule
+//     run on the clipped title would see too short a piece to match and leave it.
+//   - Raw: the fold turns a line break into a space, and the rules read a line break as the end
+//     of a value: "DB_PASSWORD=Sunflower\nDB_HOST=db" is a password, but folded to
+//     "DB_PASSWORD=Sunflower DB_HOST=db" a word of letters followed by more words reads as prose.
+//
+// Still bounded, so still safe under the lock: the window, not the candidate, is what the rules
+// scan. Leading whitespace is skipped first, as the fold would, so it does not eat the window.
 func sanitizeTitle(s string) string {
+	s = strings.TrimLeftFunc(s, func(r rune) bool { return unicode.IsSpace(r) || model.IsControlRune(r) })
+	if s == "" {
+		return ""
+	}
+	raw, _ := titleRedactor.String(prefixBytes(s, titleRawBytes))
+	t := foldTitleTo(raw, titleWindow)
+	return clipTitleRunes(t)
+}
+
+// titleWindow is how many runes sanitizeTitle folds: room for a key that starts near the end of
+// the title. titleRawBytes is the raw text the rules see, at most 4 bytes for each of those runes.
+const (
+	titleWindow   = 4 * maxTitleLen
+	titleRawBytes = 4 * titleWindow
+)
+
+// prefixBytes is s cut to at most n bytes, at a rune boundary.
+func prefixBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
+
+// dropSeveredMarker removes a redaction marker a clip cut short at t's end: "…[REDACTED:api_k",
+// or any piece of "[REDACTED:" down to its "[", which would read as a broken word.
+func dropSeveredMarker(t string) string {
+	j := strings.LastIndexByte(t, '[')
+	if j < 0 || strings.Contains(t[j:], "]") {
+		return t
+	}
+	if tail := t[j:]; strings.HasPrefix("[REDACTED:", tail) || strings.HasPrefix(tail, "[REDACTED:") {
+		return t[:j]
+	}
+	return t
+}
+
+// titleRedactor holds no state; one is shared by every title.
+var titleRedactor = content.New()
+
+// redactStoredTitle is the secret rules over a title stored before they applied, read back from
+// an archived summary: it is already folded and clipped, so only the rules and the clip remain.
+func redactStoredTitle(t string) string {
+	if t == "" {
+		return ""
+	}
+	r, _ := titleRedactor.String(t)
+	if r == t {
+		return t
+	}
+	return clipTitleRunes(r)
+}
+
+// clipTitleRunes cuts a folded title to maxTitleLen runes, dropping a redaction marker the cut
+// would sever ("…[REDACTED:api_k"), which would read as a broken word.
+func clipTitleRunes(t string) string {
+	n := 0
+	for i := range t {
+		if n == maxTitleLen {
+			t = dropSeveredMarker(t[:i])
+			break
+		}
+		n++
+	}
+	return strings.TrimRight(t, " ")
+}
+
+// foldTitleTo is sanitizeTitle's fold: whitespace and control runes become at most one space, and
+// it stops after limit emitted runes.
+func foldTitleTo(s string, limit int) string {
 	var b strings.Builder
 	// Sized to the OUTPUT, not the input. 4 bytes per rune is the max UTF-8 encoding, so this is
 	// one allocation for any input, where b.Grow(len(s)) was proportional to a hostile message.
-	b.Grow(maxTitleLen * 4)
+	b.Grow(limit * 4)
 	emitted := 0
 	prevSpace := true // drops leading whitespace
 	for _, r := range s {
-		if emitted == maxTitleLen {
+		if emitted == limit {
 			break
 		}
 		// TWO PREDICATES, and each catches runes the other misses. model.IsControlRune covers
@@ -893,9 +981,9 @@ func sanitizeTitle(s string) string {
 		prevSpace = false
 		emitted++
 	}
-	// TrimRight, not clipTitle: the loop cannot emit more than maxTitleLen runes, so there is
-	// nothing left to clip. The trim is still needed because the stop can land just after a
-	// folded space, exactly as the old cut could.
+	// TrimRight, not clipTitle: the loop cannot emit more than limit runes, so there is nothing
+	// left to clip. The trim is still needed because the stop can land just after a folded space,
+	// exactly as the old cut could.
 	return strings.TrimRight(b.String(), " ")
 }
 

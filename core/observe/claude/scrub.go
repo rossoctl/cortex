@@ -4,6 +4,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/rossoctl/cortex/core/redact/content"
 )
 
 // MaxCwdLen caps the cwd fallback, in RUNES.
@@ -239,13 +241,61 @@ func scrubRunes(s string) string {
 // neighbour: combining marks, modifiers, joiners and regional indicators are all gone, so one rune
 // is one grapheme and the slice cannot land inside a cluster. Without that a cut could leave a
 // dangling accent or half a flag.
+//
+// SECRETS ARE REDACTED (#1921) on the RAW text, before normalizeTitle and the cut, for the
+// reasons core/session's sanitizeTitle gives: a key starting inside the title but running past the
+// cut is seen whole, and the rules read a line break as the end of a value, which normalizing
+// turns into a space ("PASSWORD=Sunflower\nHOST=db" would read as prose). The window is generous,
+// as the harvest runs off the viewer's path and markup can fill the start of a prompt. A marker
+// the cut would sever is dropped.
 func clipTitle(s string) string {
-	s = normalizeTitle(s)
+	if len(s) > titleRawBytes {
+		n := titleRawBytes
+		for n > 0 && !utf8.RuneStart(s[n]) {
+			n--
+		}
+		s = s[:n]
+	}
+	red, _ := titleRedactor.String(s)
+	return capTitle(normalizeTitle(red))
+}
+
+// titleRawBytes is how much of a title's raw text the secret rules see.
+const titleRawBytes = 64 << 10
+
+// titleRedactor holds no state; one is shared by every title.
+var titleRedactor = content.New()
+
+// capTitle cuts s to MaxTitleLen runes, dropping a redaction marker the cut would sever.
+func capTitle(s string) string {
 	r := []rune(s)
 	if len(r) <= MaxTitleLen {
-		return s
+		return strings.TrimSpace(s)
 	}
-	return strings.TrimSpace(string(r[:MaxTitleLen]))
+	t := string(r[:MaxTitleLen])
+	// A marker cut short at the end: "…[REDACTED:api_k", or any piece of "[REDACTED:" down to
+	// its "[".
+	if j := strings.LastIndexByte(t, '['); j >= 0 && !strings.Contains(t[j:], "]") {
+		if tail := t[j:]; strings.HasPrefix("[REDACTED:", tail) || strings.HasPrefix(tail, "[REDACTED:") {
+			t = t[:j]
+		}
+	}
+	return strings.TrimSpace(t)
+}
+
+// RedactStoredTitles runs the secret rules over the titles in m, which may have been harvested
+// before they applied. Both readers of the metadata file call it, so an old title is shown
+// redacted at once and the next harvest saves it so.
+func RedactStoredTitles(m map[string]SessionMetadata) {
+	for id, e := range m {
+		if e.Title == "" {
+			continue
+		}
+		if red, _ := titleRedactor.String(e.Title); red != e.Title {
+			e.Title = capTitle(red)
+			m[id] = e
+		}
+	}
 }
 
 // stripANSI removes a CSI/OSC escape sequence together with its parameters.
