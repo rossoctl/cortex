@@ -190,6 +190,7 @@ func (s *Store) withPriorLocked(sum *SessionSummary, id string, sess *entry) {
 	// The entry's keep-alive spend is not over its events and the archive holds none (see
 	// SessionSummary.KeepAliveMicros), so it goes on top as ListSessions put it.
 	avoided.Merge(sess.keepAlive)
+	avoided.Merge(sess.detached)
 	cost.Saturated = cost.Saturated || f.cost.Saturated
 	sum.CostMicros = cost.Micros
 	avoided.setOn(sum)

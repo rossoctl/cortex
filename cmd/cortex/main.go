@@ -770,6 +770,9 @@ func main() {
 		// never see one, and a session's cost would leave out what keeping its cache warm cost.
 		// AddKeepAlive adds the spend and nothing else; it does not make the session active.
 		acctHost.AddPingListener(func(p accounting.PingSpend) { sessions.AddKeepAlive(p.Session, p.Figures) })
+		// A detached model call (a summarizer that finished after its request) is not an event
+		// either, for the same reason (cortex#2140).
+		acctHost.AddDetachedSpendListener(func(d accounting.DetachedSpend) { sessions.AddDetachedSpend(d.Session, d.Figures) })
 
 		// The durable cost ledger is a SECOND Recorder alongside the aggregator, not a
 		// reader of it: the aggregator keeps independent marginals (by-model,

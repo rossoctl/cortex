@@ -1115,7 +1115,7 @@ func (a *Aggregator) Record(sessionID string, e *model.SessionEvent) {
 	// figure travel on separate wires and no expression can add one to the other by
 	// resembling it. See Counts.AvoidedMicros.
 	var avoided event.Figures
-	var keepAlive bool
+	var keepAlive, detached bool
 	if e.Phase != model.SessionRequest {
 		// ONE unmarshal, feeding both. costOf wants the record only when it priced
 		// something and this wants it either way, so each calling cost/event for itself
@@ -1137,6 +1137,7 @@ func (a *Aggregator) Record(sessionID string, e *model.SessionEvent) {
 		if haveRec {
 			avoided = rec.Figures()
 			keepAlive = rec.IsKeepAlive()
+			detached = rec.IsDetachedSpend()
 		}
 	}
 
@@ -1160,8 +1161,11 @@ func (a *Aggregator) Record(sessionID string, e *model.SessionEvent) {
 		}
 	}
 
+	if detached && avoided.IsZero() {
+		return // a refused or dry-run detached spend counts in no total
+	}
 	t := at.Truncate(BucketWidth)
-	a.foldInto(a.all, t, sessionID, e, requestPlugins, ec, avoided, keepAlive)
+	a.foldInto(a.all, t, sessionID, e, requestPlugins, ec, avoided, keepAlive, detached)
 
 	// The agent and project rings come BEFORE the session ring, whose branch below returns early
 	// on both of its paths. See the agents field for why only a recognised agent gets a ring.
@@ -1173,23 +1177,23 @@ func (a *Aggregator) Record(sessionID string, e *model.SessionEvent) {
 			ring = make([]bucket, NumBuckets)
 			a.agents[agent] = ring
 		}
-		a.foldInto(ring, t, sessionID, e, requestPlugins, ec, avoided, keepAlive)
+		a.foldInto(ring, t, sessionID, e, requestPlugins, ec, avoided, keepAlive, detached)
 	}
 	project := projectLabel(e)
-	a.foldInto(a.projectRingLocked(projectKey{"", project}, at), t, sessionID, e, requestPlugins, ec, avoided, keepAlive)
+	a.foldInto(a.projectRingLocked(projectKey{"", project}, at), t, sessionID, e, requestPlugins, ec, avoided, keepAlive, detached)
 	if knownAgent {
-		a.foldInto(a.projectRingLocked(projectKey{agent, project}, at), t, sessionID, e, requestPlugins, ec, avoided, keepAlive)
+		a.foldInto(a.projectRingLocked(projectKey{agent, project}, at), t, sessionID, e, requestPlugins, ec, avoided, keepAlive, detached)
 	}
 
-	// A KEEP-ALIVE PING IS NOT AGENT ACTIVITY, so it neither creates a session ring nor refreshes
+	// A KEEP-ALIVE PING OR A DETACHED SPEND IS NOT AGENT ACTIVITY, so it neither creates a session ring nor refreshes
 	// one: its lastSeen would keep an idle session's ring warm, and a new ring at the cap would
 	// evict a real session's. It is in the all-sessions and agent rings above.
-	if keepAlive {
+	if keepAlive || detached {
 		return
 	}
 	if ring, ok := a.sessions[sessionID]; ok {
 		ring.lastSeen = at
-		a.foldInto(ring.buckets, t, sessionID, e, requestPlugins, ec, avoided, keepAlive)
+		a.foldInto(ring.buckets, t, sessionID, e, requestPlugins, ec, avoided, keepAlive, detached)
 		return
 	}
 	// maxSess == 0 means no per-session rings at all — see WithMaxSessions. The
@@ -1207,7 +1211,7 @@ func (a *Aggregator) Record(sessionID string, e *model.SessionEvent) {
 	}
 	ring := &sessionRing{buckets: make([]bucket, NumBuckets), lastSeen: at}
 	a.sessions[sessionID] = ring
-	a.foldInto(ring.buckets, t, sessionID, e, requestPlugins, ec, avoided, keepAlive)
+	a.foldInto(ring.buckets, t, sessionID, e, requestPlugins, ec, avoided, keepAlive, detached)
 }
 
 // holdRequestPluginsLocked stashes a request event's plugin names until its
@@ -1354,7 +1358,7 @@ func PriceableRequest(e *model.SessionEvent) bool {
 // which session it belongs to: a.all is shared and a sessionRing holds only
 // buckets. Both call sites pass the same id, which is what lets the bySession
 // label be recorded uniformly instead of only on the all-sessions ring.
-func (a *Aggregator) foldInto(ring []bucket, t time.Time, sessionID string, e *model.SessionEvent, requestPlugins []string, ec eventCost, avoided event.Figures, keepAlive bool) {
+func (a *Aggregator) foldInto(ring []bucket, t time.Time, sessionID string, e *model.SessionEvent, requestPlugins []string, ec eventCost, avoided event.Figures, keepAlive, detached bool) {
 	b := &ring[slot(t)]
 	if !b.start.Equal(t) {
 		*b = bucket{start: t} // stale lap: reset rather than accumulate onto old data
@@ -1391,6 +1395,16 @@ func (a *Aggregator) foldInto(ring []bucket, t time.Time, sessionID string, e *m
 		}
 	}
 
+	if detached {
+		// A DETACHED MODEL CALL IS NOT THE AGENT'S REQUEST (event.PurposeDetachedSpend): only its
+		// Spends count, in the PluginSpend fields, as the ledger books them. No Requests, tokens,
+		// cost, coverage or latency.
+		var one Counts
+		one.AddFigures(avoided)
+		b.Counts.Add(one)
+		a.labelOne(b, sessionID, e, modelName, nil, one, ec, true)
+		return
+	}
 	if keepAlive {
 		// A KEEP-ALIVE PING IS NOT THE AGENT'S REQUEST (see Counts.KeepAliveMicros): its count and
 		// its spend go to their own fields, the spend split by basis by event.Figures exactly as

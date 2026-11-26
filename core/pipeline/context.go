@@ -477,9 +477,12 @@ type Context struct {
 	opsMu sync.Mutex
 	// reportedOps are the context operations plugins reported, in call order. See ReportOps.
 	reportedOps []accountant.Operation
-	// opsSealed is set by Run right before RequestEnd reads the ops; an op reported after it is
-	// dropped and counted (lateOpsDropped).
+	// opsSealed is set by Run right before RequestEnd reads the ops. An op reported after it
+	// goes to lateOps, or is dropped and counted (lateOpsDropped) when lateOps is nil.
 	opsSealed bool
+	// lateOps is the accountant's handler for ops reported after the seal (LateOpsAccountant),
+	// set with opsSealed under opsMu. Nil when the accountant has none.
+	lateOps func([]accountant.Operation) int
 	// accountingThread, accountingParent and accountingThreadSet hold SetAccountingThread's
 	// choice of thread.
 	accountingThread    string

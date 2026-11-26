@@ -178,7 +178,9 @@ var validCacheModes = map[string]bool{"auto": true, "on": true, "off": true}
 // goroutine (via pctx.OpReporter(), while the plugin is dispatched) when the model was built, so
 // Report is safe to call later from any goroutine and stamps the op with the plugin's own name
 // and its on_error: observe state without Complete having to know either. A call that returns
-// after the request was accounted has its op dropped by the pipeline and counted in lateDropped.
+// after the request was accounted is booked by the accountant as a detached spend, with
+// Call.Detached set by the pipeline (pipeline.LateOpsAccountant, cortex#2140). A call it cannot
+// book (no accountant, no session) is dropped and counted in lateDropped.
 type cgModel struct {
 	c           *llmclient.Client
 	maxTokens   int
@@ -203,6 +205,7 @@ type cgModel struct {
 const pluginName = "context-guru"
 
 // spend reports one model call as a KindSpend op. A zero usage means the cost is unknown.
+// Detached is false here: the pipeline sets it when the op comes after the request was accounted.
 func (m cgModel) spend(usage accountant.CallUsage) {
 	accepted := m.report.Report(accountant.Operation{
 		Kind: accountant.KindSpend,
@@ -338,7 +341,7 @@ func (p *ContextGuru) Metrics() []pipeline.Metric {
 		Name:  "late_model_calls_dropped",
 		Value: float64(p.lateModelCalls.Load()),
 		Unit:  "count",
-		Note:  "model calls that returned after their request was accounted; their spend reaches no figure",
+		Note:  "model calls that returned after their request was accounted and that no accountant booked; their spend reaches no figure",
 	}, {
 		Name:  "state_db_errors",
 		Value: float64(diskErrors),

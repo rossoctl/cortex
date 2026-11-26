@@ -113,6 +113,9 @@ type Host struct {
 	// highest id.
 	pingListeners   map[uint64]pingListenerEntry
 	pingListenerSeq uint64
+	// detachedListeners are the registered detached-spend listeners (AddDetachedSpendListener),
+	// by an id from the same sequence as pingListeners.
+	detachedListeners map[uint64]DetachedSpendListener
 
 	// siblings holds each (session, thread)'s last forwarded body, for EntryFacts.SharedWarm
 	// (sibling.go, accountant R54). It has its own lock and is bounded like threadBilling.

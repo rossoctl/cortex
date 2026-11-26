@@ -417,6 +417,10 @@ func (w *Writer) row(e *model.SessionEvent) (minute time.Time, r Row, ok bool) {
 	// than window=1h (review finding). Like avoidedCost it cannot move the coverage ratio:
 	// the keep-alive branch below sets KeepAlivePings alone.
 	keepAlive := hasCost && ev.IsKeepAlive()
+	if hasCost && ev.IsDetachedSpend() && !avoidedCost {
+		// A detached spend that no total counts (refused, or a dry run) adds nothing to a row.
+		return
+	}
 	if e.Inference == nil && !settledCost && !refusedCost && !avoidedCost && !keepAlive {
 		// Non-inference traffic the proxy handled — MCP, health checks, tunnels.
 		// Recording it would put every proxied response in the cost denominator, the
@@ -604,6 +608,14 @@ func (w *Writer) row(e *model.SessionEvent) (minute time.Time, r Row, ok bool) {
 		// AFTER the token literal above, which assigns r.Counts wholesale: setting this before
 		// it would be silently overwritten for every inference row, which is all of them that
 		// can carry a saving.
+		if ev.IsDetachedSpend() {
+			// A DETACHED MODEL CALL IS NOT THE AGENT'S REQUEST: only its Spends count, in the
+			// PluginSpend fields its basis names (event.Figures), as an in-request spend does. It
+			// is in no request, token or coverage figure. The ring does the same.
+			r.Counts = usage.Counts{}
+			r.AddFigures(figures)
+			return minute, r, true
+		}
 		if ev.IsKeepAlive() {
 			// A KEEP-ALIVE PING IS NOT THE AGENT'S REQUEST: it counts in KeepAlivePings, its
 			// spend goes to the KeepAlive field its basis names (event.Figures: only a usd ping
