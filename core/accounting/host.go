@@ -639,8 +639,6 @@ func (h *Host) Compute(pctx *pipeline.Context) (accountant.Result, bool) {
 	return p.result, p.ok
 }
 
-// release marks a request's handle released: Compute will not run for it. Callers hold
-// p.computeMu.
 // withheld is the W6.5 gate pctx's Result failed, or "" (pending.withheld). Call it after
 // Compute: it reads the latched answer.
 func (h *Host) withheld(pctx *pipeline.Context) string {
@@ -653,6 +651,8 @@ func (h *Host) withheld(pctx *pipeline.Context) string {
 	return p.withheld
 }
 
+// release marks a request's handle released: Compute will not run for it. Callers hold
+// p.computeMu.
 func (h *Host) release(p *pending, why string) {
 	// Only the handle goes: the record's goroutine may still be running, and it ends on its own.
 	// Once it has, nothing references the library record.

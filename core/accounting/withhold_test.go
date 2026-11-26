@@ -39,7 +39,9 @@ func overlapRequest(t *testing.T, h *Host) *pipeline.Context {
 func TestHost_SavingsWithheldOnAFatalCheck(t *testing.T) {
 	mp, rd := manual(t)
 	rates := testRates(pricing.ProvConfigured)
-	h := New(Options{Resolver: rates, Sink: NewSink(mp, rates)})
+	// The Sink gets its own resolver: fixedRates records its last lookup, and the Sink prices on
+	// the observe goroutine while Savings resolves on this one.
+	h := New(Options{Resolver: rates, Sink: NewSink(mp, testRates(pricing.ProvConfigured))})
 	h.computeWait = time.Hour // wait on the record, not the clock
 	pctx := overlapRequest(t, h)
 
@@ -80,7 +82,9 @@ func TestHost_SavingsWithheldOnAFatalCheck(t *testing.T) {
 func TestHost_SavingsOneOperatorIsBooked(t *testing.T) {
 	mp, rd := manual(t)
 	rates := testRates(pricing.ProvConfigured)
-	h := New(Options{Resolver: rates, Sink: NewSink(mp, rates)})
+	// The Sink gets its own resolver: fixedRates records its last lookup, and the Sink prices on
+	// the observe goroutine while Savings resolves on this one.
+	h := New(Options{Resolver: rates, Sink: NewSink(mp, testRates(pricing.ProvConfigured))})
 	h.computeWait = time.Hour // wait on the record, not the clock
 	// Only the penalty_unknown branch may mark this saving estimated, so nothing else does: an API
 	// key gives basis usd (every other basis is estimated), and a measured token count keeps the
