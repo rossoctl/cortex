@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"math"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -257,5 +258,24 @@ func TestSettleCost_NoSavingOnRefusedCounts(t *testing.T) {
 	}
 	if acc.calls != 0 || len(ev.Avoided) != 0 {
 		t.Errorf("accountant asked %d times, avoided = %+v on a response whose counters were refused", acc.calls, ev.Avoided)
+	}
+}
+
+// #2137: a client compaction is carried on the cost record, and it alone is reason to publish a
+// record: it names the changes the compaction ended, and no other record holds it.
+func TestSettleCost_PublishesTheCompactionRecord(t *testing.T) {
+	comp := &event.CompactionRecord{Trigger: "unknown", Ended: []string{"tool-prune:Big"}}
+	p := NewInferenceParser() // no rates: nothing priced, so only the compaction can publish
+	p.acct = &countingAccountant{extras: accounting.Extras{Thread: "main", Compaction: comp}}
+	pctx := &pipeline.Context{Path: "/v1/messages", ResponseHeaders: http.Header{}}
+	pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "unpriced"}
+	pctx.StatusCode = 200
+	p.settleCost(pctx)
+	ev, ok := publishedCost(t, pctx)
+	if !ok {
+		t.Fatal("no cost record published for a request with a compaction record")
+	}
+	if !reflect.DeepEqual(ev.Compaction, comp) {
+		t.Errorf("record Compaction = %+v, want %+v", ev.Compaction, comp)
 	}
 }

@@ -41,6 +41,9 @@ type Extras struct {
 	// priced with the call's own model, host and prompt size. A spend is shown beside the savings,
 	// never inside a Saving (W7.1).
 	Spends []event.SpendRecord
+	// Compaction is Result.Compaction: set on the first request after a client compaction, with
+	// the changes it ended (R55). nil on any other request.
+	Compaction *event.CompactionRecord
 }
 
 // SpendPrice prices one model call an operator made: its whole bill, output included, at the
@@ -407,6 +410,7 @@ func (h *Host) Savings(pctx *pipeline.Context) ([]event.Saving, Extras, bool) {
 	for i := range ex.Spends {
 		ex.Spends[i].Thread = ex.Thread
 	}
+	ex.Compaction = compactionRecord(res.Compaction)
 	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
 		logTokens(pctx, ex.Thread, res)
 	}
@@ -487,4 +491,12 @@ func logTokens(pctx *pipeline.Context, thread string, res accountant.Result) {
 			"causedCacheRead", f.caused.CacheRead,
 			"phase", res.Phase)
 	}
+}
+
+// compactionRecord is the cost record's copy of the accountant's compaction record, or nil.
+func compactionRecord(c *accountant.CompactionRecord) *event.CompactionRecord {
+	if c == nil {
+		return nil
+	}
+	return &event.CompactionRecord{Trigger: string(c.Trigger), Ended: append([]string{}, c.Ended...)}
 }

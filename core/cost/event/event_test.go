@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/rossoctl/cortex/core/cost/pricing"
@@ -164,6 +165,7 @@ func TestEventJSONTagsArePinned_EveryField(t *testing.T) {
 			Input: 8000, CacheWrite5m: 1, CacheWrite1h: 2, CacheRead: 3, Output: 1000,
 			USD: 0.04, Basis: "usd", Units: 7, Estimated: true, Projected: true, Refused: true,
 		}},
+		Compaction: &CompactionRecord{Trigger: "unknown", Ended: []string{"tool-prune:Big"}},
 	})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -180,7 +182,8 @@ func TestEventJSONTagsArePinned_EveryField(t *testing.T) {
 		`"penaltyUnits":4.5}],"purpose":"keep-alive","basis":"subscriptionEquivalent","units":1.5,"estimated":true,"unattributed_break_usd":0.003,"thread":"main",` +
 		`"spends":[{"changeId":"s:1","operator":"context-guru.extract_llm","thread":"main","model":"m",` +
 		`"host":"h","input":8000,"cacheWrite5m":1,"cacheWrite1h":2,"cacheRead":3,"output":1000,` +
-		`"usd":0.04,"basis":"usd","units":7,"estimated":true,"projected":true,"refused":true}]}`
+		`"usd":0.04,"basis":"usd","units":7,"estimated":true,"projected":true,"refused":true}],` +
+		`"compaction":{"trigger":"unknown","ended":["tool-prune:Big"]}}`
 	if string(b) != want {
 		t.Errorf("wire format changed:\n got %s\nwant %s", b, want)
 	}
@@ -248,7 +251,7 @@ func TestTotalAvoidedMicros_ReadsWhatTheProducerActuallyWrites(t *testing.T) {
 // process.
 func TestEventWireCoversEveryField(t *testing.T) {
 	// Keep in step with the marshal in TestEventJSONTagsArePinned_EveryField.
-	const pinned = 24
+	const pinned = 25
 	if got := reflect.TypeOf(Event{}).NumField(); got != pinned {
 		t.Fatalf("Event has %d fields, %d are pinned on the wire.\n"+
 			"Add the new field to TestEventJSONTagsArePinned_EveryField's marshal AND its "+
@@ -732,5 +735,24 @@ func TestFigures_KeepAliveSplitsByBasis(t *testing.T) {
 	notPing.Purpose = ""
 	if got := notPing.Figures(); !got.IsZero() {
 		t.Errorf("a request's record booked keep-alive figures: %+v", got)
+	}
+}
+
+// #2137: the compaction record is additive. A record with none has no "compaction" key, and one
+// with no ended change writes "ended":[] and not null.
+func TestEvent_CompactionWire(t *testing.T) {
+	plain, err := json.Marshal(Event{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(plain), "compaction") {
+		t.Errorf("record with no compaction = %s, want no compaction key", plain)
+	}
+	b, err := json.Marshal(Event{Compaction: &CompactionRecord{Trigger: "unknown", Ended: []string{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"compaction":{"trigger":"unknown","ended":[]}`) {
+		t.Errorf("record = %s, want the compaction record with ended []", b)
 	}
 }

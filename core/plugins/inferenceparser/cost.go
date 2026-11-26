@@ -106,8 +106,10 @@ func (p *InferenceParser) settleCost(pctx *pipeline.Context) {
 	// record is unpriced — event.Priced returns false on a set RejectedReason, which is what
 	// the aggregator's Decode and the ledger's admission guard both ask.
 	// An operator's own model call (Extras.Spends) is something to say too: it reaches no other
-	// record, because it did not pass through the proxy.
-	if !settled.Priced && !settled.HasPrompt && settled.RejectedReason == "" && len(avoided) == 0 && len(acct.extras.Spends) == 0 {
+	// record, because it did not pass through the proxy. A client compaction (Extras.Compaction)
+	// is something to say too: it names the changes the compaction ended.
+	if !settled.Priced && !settled.HasPrompt && settled.RejectedReason == "" && len(avoided) == 0 && len(acct.extras.Spends) == 0 &&
+		acct.extras.Compaction == nil {
 		// NOT LATCHED, as litellm-budget-track's bill() is not when settle.Load finds nothing
 		// priced. Nothing was published, so there is nothing to charge twice — and latching anyway
 		// would lock this request out of a LATER pass that does have a figure. The latch protects

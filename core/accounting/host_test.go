@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/rossoctl/accountant"
+	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/tidwall/gjson"
 )
@@ -814,5 +815,80 @@ func TestHost_CloseDoesNotWaitForAWedgedObservation(t *testing.T) {
 	// period actually bounds the wait (rather than blocking forever) is to measure elapsed time.
 	if d := time.Since(start); d > closeObserveWait+500*time.Millisecond {
 		t.Errorf("Close took %v, want at most about %v", d, closeObserveWait)
+	}
+}
+
+// compactionMarker is a request plugin that records a client compaction, as the context-guru
+// plugin does on the first request after one.
+type compactionMarker struct{}
+
+func (compactionMarker) Name() string { return "compaction-marker" }
+func (compactionMarker) Capabilities() pipeline.PluginCapabilities {
+	return pipeline.PluginCapabilities{}
+}
+func (compactionMarker) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
+	pctx.SetClientCompaction(accountant.CompactionUnknown)
+	return pipeline.Action{Type: pipeline.Continue}
+}
+func (compactionMarker) OnResponse(context.Context, *pipeline.Context) pipeline.Action {
+	return pipeline.Action{Type: pipeline.Continue}
+}
+
+// #2137: a client compaction a plugin records reaches the accountant as RequestMeta.Compaction,
+// and the accountant answers with Result.Compaction (R55). A request with no verdict gets none.
+func TestHost_ReportsClientCompaction(t *testing.T) {
+	h := newHost(t)
+	var meta accountant.RequestMeta
+	h.metaHook = func(m accountant.RequestMeta) { meta = m }
+
+	plain := request(t, h, "s1", "/v1/messages", clientBody("hi"), &operator{}, 200, coldUsage())
+	res, ok := h.Compute(plain)
+	if !ok {
+		t.Fatal("plain request: no Result")
+	}
+	if meta.Compaction != "" || res.Compaction != nil {
+		t.Fatalf("plain request: RequestMeta.Compaction = %q, Result.Compaction = %+v, want none", meta.Compaction, res.Compaction)
+	}
+
+	p, err := pipeline.New([]pipeline.Plugin{compactionMarker{}}, pipeline.WithAccountant(h))
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := runOn(t, p, "s1", "/v1/messages", clientBody("summary"), 200, coldUsage())
+	res, ok = h.Compute(after)
+	if !ok {
+		t.Fatal("request after compaction: no Result")
+	}
+	if meta.Compaction != accountant.CompactionUnknown {
+		t.Errorf("RequestMeta.Compaction = %q, want %q", meta.Compaction, accountant.CompactionUnknown)
+	}
+	if res.Compaction == nil || res.Compaction.Trigger != accountant.CompactionUnknown {
+		t.Errorf("Result.Compaction = %+v, want a record with trigger %q", res.Compaction, accountant.CompactionUnknown)
+	}
+}
+
+// #2137: the compaction record reaches Extras, with the changes the compaction ended. Request 1
+// removes bigTool (change "test:big"). Request 2 is the first after a compaction, and its client
+// body no longer has bigTool, so the change ends on it.
+func TestHost_SavingsCarriesTheCompactionRecord(t *testing.T) {
+	h := newHost(t)
+	first := request(t, h, "s1", "/v1/messages", clientBody("hi"),
+		&operator{fwd: forwardedBody("hi"), ops: []accountant.Operation{pruneOp()}}, 200, coldUsage())
+	if _, ex, ok := h.Savings(first); !ok || ex.Compaction != nil {
+		t.Fatalf("request 1: Extras.Compaction = %+v (ok %v), want nil", ex.Compaction, ok)
+	}
+
+	p, err := pipeline.New([]pipeline.Plugin{compactionMarker{}}, pipeline.WithAccountant(h))
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := runOn(t, p, "s1", "/v1/messages", forwardedBody("summary"), 200, coldUsage())
+	_, ex, ok := h.Savings(after)
+	if !ok {
+		t.Fatal("request 2: no Savings")
+	}
+	want := &event.CompactionRecord{Trigger: "unknown", Ended: []string{"test:big"}}
+	if !reflect.DeepEqual(ex.Compaction, want) {
+		t.Errorf("Extras.Compaction = %+v, want %+v", ex.Compaction, want)
 	}
 }
