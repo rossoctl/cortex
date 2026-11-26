@@ -161,6 +161,7 @@ func TestEventJSONTagsArePinned_EveryField(t *testing.T) {
 		UnattributedBreakUSD: 0.003,
 		InteractionUSD:       0.0041,
 		Thread:               "main",
+		SavingsWithheld:      "check_sum",
 		Spends: []SpendRecord{{
 			ChangeID: "s:1", Operator: "context-guru.extract_llm", Thread: "main", Model: "m", Host: "h",
 			Input: 8000, CacheWrite5m: 1, CacheWrite1h: 2, CacheRead: 3, Output: 1000,
@@ -181,6 +182,7 @@ func TestEventJSONTagsArePinned_EveryField(t *testing.T) {
 		`"tokensAvoided":1200,"usd":0.01,"provenance":"configured","penaltyUsd":0.002,` +
 		`"operator":"tool-prune","opsVersion":1,"basis":"subscriptionEquivalent","units":120,` +
 		`"penaltyUnits":4.5}],"purpose":"keep-alive","basis":"subscriptionEquivalent","units":1.5,"estimated":true,"unattributed_break_usd":0.003,"interaction_usd":0.0041,"thread":"main",` +
+		`"savings_withheld":"check_sum",` +
 		`"spends":[{"changeId":"s:1","operator":"context-guru.extract_llm","thread":"main","model":"m",` +
 		`"host":"h","input":8000,"cacheWrite5m":1,"cacheWrite1h":2,"cacheRead":3,"output":1000,` +
 		`"usd":0.04,"basis":"usd","units":7,"estimated":true,"projected":true,"refused":true}],` +
@@ -252,7 +254,7 @@ func TestTotalAvoidedMicros_ReadsWhatTheProducerActuallyWrites(t *testing.T) {
 // process.
 func TestEventWireCoversEveryField(t *testing.T) {
 	// Keep in step with the marshal in TestEventJSONTagsArePinned_EveryField.
-	const pinned = 26
+	const pinned = 27
 	if got := reflect.TypeOf(Event{}).NumField(); got != pinned {
 		t.Fatalf("Event has %d fields, %d are pinned on the wire.\n"+
 			"Add the new field to TestEventJSONTagsArePinned_EveryField's marshal AND its "+

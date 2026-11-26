@@ -343,6 +343,12 @@ type Event struct {
 	// apart from the main thread's (W7.1). ADDITIVE and omitempty.
 	Thread string `json:"thread,omitempty"`
 
+	// SavingsWithheld names the gate that kept this request's savings out of Avoided: the
+	// accountant's figure failed a fatal check, priced an op it should not have, or saved more
+	// tokens than the request had (core/accounting.Withheld*). Avoided is empty when it is set.
+	// ADDITIVE and omitempty.
+	SavingsWithheld string `json:"savings_withheld,omitempty"`
+
 	// Spends are the context operators' own model calls on this request, one record each
 	// (W7.1's Event.Spends). A spend is shown beside the savings, never inside a Saving, and it is
 	// not part of CostUSD: the ledger and /v1/usage sum it into usage.Counts.PluginSpendMicros

@@ -845,7 +845,8 @@ refuses the whole save until the restart.
 | `interval` | `METRICS_PUSH_INTERVAL` | `60s` | How often the counters are pushed. |
 
 What is sent: the `llm.savings.*` counters (tokens saved and added by tier and component, their
-dollar value, cache effects, request and check counts); `llm.inference.tokens` / `cost_usd` /
+dollar value, cache effects, request and check counts), and `llm.savings.withheld` (the requests
+whose savings the ledger did not book, by `reason`); `llm.inference.tokens` / `cost_usd` /
 `estimated_cost_usd`, `llm.keepalive.pings` / `cost_usd` / `estimated_cost_usd` and
 `llm.cache.misses` / `miss_cost_usd` and `llm.cache.ttl_downgrades` (requests that asked for the 1h cache tier
 and were billed at 5m), each labelled with the model; the transport-level

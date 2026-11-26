@@ -228,6 +228,14 @@ func NewSink(mp metric.MeterProvider, r pricing.Resolver) *Sink {
 // (llm.inference.*/llm.keepalive.*/llm.cache.*) dollar counters, in observeInferenceMetrics.
 // The library decides it for llm.savings.*, through acmetrics.
 func (s *Sink) Observe(meta accountant.RequestMeta, u accountant.Usage, output int, res accountant.Result, endpoint string, promptTotal int, firstOnThread bool) {
+	s.ObserveSized(meta, u, output, res, endpoint, promptTotal, firstOnThread, 0)
+}
+
+// ObserveSized is Observe with tokensBefore, the prompt size of the body the client sent
+// (tokensBefore in withhold.go). The library's sink gives it to accountant.Withhold for the size
+// gate, so it withholds the same requests the ledger does, and counts each in
+// llm.savings.withheld. 0 means the size is not given: the sink then skips the size gate only.
+func (s *Sink) ObserveSized(meta accountant.RequestMeta, u accountant.Usage, output int, res accountant.Result, endpoint string, promptTotal int, firstOnThread bool, tokensBefore int) {
 	if s == nil || s.sink == nil {
 		return
 	}
@@ -241,7 +249,7 @@ func (s *Sink) Observe(meta accountant.RequestMeta, u accountant.Usage, output i
 	s.pricer.request = binding{endpoint: endpoint, promptTotal: promptTotal}
 	s.pricer.byModel = bindingsFor(meta.Model, s.pricer.request, res)
 	// Output lets the sink re-rate the output tokens when the request crosses a price line.
-	s.sink.Observe(acmetrics.Observation{Meta: meta, Usage: u, Output: output, Result: res})
+	s.sink.Observe(acmetrics.Observation{Meta: meta, Usage: u, Output: output, Result: res, TokensBefore: tokensBefore})
 	s.observeInferenceMetrics(meta, u, output, missCause(res, firstOnThread, u.CacheWrite > 0))
 }
 
@@ -556,7 +564,10 @@ func pricingTier(t acmetrics.Tier) (pricing.Tier, bool) {
 
 // observe gives one Result to the sink, off the caller's goroutine: Compute runs on the response
 // path, and the sink's lock is shared by every request. Close waits for these.
-func (h *Host) observe(meta accountant.RequestMeta, u accountant.Usage, output int, res accountant.Result, endpoint string, promptTotal int, firstOnThread bool) {
+//
+// tokensBefore is the prompt size of the client's body (tokensBefore in withhold.go), or 0. The
+// library's sink gates the request with it as Host.Savings does (accountant.Withhold).
+func (h *Host) observe(meta accountant.RequestMeta, u accountant.Usage, output int, res accountant.Result, endpoint string, promptTotal int, firstOnThread bool, tokensBefore int) {
 	if h.sink == nil && h.observeHook == nil {
 		return
 	}
@@ -564,7 +575,7 @@ func (h *Host) observe(meta accountant.RequestMeta, u accountant.Usage, output i
 		if h.observeHook != nil {
 			h.observeHook(meta)
 		}
-		h.sink.Observe(meta, u, output, res, endpoint, promptTotal, firstOnThread)
+		h.sink.ObserveSized(meta, u, output, res, endpoint, promptTotal, firstOnThread, tokensBefore)
 	})
 }
 

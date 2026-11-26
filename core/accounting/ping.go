@@ -146,7 +146,7 @@ func (h *Host) Ping(sessionID string, client *model.EventClient, host string, p 
 		at = h.now()
 	}
 	h.observe(accountant.RequestMeta{Session: sessionID, Model: p.Model, At: at, Billing: billing},
-		p.Usage.Usage, p.Usage.Output, res, host, p.Usage.Input+p.Usage.CacheRead+p.Usage.CacheWrite, false)
+		p.Usage.Usage, p.Usage.Output, res, host, p.Usage.Input+p.Usage.CacheRead+p.Usage.CacheWrite, false, 0)
 	h.notifyPing(PingSpend{Session: sessionID, Thread: thread, Model: p.Model, Host: host, At: p.At,
 		Usage: p.Usage, Figures: figs})
 	return res, true

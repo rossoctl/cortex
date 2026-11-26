@@ -267,6 +267,9 @@ type pending struct {
 	thread  threadBillingKey
 	tiered  bool
 	asked1h bool
+	// clientBytes and forwardedBytes are the sizes of the two bodies, for the size bound of
+	// accountant.Withhold (tokensBefore).
+	clientBytes, forwardedBytes int
 
 	computeMu sync.Mutex
 	computed  bool
@@ -275,6 +278,9 @@ type pending struct {
 	released bool
 	result   accountant.Result
 	ok       bool
+	// withheld is the W6.5 gate the Result failed (accountant.Withhold), or "": Host.Savings books
+	// no saving for a request with one. Set once, with result.
+	withheld string
 }
 
 // RequestStart implements pipeline.RequestAccountant. It reads pctx.BillingSnapshot() — captured
@@ -362,7 +368,8 @@ func (h *Host) RequestEnd(pctx *pipeline.Context) {
 	if h.metaHook != nil {
 		h.metaHook(meta)
 	}
-	p := &pending{done: make(chan struct{}), meta: meta, firstOnThread: !seen}
+	p := &pending{done: make(chan struct{}), meta: meta, firstOnThread: !seen,
+		clientBytes: len(client), forwardedBytes: len(forwarded)}
 	pipeline.SetState(pctx, pendingKey, p)
 	go h.end(p, format, meta, client, forwarded, ops, thread, facts.Classify(pctx.Path))
 }
@@ -617,12 +624,31 @@ func (h *Host) Compute(pctx *pipeline.Context) (accountant.Result, bool) {
 		if _, redirected, ok := pctx.RedirectTarget(); ok {
 			endpoint = redirected
 		}
-		h.observe(p.meta, usage, inf.OutputTokens, p.result, endpoint, pricing.UsageFromInference(inf).PromptTotal(), p.firstOnThread)
+		promptTotal := pricing.UsageFromInference(inf).PromptTotal()
+		before := tokensBefore(promptTotal, p.clientBytes, p.forwardedBytes)
+		p.withheld = accountant.Withhold(p.result, before)
+		if p.withheld != "" {
+			slog.Warn("accounting: the accountant's figure failed a gate; the request books no saving",
+				"reason", p.withheld, "request", p.meta.RequestID, "session", p.meta.Session)
+		}
+		h.observe(p.meta, usage, inf.OutputTokens, p.result, endpoint, promptTotal, p.firstOnThread, before)
 		if lowered {
 			h.countTTLDowngrade(p.meta.Model)
 		}
 	}
 	return p.result, p.ok
+}
+
+// withheld is the W6.5 gate pctx's Result failed, or "" (pending.withheld). Call it after
+// Compute: it reads the latched answer.
+func (h *Host) withheld(pctx *pipeline.Context) string {
+	p := pipeline.GetState[pending](pctx, pendingKey)
+	if p == nil {
+		return ""
+	}
+	p.computeMu.Lock()
+	defer p.computeMu.Unlock()
+	return p.withheld
 }
 
 // release marks a request's handle released: Compute will not run for it. Callers hold
