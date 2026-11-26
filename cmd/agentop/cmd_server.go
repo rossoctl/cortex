@@ -76,8 +76,9 @@ agent sends them (--yes skips the question).
 
 "rename" gives a server a new name, and the agents, sessions and key routes
 that name it follow: its URL, key and models stay as they are, and so does its
-place in the file. A running session the proxy pinned to the old name gets an
-error asking for a new session, as after "remove", so rename warns how many.
+place in the file. The running sessions on it move with it, and so does a
+session moved there earlier. Another the proxy no longer holds gets an error
+asking for a new session if it is resumed.
 
 A request goes with the model the agent asked for. Only when the server refuses
 that model is it sent again, once and before the agent sees the refusal, with
