@@ -737,6 +737,9 @@ type model struct {
 	// detailAim is where Enter on a tool row puts the cursor once the tree holds it (#1795).
 	detailAim   *toolAim
 	searchInput textinput.Model
+	// renameID is the session `r` is naming while its prompt is open (rename.go); "" when closed.
+	renameID    string
+	renameInput textinput.Model
 
 	// visibleRows holds the eventRow for each rendered row in eventsTbl —
 	// one per network message. Populated by rebuildEventsTable so
@@ -1566,6 +1569,12 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.sessionsData = map[string]SessionMetadata{}
 			}
 			for id, meta := range msg.meta {
+				// The nickname is the person's, set here (rename.go) and never by a harvest: one that
+				// started before a rename or a clear carries the old one, so a known session keeps
+				// the viewer's own.
+				if known, ok := m.sessionsData[id]; ok {
+					meta.Nickname = known.Nickname
+				}
 				m.sessionsData[id] = meta
 			}
 			// Repaint what names sessions. The sessions table is the only place a title is
@@ -2767,6 +2776,9 @@ func (m *model) paneContent() (title, body string) {
 	}
 	if m.searching && m.searchPane != targetHelp {
 		body = m.searchPromptView() + "\n" + body
+	}
+	if m.renameID != "" && m.pane == paneSessions {
+		body = m.renameInput.View() + "\n" + body
 	}
 	return title, body
 }

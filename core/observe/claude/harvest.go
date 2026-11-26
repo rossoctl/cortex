@@ -284,11 +284,10 @@ func Harvest(opts Options) (Result, error) {
 		// session the fresher title is here. Keys only the file has are kept — that is
 		// what merging is for, and under Incremental it is also what carries every
 		// skipped session forward.
-		for id, m := range meta {
-			existing[id] = m
-		}
+		mergeHarvest(existing, meta)
 		meta = existing
 	}
+	keepNicknames(path, meta)
 	res.Total = len(meta)
 
 	if err := SaveMetadata(path, meta); err != nil {
@@ -713,6 +712,70 @@ var writeAll = func(w io.Writer, body []byte) (int, error) { return w.Write(body
 
 // syncFile flushes f to disk. A test seam that lets a Sync failure be injected.
 var syncFile = func(f *os.File) error { return f.Sync() }
+
+// mergeHarvest writes a harvest's entries over existing: the harvest wins per key, except the
+// Nickname, which no harvest knows and the person set (SetNickname).
+func mergeHarvest(existing, harvested map[string]SessionMetadata) {
+	for id, m := range harvested {
+		if m.Nickname == "" {
+			m.Nickname = existing[id].Nickname
+		}
+		existing[id] = m
+	}
+}
+
+// keepNicknames takes every Nickname in meta from the file at path as it is now, just before a
+// harvest saves over it. SetNickname is the only writer of a nickname, so the file is the truth
+// for them, and the copy the harvest read when it started may be stale: a rename or a clear made
+// while it ran. Under the lock that cannot happen; where lockMetadata is a no-op (Windows) this
+// narrows the race to the moments between this read and the save. It also keeps nicknames over
+// a rebuild (Merge false), which harvesting cannot bring back. A file deleted meanwhile took its
+// nicknames with it; one that cannot be read now leaves meta as it is, and the save that follows
+// reports what is wrong with the path.
+func keepNicknames(path string, meta map[string]SessionMetadata) {
+	latest, err := ReadMetadata(path)
+	if err != nil {
+		return
+	}
+	for id, m := range meta {
+		if m.Nickname != latest[id].Nickname {
+			m.Nickname = latest[id].Nickname
+			meta[id] = m
+		}
+	}
+	for id, e := range latest {
+		if _, ok := meta[id]; !ok && e.Nickname != "" {
+			meta[id] = SessionMetadata{Nickname: e.Nickname}
+		}
+	}
+}
+
+// SetNickname sets the nickname of session id in the metadata file at path, or clears it when
+// name is blank, under the harvest's lock. An entry with nothing else in it is removed when its
+// nickname is cleared. The nickname is trimmed and capped at MaxTitleLen runes.
+func SetNickname(path, id, name string) error {
+	unlock, err := lockMetadata(path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	meta, err := ReadMetadata(path)
+	if err != nil {
+		return err
+	}
+	name = strings.TrimSpace(name)
+	if r := []rune(name); len(r) > MaxTitleLen {
+		name = strings.TrimSpace(string(r[:MaxTitleLen]))
+	}
+	entry := meta[id]
+	entry.Nickname = name
+	if name == "" && entry.Title == "" && entry.LogFile == "" && len(entry.Subagents) == 0 {
+		delete(meta, id)
+	} else {
+		meta[id] = entry
+	}
+	return SaveMetadata(path, meta)
+}
 
 // SaveMetadata writes the map atomically, creating ~/.cortex if needed.
 //
