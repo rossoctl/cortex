@@ -333,7 +333,7 @@ func (s *Store) ListSessions() []SessionSummary {
 			// Either total having clamped makes BOTH figures on this row bounds rather than
 			// sums, which is why one flag covers them — the same reasoning
 			// usage.Counts.Saturated gives for covering every money field in a Counts.
-			Saturated: sess.cost.Saturated || sess.avoided.Saturated || sess.keepAlive.Saturated,
+			Saturated: sess.cost.Saturated || sess.avoided.Saturated || sess.keepAlive.Saturated || sess.detached.Saturated,
 			Active:    id == s.activeID,
 			// Read, not computed — and unlike TotalTokens above this is NOT a walk. Folding the rule
 			// here instead would repeat the mistake entry.cost documents: O(events) per session
@@ -350,6 +350,7 @@ func (s *Store) ListSessions() []SessionSummary {
 		}
 		figs := sess.avoided
 		figs.Merge(sess.keepAlive)
+		figs.Merge(sess.detached)
 		figs.setOn(&sum)
 		sum.KeepAlivePings = sess.keepAlivePings
 		s.withPriorLocked(&sum, id, sess)

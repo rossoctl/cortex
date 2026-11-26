@@ -196,9 +196,9 @@ func hasCredential(pctx *pipeline.Context) bool {
 
 // meteredDispatcher reports each call it sends as a KindSpend op on the request it was made for,
 // from the usage block of the Anthropic response, as cgModel.Complete does from llmclient's. Like
-// cgModel, it captures pctx, dryRun and the late-drop counter on the request goroutine, and a
-// call that returns after the request was accounted has its op dropped by the pipeline and
-// counted in lateDropped.
+// cgModel, it captures pctx, dryRun and the late-drop counter on the request goroutine. A call
+// that returns after the request was accounted is booked by the accountant as a detached spend
+// (pipeline.LateOpsAccountant); one that it cannot book is counted in lateDropped.
 type meteredDispatcher struct {
 	*cortexDispatcher
 	host, model string

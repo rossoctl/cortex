@@ -88,6 +88,10 @@ type entry struct {
 	// avoided keeps its invariant of equalling the sum over Events.
 	keepAlive      figureSum
 	keepAlivePings int64
+	// detached is the running total of the detached model calls' spend on this session (only
+	// the PluginSpend* fields of event.Figures). Not over Events, for the same reason as
+	// keepAlive: a detached call is not an event (Store.AddDetachedSpend).
+	detached figureSum
 	// units counts the priced events behind cost by the unit they were priced in, "" for USD.
 	// Maintained with cost, on append and on trim, and read by SessionSummary.Currencies — a
 	// count rather than a set because a trim has to know when the LAST event in a unit leaves.
@@ -374,6 +378,25 @@ func (s *Store) AddKeepAlive(sessionID string, f event.Figures) {
 	}
 	sess.keepAlive.Add(k)
 	sess.keepAlivePings++
+}
+
+// AddDetachedSpend adds a detached model call's spend to sessionID's totals: only the
+// PluginSpend* fields of f, which is the call's event.Figures. A detached call finished after
+// the request it served was accounted (core/accounting.Host.LateOps), so it is not an event and
+// is not agent activity: it neither creates a session nor makes one active. An unknown
+// sessionID is ignored.
+func (s *Store) AddDetachedSpend(sessionID string, f event.Figures) {
+	d := event.Figures{
+		PluginSpendMicros: f.PluginSpendMicros, PluginSpendUnits: f.PluginSpendUnits,
+		PluginSpendUnknownMicros: f.PluginSpendUnknownMicros,
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess := s.sessions[sessionID]
+	if sess == nil {
+		return
+	}
+	sess.detached.Add(d)
 }
 
 // Withholder is optionally implemented by a Recorder that keeps a session's events (the

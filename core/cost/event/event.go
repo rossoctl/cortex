@@ -76,6 +76,11 @@ const (
 	// PurposeKeepAlive is a keep-alive ping the context-guru plugin sent to keep an idle
 	// session's prompt cache warm (core/accounting.Host.Ping). Not agent activity.
 	PurposeKeepAlive = "keep-alive"
+	// PurposeDetachedSpend is a context operator's own model call that finished after the
+	// request it served was accounted, such as a background summarizer
+	// (core/accounting.Host.LateOps, cortex#2140). Its cost is in Spends only. Not agent
+	// activity, and not a request.
+	PurposeDetachedSpend = "detached-spend"
 )
 
 // The values of Saving.Basis and SpendRecord.Basis (accountant design §7.1, Cortex design
@@ -526,6 +531,11 @@ func (e Event) TotalPenaltyMicros() int64 {
 // IsKeepAlive reports whether the record is a keep-alive ping's spend (Purpose
 // PurposeKeepAlive), which the totals keep apart from the agent's own requests.
 func (e Event) IsKeepAlive() bool { return e.Purpose == PurposeKeepAlive }
+
+// IsDetachedSpend reports whether the record is a detached model call's spend (Purpose
+// PurposeDetachedSpend). Its Spends count like any request's; the record itself counts as no
+// request.
+func (e Event) IsDetachedSpend() bool { return e.Purpose == PurposeDetachedSpend }
 
 // Figures are one record's savings, plugin spends and keep-alive spend, split by basis (design §5.7a), in the
 // integer units the aggregates keep: micros for dollars, milli-units for usage-limit units. Each

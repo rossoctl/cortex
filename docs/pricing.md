@@ -751,7 +751,7 @@ presence.
 | `avoidedUnits`, `penaltyUnits` | the `units`/`penaltyUnits` of `subscriptionEquivalent` savings, in milli-units |
 | `avoidedApiEquivalentMicros` | net of its penalty (`usd − penaltyUsd`), for the savings with basis `subscriptionEquivalent`: shown beside `avoidedUnits`/`penaltyUnits` as "API equivalent net", never in a money total. **May be negative** when the penalty exceeds the saving, the same way `avoidedUnits − penaltyUnits` can; nothing floors it |
 | `avoidedUnknownMicros` | net of its penalty (`usd − penaltyUsd`), for savings with basis `unknown`: shown, never added. **May be negative**, for the same reason |
-| `pluginSpendMicros`, `pluginSpendUnits`, `pluginSpendUnknownMicros` | `spends[]` by basis, without the `projected` and `refused` ones. **Not in `costMicros`**, so the existing spend figure keeps its meaning |
+| `pluginSpendMicros`, `pluginSpendUnits`, `pluginSpendUnknownMicros` | `spends[]` by basis, without the `projected` and `refused` ones. **Not in `costMicros`**, so the existing spend figure keeps its meaning. A model call that finished after its request was accounted is a record of its own, with `purpose: detached-spend` and one entry in `spends[]`: it adds here and to no other column, not `requests`, not the tokens, the coverage counters or the latency mean |
 | `keepAliveMicros`, `keepAliveUnits`, `keepAliveApiEquivalentMicros`, `keepAliveUnknownMicros` | a `purpose: keep-alive` record's cost by its `basis`, like `pluginSpend*`: `keepAliveMicros` is the `usd` pings' `cost_usd` (money); `keepAliveUnits` the `subscriptionEquivalent` pings' `units`, in milli-units, with their `cost_usd` in `keepAliveApiEquivalentMicros` (shown as "API equivalent", never in a money total); `keepAliveUnknownMicros` the `unknown` pings' `cost_usd` (shown, never added). The metrics push books ping dollars on the same rule: only for an API key |
 | `keepAlivePings` | the number of keep-alive pings, of every basis. A ping is in no other column: not `requests`, not `costMicros`, not the tokens, the coverage counters or the latency mean |
 
@@ -835,6 +835,11 @@ includes either.
 a fatal check or an unpriced operation. The counters then book only the spends of that request. They add 1
 to `llm.savings.withheld{reason}` and count the request as `result="withheld"` in `llm.savings.requests`.
 Cortex does not give the library a size before the change yet, so the size gate is not used.
+
+`llm.savings.requests` and `llm.savings.estimated` count each result the accountant sink sees.
+That is each priced request, and also each priced keep-alive ping and each detached model call
+(a call that finished after its request, booked as `purpose: detached-spend`). So these two
+counters can be a little higher than the number of agent requests.
 
 **Only `basis: usd` is money here too.** A request on a subscription login, or with no
 credential Cortex can read, moves the token counters and `llm.savings.estimated`, never a

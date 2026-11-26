@@ -89,11 +89,12 @@ func (c *Context) OpReporter() OpReporter {
 // Report records ops like Context.ReportOps, under the operator and dry-run state r was built
 // with.
 //
-// It returns false when the ops were dropped because the request's op list was already sealed:
-// Pipeline.Run seals it right before handing it to the accountant, so an op reported after the
-// request left (a detached model call, design §2 non-goal) reaches no figure. Each dropped op is
-// counted in LateOpsDropped. The zero OpReporter belongs to no request: it reports nothing and
-// returns false.
+// Pipeline.Run seals the request's op list right before it hands the list to the accountant. An
+// op reported after the seal (a model call that finished after its request, such as a background
+// summarizer) goes to the accountant's LateOpsAccountant handler, with Call.Detached set. Report
+// returns false when an op was dropped: the accountant has no handler, or the handler refused
+// it. Each dropped op is counted in LateOpsDropped. The zero OpReporter belongs to no request:
+// it reports nothing and returns false.
 func (r OpReporter) Report(ops ...accountant.Operation) bool {
 	if r.c == nil {
 		return false
@@ -106,13 +107,21 @@ func (r OpReporter) Report(ops ...accountant.Operation) bool {
 
 func (c *Context) appendOps(operator string, dryRun bool, ops []accountant.Operation) bool {
 	c.opsMu.Lock()
-	defer c.opsMu.Unlock()
 	if c.opsSealed {
-		lateOpsDropped.Add(int64(len(ops)))
-		slog.Debug("pipeline: context operation reported after the request was accounted; dropped",
-			"operator", operator, "ops", len(ops))
-		return false
+		late := c.lateOps
+		c.opsMu.Unlock()
+		return lateOps(late, stampOps(operator, dryRun, ops, true))
 	}
+	defer c.opsMu.Unlock()
+	c.reportedOps = append(c.reportedOps, stampOps(operator, dryRun, ops, false)...)
+	return true
+}
+
+// stampOps returns ops with the framework's stamps: Operator when the op left it empty, and
+// DryRun under on_error: observe. detached also sets Call.Detached, on a copy of the Call, so
+// the caller's ModelCall is not changed.
+func stampOps(operator string, dryRun bool, ops []accountant.Operation, detached bool) []accountant.Operation {
+	out := make([]accountant.Operation, 0, len(ops))
 	for _, op := range ops {
 		if op.Operator == "" {
 			op.Operator = operator
@@ -120,25 +129,72 @@ func (c *Context) appendOps(operator string, dryRun bool, ops []accountant.Opera
 		if dryRun {
 			op.DryRun = true
 		}
-		c.reportedOps = append(c.reportedOps, op)
+		if detached && op.Call != nil {
+			call := *op.Call
+			call.Detached = true
+			op.Call = &call
+		}
+		out = append(out, op)
+	}
+	return out
+}
+
+// lateOps hands ops reported after the seal to the accountant's handler, and counts the ones it
+// did not keep in lateOpsDropped. It runs with no lock held: the handler is the accountant's.
+func lateOps(handler func([]accountant.Operation) int, ops []accountant.Operation) bool {
+	kept := 0
+	if handler != nil {
+		kept = handler(ops)
+	}
+	if dropped := len(ops) - kept; dropped > 0 {
+		lateOpsDropped.Add(int64(dropped))
+		slog.Debug("pipeline: context operation reported after the request was accounted; dropped",
+			"operator", ops[0].Operator, "ops", dropped)
+		return false
 	}
 	return true
 }
 
-// sealOps closes the op list: Run calls it right before RequestEnd reads ReportedOps.
-func (c *Context) sealOps() {
+// LateOpsAccountant is an optional RequestAccountant capability: it books the context operations
+// reported after the request's op list was sealed (Context.OpReporter). A model call that an
+// engine detaches from its request, such as a background summarizer, finishes then, and its cost
+// is real (cortex#2140).
+//
+// Run calls LateOps on the request goroutine, right before it seals the list and calls
+// RequestEnd, so the accountant can read pctx there and keep what it needs. pctx must not be read
+// after LateOps returns. The handler it returns may be nil (nothing to book for this request). It
+// is called from any goroutine, with no pipeline lock held, once for each late Report. It must
+// not block, and it returns how many of the ops it kept; the pipeline counts the rest in
+// LateOpsDropped.
+type LateOpsAccountant interface {
+	LateOps(pctx *Context) func(ops []accountant.Operation) (kept int)
+}
+
+// lateHandler is a's handler for pctx's late ops, or nil when a has no LateOpsAccountant.
+func lateHandler(a RequestAccountant, pctx *Context) func([]accountant.Operation) int {
+	if la, ok := a.(LateOpsAccountant); ok {
+		return la.LateOps(pctx)
+	}
+	return nil
+}
+
+// sealOps closes the op list: Run calls it right before RequestEnd reads ReportedOps. An op
+// reported after it goes to late (see LateOpsAccountant); a nil late drops it.
+func (c *Context) sealOps(late func([]accountant.Operation) int) {
 	c.opsMu.Lock()
 	c.opsSealed = true
+	c.lateOps = late
 	c.opsMu.Unlock()
 }
 
-// lateOpsDropped counts, per process, the ops reported after their request's list was sealed.
+// lateOpsDropped counts, per process, the ops reported after their request's list was sealed that
+// no LateOpsAccountant kept.
 var lateOpsDropped atomic.Int64
 
 // LateOpsDropped returns how many context operations this process dropped because they were
-// reported after their request was handed to the accountant (OpReporter.Report). Model calls an
-// engine detaches from the request it served land here: they are a non-goal of the accountant
-// integration, and this count says how often they happen.
+// reported after their request was handed to the accountant (OpReporter.Report), and the
+// accountant did not book them: it has no LateOpsAccountant, or the request had no session, or
+// the op was not a spend.
 func LateOpsDropped() int64 { return lateOpsDropped.Load() }
 
 // ReportedOps returns a copy of the ops reported so far, in the order they were reported.
