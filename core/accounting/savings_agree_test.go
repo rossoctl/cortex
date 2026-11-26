@@ -134,7 +134,13 @@ func TestSavingsAgreesWithTheAccountantCases(t *testing.T) {
 				wantTotal += want
 				gotTotal += got
 			}
-			if absAgree(gotTotal-wantTotal) > 1 {
+			// The total sums the per-step nets, each rounded to µ$. playedNet rounds a float
+			// dollar figure (math.Round, half away from zero); expectedNet rounds exact
+			// pico-dollars (cases.RoundMicros, half up). At a step whose net is an exact half
+			// µ$, float error puts the value just below the half, so the two paths can disagree
+			// by 1 µ$. Each step is held to 1 µ$ above, so the total can drift by up to one µ$
+			// per step. Bound the total by the step count, not by 1.
+			if absAgree(gotTotal-wantTotal) > int64(len(c.Steps)) {
 				t.Errorf("thread total: net %d µ$, want %d µ$", gotTotal, wantTotal)
 			}
 		})
