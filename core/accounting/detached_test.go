@@ -113,7 +113,8 @@ func TestLateOps_UnknownUsageIsRefused(t *testing.T) {
 	h := New(Options{Resolver: pingRates(t), CostRecorders: []session.Recorder{rec}})
 	handler := h.LateOps(detachedPctx())
 	call := &accountant.ModelCall{Model: "claude-haiku-4-5", Detached: true}
-	if kept := handler([]accountant.Operation{{ID: "op1", Kind: accountant.KindSpend, Call: call}}); kept != 1 {
+	// No ID, as cgModel and meteredDispatcher send it: the refusal must still find the op.
+	if kept := handler([]accountant.Operation{{Kind: accountant.KindSpend, Call: call}}); kept != 1 {
 		t.Fatalf("kept = %d, want 1", kept)
 	}
 	_ = h.Close()

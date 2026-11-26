@@ -200,8 +200,8 @@ func (h *Host) addPingListener(key string, fn PingListener) (remove func()) {
 	if h.pingListeners == nil {
 		h.pingListeners = map[uint64]pingListenerEntry{}
 	}
-	h.pingListenerSeq++
-	id := h.pingListenerSeq
+	h.listenerSeq++
+	id := h.listenerSeq
 	h.pingListeners[id] = pingListenerEntry{key: key, fn: fn}
 	return func() {
 		h.mu.Lock()

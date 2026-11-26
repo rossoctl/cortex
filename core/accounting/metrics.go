@@ -242,7 +242,9 @@ func (s *Sink) Observe(meta accountant.RequestMeta, u accountant.Usage, output i
 // ObserveDetached adds a detached model call's Result (Host.LateOps) to the llm.savings.*
 // counters, with its spends bound to their own model, host and prompt size, as Observe binds an
 // in-request spend. It books no llm.inference.* or llm.keepalive.* figure: the call is not the
-// agent's request and not a ping. Safe on a nil Sink.
+// agent's request and not a ping. The library sink counts each Result it observes in
+// llm.savings.requests (and llm.savings.estimated when it is estimated), so a detached call adds
+// 1 there, as a priced keep-alive ping does. Safe on a nil Sink.
 func (s *Sink) ObserveDetached(meta accountant.RequestMeta, res accountant.Result, endpoint string) {
 	if s == nil || s.sink == nil {
 		return

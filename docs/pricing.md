@@ -836,6 +836,11 @@ a fatal check or an unpriced operation. The counters then book only the spends o
 to `llm.savings.withheld{reason}` and count the request as `result="withheld"` in `llm.savings.requests`.
 Cortex does not give the library a size before the change yet, so the size gate is not used.
 
+`llm.savings.requests` and `llm.savings.estimated` count each result the accountant sink sees.
+That is each priced request, and also each priced keep-alive ping and each detached model call
+(a call that finished after its request, booked as `purpose: detached-spend`). So these two
+counters can be a little higher than the number of agent requests.
+
 **Only `basis: usd` is money here too.** A request on a subscription login, or with no
 credential Cortex can read, moves the token counters and `llm.savings.estimated`, never a
 dollar counter. Its usage-limit value comes from `accounting.subscription_weights`, and stays in

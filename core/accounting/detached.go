@@ -24,8 +24,9 @@ type detachedRequest struct {
 	host      string
 	billing   accountant.Billing
 	client    *model.EventClient
-	// seq numbers the late calls of this request, for their event RequestIDs.
-	seq *atomic.Int64
+	// seq numbers the late calls of this request, for their event RequestIDs. opSeq numbers the
+	// late spend ops that came with no ID.
+	seq, opSeq *atomic.Int64
 }
 
 // LateOps implements pipeline.LateOpsAccountant. It returns the handler for pctx's context
@@ -50,7 +51,7 @@ func (h *Host) LateOps(pctx *pipeline.Context) func([]accountant.Operation) int 
 	}
 	d := detachedRequest{
 		requestID: pctx.RequestID(), session: pctx.SessionID, thread: ThreadOf(pctx).ID,
-		host: host, billing: billing, client: pctx.ClientInfo(), seq: new(atomic.Int64),
+		host: host, billing: billing, client: pctx.ClientInfo(), seq: new(atomic.Int64), opSeq: new(atomic.Int64),
 	}
 	return func(ops []accountant.Operation) int { return h.lateOps(d, ops) }
 }
@@ -60,6 +61,12 @@ func (h *Host) lateOps(d detachedRequest, ops []accountant.Operation) int {
 	spends := make([]accountant.Operation, 0, len(ops))
 	for _, op := range ops {
 		if op.Kind == accountant.KindSpend && op.Call != nil {
+			// ComputeStandalone names a refused op by its ID, and the plugins send a spend with
+			// none (cgModel, meteredDispatcher). With no ID, a call of unknown usage would not be
+			// marked Refused, and it would be booked as a known $0.
+			if op.ID == "" {
+				op.ID = "late-" + strconv.FormatInt(d.opSeq.Add(1), 10)
+			}
 			spends = append(spends, op)
 			continue
 		}
@@ -99,8 +106,8 @@ func (h *Host) AddDetachedSpendListener(fn DetachedSpendListener) (remove func()
 	if h.detachedListeners == nil {
 		h.detachedListeners = map[uint64]DetachedSpendListener{}
 	}
-	h.pingListenerSeq++
-	id := h.pingListenerSeq
+	h.listenerSeq++
+	id := h.listenerSeq
 	h.detachedListeners[id] = fn
 	return func() {
 		h.mu.Lock()
@@ -118,6 +125,8 @@ func (h *Host) AddDetachedSpendListener(fn DetachedSpendListener) (remove func()
 //   - Each call is one cost event with Purpose event.PurposeDetachedSpend. The ledger and
 //     /v1/usage book its Spends as plugin spend, and count no request for it.
 //   - The metrics sink gets the Result (Sink.ObserveDetached), and the listeners get the figures.
+//     The library sink counts each Result it observes in llm.savings.requests, so a detached call
+//     adds 1 there, as a priced keep-alive ping does.
 //
 // It runs on a goroutine of its own (goObserve). A panic costs this call's figure and nothing
 // else.

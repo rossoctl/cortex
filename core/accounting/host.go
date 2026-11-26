@@ -111,11 +111,13 @@ type Host struct {
 	// pingListeners are the registered ping listeners (AddPingListener, AddKeyedPingListener),
 	// by registration id, which grows, so removal is exact and the newest of a key is the
 	// highest id.
-	pingListeners   map[uint64]pingListenerEntry
-	pingListenerSeq uint64
+	pingListeners map[uint64]pingListenerEntry
 	// detachedListeners are the registered detached-spend listeners (AddDetachedSpendListener),
-	// by an id from the same sequence as pingListeners.
+	// by registration id.
 	detachedListeners map[uint64]DetachedSpendListener
+	// listenerSeq gives the registration ids of both listener maps. One counter is enough:
+	// an id is only compared inside its own map.
+	listenerSeq uint64
 
 	// siblings holds each (session, thread)'s last forwarded body, for EntryFacts.SharedWarm
 	// (sibling.go, accountant R54). It has its own lock and is bounded like threadBilling.
