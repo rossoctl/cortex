@@ -29,6 +29,8 @@ type UserSettings struct {
 	Usage  UsageSettings `yaml:"usage,omitempty"`
 	// Timeline is the Timeline pane's window.
 	Timeline TimelineSettings `yaml:"timeline,omitempty"`
+	// Theme is light, dark or auto (the default); AGENTOP_THEME overrides it (theme.go).
+	Theme string `yaml:"theme,omitempty"`
 	// No filter: `/` searches now and a search is not saved (#1339). A `filter:` key an
 	// older agentop wrote loads as an unknown key — ignored — and the next save drops it.
 }
