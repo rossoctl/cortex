@@ -162,6 +162,30 @@ func TestHarvest_ProceedsWhenTheLockIsHeld(t *testing.T) {
 	}
 }
 
+// A rebuild (Merge false) takes the lock too: it carries the file's nicknames over
+// (keepNicknames), so a SetNickname landing between that read and the save would otherwise be
+// lost. Shown by the held lock being waited for, and reported, as under Merge.
+func TestHarvest_RebuildTakesTheLock(t *testing.T) {
+	zeroLockTimeout(t)
+	metadataHome(t)
+	cfg := filepath.Join(t.TempDir(), "claude")
+	writeSessionTranscript(t, filepath.Join(cfg, "projects", "-p"), "s1.jsonl",
+		`{"type":"ai-title","aiTitle":"t"}`)
+	path, err := SessionMetadataPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	holdMetadataLock(t, path)
+
+	res, err := Harvest(Options{ConfigDir: cfg, Merge: false})
+	if err != nil {
+		t.Fatalf("Harvest: %v", err)
+	}
+	if !res.LockTimedOut {
+		t.Error("a rebuild did not try the lock: LockTimedOut is false with the lock held")
+	}
+}
+
 // A flock failure that is NOT a timeout is recorded too, and the harvest still runs.
 //
 // The default: arm this covers was missing: a lock that failed for any reason other than the

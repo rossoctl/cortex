@@ -202,7 +202,7 @@ func Harvest(opts Options) (Result, error) {
 	}
 	res.Path = path
 
-	// SERIALISE THE WHOLE READ-MODIFY-WRITE under Merge. This has to cover the transcript scan
+	// SERIALISE THE WHOLE READ-MODIFY-WRITE. This has to cover the transcript scan
 	// too, not just the read and the save: the scan is the slow part, and it is what another run's
 	// rename lands inside. Measured before this existed, two concurrent Harvests over distinct
 	// config dirs left 2 of 6 sessions on disk, and the recovery pass below cannot close it — it is
@@ -210,11 +210,12 @@ func Harvest(opts Options) (Result, error) {
 	// window. It is kept as the second line of defence, for the unlocked paths.
 	//
 	// Best-effort: a filesystem that cannot flock still harvests, unlocked, on the footing every
-	// platform had before this. Not taken without Merge, where there is nothing to lose — that path
-	// replaces the file by definition.
+	// platform had before this. Taken without Merge too: a rebuild replaces the harvested entries,
+	// but it carries every nickname over from the file (keepNicknames), so a rename landing
+	// between that read and the save would be lost without it.
 	// The error is recorded, not returned: proceeding unlocked is the deliberate fallback, so a
 	// caller that wants to report the risk can, and one that does not still harvests.
-	if opts.Merge {
+	{
 		unlock, lerr := lockMetadata(path)
 		switch {
 		case lerr == nil:
