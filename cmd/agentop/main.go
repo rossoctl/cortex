@@ -121,6 +121,10 @@ Usage:
 
 Run a subcommand with no action, or with --help, for its own usage.
 
+Viewer colours: AGENTOP_THEME=light, dark or auto (or "theme:" in the settings
+file). Auto reads COLORFGBG, then asks the terminal; one that cannot answer, as on
+Windows, gets the dark palette, so set AGENTOP_THEME=light on a light terminal.
+
 Viewer flags (agentop observe):
 `)
 	fs.PrintDefaults()
@@ -522,6 +526,11 @@ func runObserve(args []string) int {
 		}
 	}
 	tui.Settings = loadUserConfig(prefsPath, os.Stderr)
+	// The palette, before the first render and while stderr still reaches the user: a light
+	// terminal lipgloss cannot query (Windows) otherwise gets the dark palette (tui/theme.go).
+	if _, err := tui.ApplyTheme(os.Getenv(tui.ThemeEnv), tui.Settings.Theme, os.Getenv("COLORFGBG")); err != nil {
+		fmt.Fprintf(os.Stderr, "agentop: %v\n", err)
+	}
 
 	// Locate the Cortex on this machine, if any, and find out whether it is up.
 	//

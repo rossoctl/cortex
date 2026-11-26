@@ -310,6 +310,7 @@ var paneKeys = map[paneID]keyGroup{
 			{"↑↓ / jk", "navigate"},
 			{"↵ / → / l", "drill into session"},
 			{"x", "erase this session, in memory and on disk (asks first; the cost ledger is kept)"},
+			{"r", "rename this session: a nickname kept on this machine only (empty clears it)"},
 			{"S", "move this session to another inference server"},
 			{"esc", "back to the agents picker, else pods picker"},
 		},

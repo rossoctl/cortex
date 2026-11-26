@@ -27,7 +27,7 @@ var sharedPaneKeys = map[string]string{
 	"h": "back on a list, the axis on a chart (rule 4)",
 	"l": "open on a list, the axis on a chart (rule 4)",
 	"j": "down", "k": "up",
-	"r": "reload the agent list, on the two pickers",
+	"r": "reload the agent list, on the two pickers; rename the session, on Sessions",
 	"x": "erase the row under the cursor",
 	"S": "choose the inference server for the row",
 	"w": "cycle the pane's window",

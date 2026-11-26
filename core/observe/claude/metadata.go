@@ -102,6 +102,10 @@ type SessionMetadata struct {
 	// the raw id (which is what a non-Claude-Code agent or an agent-team teammate
 	// renders anyway, having no meta.json to join to).
 	Subagents map[string]SubagentInfo `json:"subagents,omitempty"`
+	// Nickname is the name the person gave the session in agentop (`r` on the sessions pane):
+	// shown instead of Title, and never sent anywhere. NOT HARVESTED: a harvest that rewrites an
+	// entry carries it over (mergeHarvest), and SetNickname is its only writer.
+	Nickname string `json:"nickname,omitempty"`
 }
 
 // SubagentInfo is one harvested subagent: what Claude Code's own record of it says

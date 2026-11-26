@@ -42,6 +42,15 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	if m.searching {
 		return m.searchKey(msg)
 	}
+	// The rename prompt, like the search prompt, takes every key while it is open. It is drawn
+	// on Sessions only, so a pane change that came from a message rather than a key (the agents
+	// list arriving) closes it, rather than leaving keys going into a box nobody sees.
+	if m.renameID != "" {
+		if m.pane == paneSessions {
+			return m.renameKey(msg)
+		}
+		m.renameID = ""
+	}
 
 	// The help overlay is modal: while it's up, it owns the keyboard so a
 	// stray key can't navigate the pane hidden underneath. Checked before
@@ -200,6 +209,17 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 
 	// `T` opens the Timeline for one session, from the same panes `u` opens Usage from. On
 	// Sessions it is the highlighted row: unlike Usage, a timeline has no all-sessions view.
+	// `r` names the highlighted session (rename.go). Sessions pane only: elsewhere r already
+	// means reset (events) or refresh (pickers).
+	// colPicker is the Events pane's and can be left set after a message drops to Sessions, so it
+	// does not gate this (as with `/`).
+	if msg.String() == "r" && m.pane == paneSessions && m.editState.phase == editPhaseDone {
+		if id := m.selectedSessionID(); id != "" {
+			m.openRename(id)
+		}
+		return nil
+	}
+
 	if msg.String() == "T" && !m.searching && !m.colPicker && m.editState.phase == editPhaseDone {
 		switch m.pane {
 		case paneEvents, paneDetail:

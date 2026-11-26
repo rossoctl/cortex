@@ -379,6 +379,11 @@ const noServedTitle = ""
 // because resolving inside would put a scan of m.sessions in the per-row render path — see
 // noServedTitle — so this is a documented contract rather than an enforced one.
 func (m *model) sessionTitleFor(id, served string) string {
+	// A NICKNAME WINS OVER BOTH: the person named this session themselves (`r`). Sanitised and
+	// capped like the harvested title, for the same reasons, since the file is hand-editable.
+	if nick := m.sessionsData[id].Nickname; !titleIsBlank(sanitizeLabel(nick)) {
+		return capTitleRunes(sanitizeLabel(nick))
+	}
 	// PRECEDENCE IS DECIDED ON THE RAW HARVESTED TITLE, not on what the cap left of it, and that
 	// separation is the fix for a real inversion. This read m.sessionTitle(id) — sanitised AND capped
 	// — and asked whether THAT was blank. So any route by which the cap could blank a non-blank

@@ -124,6 +124,8 @@ These are tracked in #1520:
 
 Run `agentop doctor` first. Each line that starts with `✗` names the command that repairs it.
 
+**The viewer has dark stripes on a light terminal.** agentop cannot ask a Windows terminal for its background colour, so it uses the dark palette. On a light terminal, set `$env:AGENTOP_THEME = 'light'` before `agentop observe`, or put `theme: light` in agentop's settings file. `dark` and `auto` are the other values.
+
 **SmartScreen blocks `cortex.exe` or `agentop.exe`.** The binaries are not signed yet. The installer removes the "downloaded from the internet" mark; after a manual install, run `Unblock-File` on each `.exe` (or on the zips before unzipping).
 
 **`cortex` or `agentop` is not recognized.** Open a new terminal: an open terminal keeps the `Path` it started with. If a new terminal still does not find them, check that the install folder is on your user `Path`: `[Environment]::GetEnvironmentVariable('Path', 'User')`.
