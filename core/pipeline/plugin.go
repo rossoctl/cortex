@@ -253,6 +253,20 @@ type Shutdowner interface {
 	Shutdown(ctx context.Context) error
 }
 
+// SessionEraser is an optional interface a plugin implements when it keeps per-session data
+// outside the session store: in memory, or in a file of its own. The session API calls it when
+// the user erases sessions (DELETE /v1/sessions/{id} calls EraseSession, DELETE /v1/sessions calls
+// EraseAllSessions), after the session store and the archive are cleared.
+//
+// The id is the Cortex session id (Context.SessionID). The plugin removes what it holds for that
+// session, including what it has not yet written to disk, so a later write cannot bring it back.
+// An unknown id is not an error. An error is reported in the response; it does not undo the rest
+// of the erase.
+type SessionEraser interface {
+	EraseSession(ctx context.Context, sessionID string) error
+	EraseAllSessions(ctx context.Context) error
+}
+
 // Finisher is an optional interface a plugin may implement when it
 // reserves per-request state in OnRequest and needs a guaranteed
 // release point — regardless of whether the request was allowed,

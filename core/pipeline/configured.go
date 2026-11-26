@@ -22,10 +22,10 @@ type RawConfigProvider interface {
 // them on /v1/pipeline. All Plugin interface methods forward to the embedded
 // plugin — zero observable behavior change at the request hot path.
 //
-// Optional plugin interfaces (Initializer, Shutdowner, Finisher, Readier)
-// are NOT promoted through the embedded Plugin interface — Go does not
-// promote method-set membership through an embedded interface. The wrapper
-// implements each of those four interfaces explicitly and forwards
+// Optional plugin interfaces (Initializer, Shutdowner, Finisher, Readier,
+// SessionEraser) are NOT promoted through the embedded Plugin interface — Go
+// does not promote method-set membership through an embedded interface. The
+// wrapper implements each of those five interfaces explicitly and forwards
 // conditionally; see the methods below.
 //
 // StreamingResponder is handled differently — see configuredStreamingPlugin
@@ -36,11 +36,11 @@ type RawConfigProvider interface {
 // non-streaming pipelines.
 //
 // Side effect of unconditional forwarding: every wrapped (i.e., every
-// Configurable) plugin satisfies all four optional interfaces regardless
+// Configurable) plugin satisfies all five optional interfaces regardless
 // of what the inner plugin actually implements. Callers that distinguish
 // "implements Initializer" from "doesn't" via type-assertion will treat
 // every wrapped plugin as an Initializer (and Shutdowner, Finisher,
-// Readier). Behavior at the dispatcher hot path is preserved by the
+// Readier, SessionEraser). Behavior at the dispatcher hot path is preserved by the
 // no-op fallbacks; callers that need to discriminate must rely on
 // inner behavior rather than type-assertions.
 type configuredPlugin struct {
@@ -133,8 +133,27 @@ func (c *configuredPlugin) OnFinish(ctx context.Context, pctx *Context) {
 	}
 }
 
+// EraseSession forwards to the wrapped plugin if it implements SessionEraser; otherwise it is a
+// no-op. The session API type-asserts SessionEraser, so without this a Configurable plugin
+// (context-guru) would keep its per-session data through a DELETE /v1/sessions/{id}.
+func (c *configuredPlugin) EraseSession(ctx context.Context, sessionID string) error {
+	if e, ok := c.Plugin.(SessionEraser); ok {
+		return e.EraseSession(ctx, sessionID)
+	}
+	return nil
+}
+
+// EraseAllSessions forwards to the wrapped plugin if it implements SessionEraser; otherwise it is
+// a no-op. See EraseSession.
+func (c *configuredPlugin) EraseAllSessions(ctx context.Context) error {
+	if e, ok := c.Plugin.(SessionEraser); ok {
+		return e.EraseAllSessions(ctx)
+	}
+	return nil
+}
+
 // Metrics forwards to the wrapped plugin if it implements MetricsProvider;
-// otherwise returns nil. Required for the same reason as the four above:
+// otherwise returns nil. Required for the same reason as the ones above:
 // MetricsProvider is an optional interface, so it is not promoted through the
 // embedded Plugin, and without this every Configurable plugin — which is to
 // say every plugin an operator actually configures — would silently report no

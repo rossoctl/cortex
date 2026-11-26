@@ -627,6 +627,7 @@ func (p *ContextGuru) Init(context.Context) error {
 	if old := p.stateDisk.Swap(attachStateDB(p.store, p.stateDB, p.statePath)); old != nil {
 		_ = old.Close()
 	}
+	registerLive(p) // an erase now reaches this instance; see liveInstances
 	if p.keeper != nil {
 		p.keeper.Start()
 	}
@@ -856,6 +857,7 @@ func (p *ContextGuru) Shutdown(context.Context) error {
 	if d := p.stateDisk.Swap(nil); d != nil {
 		_ = d.Close()
 	}
+	unregisterLive(p) // after the last flush: an erase during it still reached this instance
 	return nil
 }
 
