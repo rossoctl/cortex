@@ -168,6 +168,11 @@ func findEncoded(text string, out []Edit) []Edit {
 			block = wrappedBlock(text, i)
 		}
 		i = block[len(block)-1].end
+		if last := block[len(block)-1]; len(block) >= 2 && siblingLine(text, last) {
+			// A last line taken before a line of its own width (wrappedBlock) may also start the
+			// next block: the scan goes on from it, so that block is decoded too.
+			i = last.s
+		}
 		covered := -1
 		if e, ok := blockEdit(text, block); ok {
 			out = append(out, notOnEscape(text, e))
@@ -224,7 +229,17 @@ func wrappedBlock(text string, i int) []b64Run {
 			block = append(block, r)
 			pos = r.end
 		case n <= width && lastLineOK(text, block, r):
-			return append(block, r)
+			cand := append(block[:len(block):len(block)], r)
+			if siblingLine(text, r) {
+				// A line followed by another of its own width starts a block of its own (a 64-wide
+				// block below a longer line, a digest or a one-line value), unless a secret in the
+				// joined block reaches into it: then it is this block's last line, and what
+				// follows is the next value.
+				if e, ok := blockEdit(text, cand); !ok || e.End <= r.s {
+					return block
+				}
+			}
+			return cand
 		default:
 			return block
 		}
@@ -240,20 +255,26 @@ func lastLineOK(text string, block []b64Run, r b64Run) bool {
 	if r.end < len(text) && strings.IndexByte("\n\r\"\\ \t", text[r.end]) < 0 {
 		return false
 	}
-	// A line followed by another of its own width starts a block of its own (a 64-wide block
-	// below a longer line, a digest or a one-line value): it is not this block's last line.
-	if w := r.e - r.s; r.end == r.e && w >= 16 && w%4 == 0 {
-		if b := lineBreakAt(text, r.end); b > 0 && r.end+b < len(text) {
-			if next := encodedRunAt(text, r.end+b); next.e-next.s == w {
-				return false
-			}
-		}
-	}
 	total := r.end - r.s
 	for _, l := range block {
 		total += l.e - l.s
 	}
 	return total%4 == 0
+}
+
+// siblingLine reports whether r, unpadded and a block's width (a multiple of 4, at least 16), is
+// followed by a line of its own width, so that it may start a block of its own.
+func siblingLine(text string, r b64Run) bool {
+	w := r.e - r.s
+	if r.end != r.e || w < 16 || w%4 != 0 {
+		return false
+	}
+	b := lineBreakAt(text, r.end)
+	if b == 0 || r.end+b >= len(text) {
+		return false
+	}
+	next := encodedRunAt(text, r.end+b)
+	return next.e-next.s == w
 }
 
 // blockEdit decodes a wrapped block of two or more runs as one, and returns the edit for it when

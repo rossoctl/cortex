@@ -6,7 +6,8 @@
 //
 // THE RULES SEE ONE DECODED TEXT VALUE AT A TIME: a JSON string's content, a block of streamed
 // text, an error message. They know nothing of JSON quoting or SSE framing; the layers that do
-// (a JSON scanner, SSE reassembly) call Find on each value and splice the result back. Find
+// (a JSON scanner, SSE reassembly) call Find on each value and splice the result back. Find,
+// String and Bytes are methods on a *Redactor (New); String and Bytes also return Stats. Find
 // returns edits, byte ranges in the text it was given, so a caller can map a redaction back onto
 // the bytes it came from (an SSE delta boundary, say) and build its output once.
 //

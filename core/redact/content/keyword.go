@@ -541,11 +541,13 @@ func isReference(v string) bool {
 		name := leadingName(v[1:])
 		if rest := v[1+len(name):]; rest != "" && (strings.IndexByte("/:.-}{[", rest[0]) < 0 ||
 			// ":" not before a digit: "$Winter:2024" is a password. "-" after a shell variable's
-			// name, in lowercase or capitals ("$pass-suffix" is $pass, then "-suffix";
-			// "$DB_PASS-2024"), but before a digit only in capitals ("$Summer-2024", "$pass-2fa");
-			// after a mixed-case word only as PHP's "->" ("$Summer-Fun!" is a password).
+			// name: in capitals, any ("$DB_PASS-2024"); in lowercase, before a plain lowercase
+			// word (plainWordAfterDash: "$pass-suffix" is $pass, then "-suffix", but
+			// "$money-Bags7!" and "$pass-2fa" are passwords); after a mixed-case word, only as PHP's "->"
+			// ("$Summer-Fun!" is a password).
 			len(rest) > 1 && (rest[0] == ':' && rest[1] >= '0' && rest[1] <= '9' || rest[0] == '-' && strings.ToUpper(name) != name &&
-				(rest[1] >= '0' && rest[1] <= '9' || strings.ToLower(name) != name && rest[1] != '>' && rest[1] != '$' && rest[1] != '{'))) {
+				(rest[1] >= '0' && rest[1] <= '9' || rest[1] != '>' && rest[1] != '$' && rest[1] != '{' &&
+					(strings.ToLower(name) != name || !plainWordAfterDash(rest[1:]))))) {
 			return false
 		}
 		if strings.TrimRight(name, "0123456789") != name && strings.ToUpper(name) != name {
@@ -617,6 +619,17 @@ func variableName(s string) bool {
 		return true
 	}
 	return strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_") == "" && wordLike(s)
+}
+
+// plainWordAfterDash reports whether s, what follows "$name-", starts with a plain lowercase word
+// up to a path's or a variable's separator ("dir/$name", "path:8080", "suffix"), as a shell
+// variable's literal suffix does. Capitals, digits or symbols in it ("Bags7!", "banana7") read as
+// a password's.
+func plainWordAfterDash(s string) bool {
+	if k := strings.IndexAny(s, "/:.${}()~"); k >= 0 {
+		s = s[:k]
+	}
+	return strings.Trim(s, "abcdefghijklmnopqrstuvwxyz-_") == ""
 }
 
 // camelTypeName reports whether a type-name-shaped v splits into words, as a type's name does
