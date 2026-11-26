@@ -491,7 +491,7 @@ func TestReportResult_ForwardsOpsUnchanged(t *testing.T) {
 		Trace:   apply.Trace{Ops: append([]accountant.Operation(nil), wantOps...)},
 	}
 
-	out, changed, ops := reportResult(pctx, res)
+	out, changed, ops := reportResult(pctx, res, nil)
 	if !changed || string(out) != `{"ok":true}` {
 		t.Fatalf("reportResult = (%q, %v), want (%q, true)", out, changed, `{"ok":true}`)
 	}
