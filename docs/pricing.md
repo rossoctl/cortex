@@ -735,13 +735,13 @@ the reason, in `savings_withheld` and in the `reason` label of
 
 | reason | the gate that failed |
 |---|---|
-| `check_sum`, `check_unique_change`, `check_spans`, `check_other` | a fatal accountant check (`CheckFailure.Fatal`). The list of operations or their attribution is wrong. For example, two operators claim the same removal, and the figure would count it twice |
+| `check_sum`, `check_unique_change`, `check_spans`, `check_other` | a fatal accountant check (`CheckFailure.Fatal`). The list of operations or their attribution is wrong. For example, two operators claim the same removal, and the figure would count it twice. A plugin that changes the body and reports no op (today `evolve`, `inference-router`, `script` and `cpex`) makes the `sum` check fail for that section. If no op claims that section, the request is not withheld: the other operators' savings stay. If an op of another operator claims the same section, `check_sum` withholds every saving on the request |
 | `unpriced` | the accountant did not price an operation, or a cache effect has a kind the library does not know. `penalty_unknown` is the exception: the figure is booked and marked `estimated` |
 | `size_unknown` | an operation saved tokens, but the prompt size before the change is unknown |
 | `implausible_size` | the operations saved more tokens than the client's body had, plus the tokens they caused (an operation can remove what an earlier one inserted). Cortex estimates the body's size from the billed prompt, scaled by the two bodies' sizes in bytes |
 
 A withheld request keeps its `cost_usd` and its `spends[]`, because each spend is priced from
-its own model call. Its `avoided[]` is empty and its `unattributed_break_usd` is 0.
+its own model call. Its `avoided[]` is empty, and its `unattributed_break_usd` and `interaction_usd` are 0.
 
 **How the basis is chosen.** `accountant.BillingFrom` reads the shape of the **client's**
 credential, never its value, before any plugin can rewrite it (`pipeline.Context.BillingSnapshot`):

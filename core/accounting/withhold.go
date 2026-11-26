@@ -1,6 +1,9 @@
 package accounting
 
-import "github.com/rossoctl/accountant"
+import (
+	"github.com/rossoctl/accountant"
+	"github.com/rossoctl/cortex/core/cost/event"
+)
 
 // The reasons Host.Savings books no saving for a request (Extras.Withheld,
 // event.Event.SavingsWithheld, the reason label of llm.savings.withheld). They are the library's
@@ -15,6 +18,14 @@ const (
 	WithheldSizeUnknown       = accountant.WithheldSizeUnknown
 	WithheldImplausibleSize   = accountant.WithheldImplausibleSize
 )
+
+// withholdSavings is what Host.Savings books for a request that failed gate why: no saving, no
+// UnattributedBreakUSD and no InteractionUSD, as the library's metrics sink books none of them
+// (accountant design §6.7). The rest of ex stays: its spends, each priced from its own call.
+func withholdSavings(ex Extras, why string) ([]event.Saving, Extras) {
+	ex.UnattributedBreakUSD, ex.InteractionUSD, ex.Withheld = 0, 0, why
+	return nil, ex
+}
 
 // penaltyUnknown reports whether res lists a penalty_unknown op: its figure stands but is an
 // estimate (accountant design §6.4).

@@ -440,8 +440,8 @@ func largestTier(t accountant.TierTokens) string {
 // requests, which is the actual reason Compute refuses one. Latched like Compute, so a repeated
 // settle gets the same answer either way.
 //
-// A Result that fails a W6.5 gate (withholdReason: a fatal check, an op unpriced for a reason
-// other than penalty_unknown, or the size bound) books no saving: ok is true, the savings are
+// A Result that fails a W6.5 gate (accountant.Withhold, run once in Compute: a fatal check, an op
+// or cache effect unpriced for a reason other than penalty_unknown, or the size bound) books no saving: ok is true, the savings are
 // empty, and Extras.Withheld names the gate. Its spends stay. A penalty_unknown op marks every
 // saving Estimated instead. SavingsBilled runs no gate: it converts whatever Result it is given.
 func (h *Host) Savings(pctx *pipeline.Context) ([]event.Saving, Extras, bool) {
@@ -507,7 +507,7 @@ func (h *Host) Savings(pctx *pipeline.Context) ([]event.Saving, Extras, bool) {
 	ss, ex := savingsBilled(res, newFigured(fig), price, spend, model, host, mode, h.weights)
 	// The W6.5 gates (rossoctl/cortex#2134). Compute ran them once; a failed one books no saving.
 	if why := h.withheld(pctx); why != "" {
-		ss, ex.UnattributedBreakUSD, ex.InteractionUSD, ex.Withheld = nil, 0, 0, why
+		ss, ex = withholdSavings(ex, why)
 	} else if penaltyUnknown(res) {
 		// The library could not rule out a break: the figure stands, as an estimate (§6.4).
 		for i := range ss {

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/rossoctl/accountant"
+	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
@@ -153,5 +154,83 @@ func TestSink_ObserveSizedGivesTheSizeGate(t *testing.T) {
 	}
 	if got := sum(t, rd, "llm.savings.withheld", nil); got != 1 {
 		t.Errorf("llm.savings.withheld = %v, want 1: Observe gives no size, so it skips the size gate", got)
+	}
+}
+
+// withholdSavings clears the interaction (rossoctl/cortex#2141 review): the library's metrics sink
+// books none for a withheld request. A rescued request has an interaction, and that case needs a
+// ping to build through the pipeline, so the helper is tested on interactionResult directly.
+func TestWithholdSavingsClearsTheInteraction(t *testing.T) {
+	res, u := interactionResult()
+	ex := figuredSavings(t, testRates(pricing.ProvConfigured), res, u, accountant.BillingAPI)
+	if ex.InteractionUSD == 0 {
+		t.Fatal("InteractionUSD = 0 before the gate: the test needs an interaction to clear")
+	}
+	ex.UnattributedBreakUSD = 0.002
+	ex.Spends = []event.SpendRecord{{Operator: "context-guru.summarize", USD: 0.01}}
+	ss, got := withholdSavings(ex, WithheldCheckSum)
+	if ss != nil {
+		t.Errorf("savings = %+v, want none", ss)
+	}
+	if got.InteractionUSD != 0 || got.UnattributedBreakUSD != 0 || got.Withheld != WithheldCheckSum {
+		t.Errorf("extras = %+v, want InteractionUSD 0, UnattributedBreakUSD 0, Withheld check_sum", got)
+	}
+	if len(got.Spends) != 1 {
+		t.Errorf("spends = %+v, want the spend kept", got.Spends)
+	}
+}
+
+// withSystem is body with a system prompt added and no op reported: what evolve's guidelines
+// injection does to a body with no system (core/plugins/evolve, injectAnthropic).
+func withSystem(body []byte) []byte {
+	return append([]byte(`{"system":"Follow the team guidelines: keep changes small.",`), body[1:]...)
+}
+
+// An evolve-shaped writer beside tool-prune (rossoctl/cortex#2141 review). evolve changes system and
+// reports no op, so the sum check fails for system with no op claiming it. accountant v0.10.0 does
+// not gate on that: the reported removal in tools books its saving. A request where only evolve
+// changed the body has nothing withheld, and no llm.savings.withheld.
+func TestHost_SavingsKeepsAReportedOpBesideAnUnreportedWriter(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		fwd   []byte
+		ops   []accountant.Operation
+		saved bool
+	}{
+		{"prune and evolve", withSystem(forwardedBody("hi")), []accountant.Operation{pruneOp()}, true},
+		{"evolve only", withSystem(clientBody("hi")), nil, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			mp, rd := manual(t)
+			h := New(Options{Resolver: testRates(pricing.ProvConfigured), Sink: NewSink(mp, testRates(pricing.ProvConfigured))})
+			h.computeWait = time.Hour
+			pctx := request(t, h, "s1", "/v1/messages", clientBody("hi"), &operator{fwd: c.fwd, ops: c.ops}, 200, coldUsage())
+			res, ok := h.Compute(pctx)
+			if !ok {
+				t.Fatal("Compute: no result")
+			}
+			sumFailed := false
+			for _, f := range res.Checks {
+				if f.Check == accountant.CheckSum && f.Section == accountant.SectionSystem && f.Claims != nil && *f.Claims == 0 {
+					sumFailed = true
+				}
+			}
+			if !sumFailed {
+				t.Fatalf("checks = %+v, want a sum failure for system with Claims 0", res.Checks)
+			}
+			ss, ex, _ := h.Savings(pctx)
+			if ex.Withheld != "" {
+				t.Errorf("Withheld = %q, want \"\": no op claims the section evolve changed", ex.Withheld)
+			}
+			if got := len(ss) > 0 && ss[0].TokensAvoided > 0; got != c.saved {
+				t.Errorf("savings = %+v, want a booked saving: %v", ss, c.saved)
+			}
+			if err := h.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if n := sum(t, rd, "llm.savings.withheld", nil); n != 0 {
+				t.Errorf("llm.savings.withheld = %v, want 0", n)
+			}
+		})
 	}
 }
