@@ -253,6 +253,26 @@ func (s *Sink) ObserveSized(meta accountant.RequestMeta, u accountant.Usage, out
 	s.observeInferenceMetrics(meta, u, output, missCause(res, firstOnThread, u.CacheWrite > 0))
 }
 
+// ObserveBill adds a request the accountant did not price to the Tier 1 counters alone
+// (llm.inference.*, llm.cache.*), priced at endpoint and promptTotal as ObserveSized prices them.
+// It books nothing in llm.savings.*: there is no Result (rossoctl/cortex#2013). cause is the
+// llm.cache.misses cause. Safe on a nil Sink.
+func (s *Sink) ObserveBill(meta accountant.RequestMeta, u accountant.Usage, output int, endpoint string, promptTotal int, cause string) {
+	if s == nil || s.sink == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("accounting: the inference metrics panicked; this request books no metric", "panic", r)
+		}
+	}()
+	s.pricer.request = binding{endpoint: endpoint, promptTotal: promptTotal}
+	s.pricer.byModel = nil
+	s.observeInferenceMetrics(meta, u, output, cause)
+}
+
 // ObserveDetached adds a detached model call's Result (Host.LateOps) to the llm.savings.*
 // counters, with its spends bound to their own model, host and prompt size, as Observe binds an
 // in-request spend. It books no llm.inference.* or llm.keepalive.* figure: the call is not the

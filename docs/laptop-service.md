@@ -862,6 +862,15 @@ restarts. In a cluster the id is random per process. No prompt, path, host, sess
 sent. Dollar counters move only for requests billed per token (an API key); a subscription
 login moves the token counters alone.
 
+`llm.inference.tokens` / `cost_usd` / `estimated_cost_usd` and `llm.cache.misses` /
+`miss_cost_usd` count every request whose response reports usage. That includes a request the
+accountant does not price, for example one with no session ID, an unknown path, a history the
+provider holds, a resend or a non-2xx status: the provider bills it all the same. Only
+`llm.savings.*` is limited to the requests the accountant prices. A resend books the usage of
+its last round, because the refused rounds before it report none. A request the accountant does
+not price has no cache phase, so its miss counts as `cold_start` on the first request of its
+thread and as `other` after that.
+
 The counters are cumulative. A push that fails is counted in `llm.proxy.export_failures`,
 logged as a WARN at most once a minute, and retried by the next push. It never delays or fails
 a request. The central collector takes a Cortex push with no `token`; a collector that requires
