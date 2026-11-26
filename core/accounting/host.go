@@ -677,7 +677,7 @@ func (h *Host) bill(pctx *pipeline.Context) {
 		return
 	}
 	pu := pricing.UsageFromInference(inf)
-	if pu.PromptTotal()+inf.OutputTokens == 0 || !pricing.PlausibleUsage(pu) {
+	if pu.PromptTotal()+pu.Output == 0 || !pricing.PlausibleUsage(pu) {
 		return
 	}
 	if pipeline.GetState[billed](pctx, billedKey) != nil {
@@ -691,8 +691,11 @@ func (h *Host) bill(pctx *pipeline.Context) {
 	// RequestID is never empty here: an empty one marks a keep-alive ping.
 	meta := accountant.RequestMeta{RequestID: pctx.RequestID(), Session: pctx.SessionID, Model: inf.Model,
 		At: h.now(), Billing: billing}
-	u := accountant.Usage{Input: inf.InputTokens, CacheRead: inf.CacheReadTokens,
-		CacheWrite: inf.CacheWriteTokens, CacheWrite1h: inf.CacheWrite1hTokens}
+	// pu, not the raw counters: the gate and the booking read one usage. UsageFromInference drops
+	// a 1h count that is not a subset of the cache writes, and fills a prompt or output total a
+	// gateway reported only as prompt_tokens, completion_tokens or total_tokens, as the ledger does.
+	u := accountant.Usage{Input: pu.Input, CacheRead: pu.CacheRead, CacheWrite: pu.CacheWrite,
+		CacheWrite1h: pu.CacheWrite1h}
 	endpoint := pctx.Host
 	if _, redirected, ok := pctx.RedirectTarget(); ok {
 		endpoint = redirected
@@ -703,7 +706,7 @@ func (h *Host) bill(pctx *pipeline.Context) {
 		firstOnThread = p.firstOnThread
 	}
 	cause := missCause(accountant.Result{Phase: accountant.PhaseUnknown}, firstOnThread, u.CacheWrite > 0)
-	output := inf.OutputTokens
+	output := pu.Output
 	h.goObserve(func() { h.sink.ObserveBill(meta, u, output, endpoint, pu.PromptTotal(), cause) })
 }
 

@@ -122,6 +122,7 @@ func TestHost_UnpricedRequestBooksTier1(t *testing.T) {
 			release := make(chan struct{})
 			t.Cleanup(func() { close(release) })
 			h.beforeEnd = func() { <-release }
+			// The record is held until cleanup, so the wait has expired: no real time is needed.
 			h.computeWait = time.Nanosecond
 		}},
 		"library panic": {session: "s1", host: func(h *Host) { h.computeHook = func() { panic("library bug") } }},
@@ -196,5 +197,37 @@ func TestHost_UnpricedMissCause(t *testing.T) {
 	_, rd = runBill(t, billCase{})
 	if n := sum(t, rd, "llm.cache.misses", map[string]string{"cause": MissOther}); n != 1 {
 		t.Errorf("no record: llm.cache.misses{cause=other} = %v, want 1", n)
+	}
+}
+
+// bill books the usage it gates on: pricing.UsageFromInference's. A 1h count larger than the
+// cache writes is not a real breakdown, so it books as 5m writes, and a gateway that reports only
+// prompt_tokens and completion_tokens books those.
+func TestHost_UnpricedRequestBooksTheSanitizedUsage(t *testing.T) {
+	cases := map[string]struct {
+		usage pipeline.InferenceExtension
+		tier  map[string]float64
+	}{
+		"1h count above the cache writes": {
+			usage: pipeline.InferenceExtension{InputTokens: 3, CacheWriteTokens: 1800, CacheWrite1hTokens: 3600, OutputTokens: 50},
+			tier:  map[string]float64{"input": 3, "cache_write_5m": 1800, "cache_write_1h": 0, "output": 50},
+		},
+		"prompt and completion totals only": {
+			usage: pipeline.InferenceExtension{PromptTokens: 900, CompletionTokens: 40},
+			tier:  map[string]float64{"input": 900, "output": 40},
+		},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			h, rd := billHost(t)
+			pctx := billRequest(t, h, billCase{usage: &c.usage})
+			h.Compute(pctx)
+			h.observing.Wait()
+			for tier, want := range c.tier {
+				if got := sum(t, rd, "llm.inference.tokens", map[string]string{"tier": tier}); got != want {
+					t.Errorf("llm.inference.tokens{tier=%s} = %v, want %v", tier, got, want)
+				}
+			}
+		})
 	}
 }
