@@ -28,10 +28,12 @@ import (
 
 // Prompt is one human instruction and the calls it caused.
 type Prompt struct {
-	// Index is the prompt's number in the session, from 1.
+	// Index is the prompt's number in the session, from 1. A clipped window keeps the session's
+	// numbering, so its first prompt need not be 1.
 	Index int `json:"index"`
 	// Start is the request of the prompt's first call; End the end of its last call to finish,
-	// a subagent's included. Absent while one of its calls is still open.
+	// a subagent's included. Absent while one of its calls is still open. A call that runs past
+	// the next prompt's start (a background subagent's) carries End past it: prompts can overlap.
 	Start time.Time  `json:"start"`
 	End   *time.Time `json:"end,omitempty"`
 	// FirstSeq is the first call's request; LastSeq the last call's.
@@ -55,6 +57,15 @@ type promptCall struct {
 	// before it was the tools', not the person's, so it has no think time.
 	queued bool
 }
+
+// claudeCodeCall reports whether a request is Claude Code's: its client names it, or it was
+// imported from Claude Code's transcripts. The prompt rule is Claude Code's markers, so another
+// agent's calls (Codex, Bob, OpenCode, Pi) start no prompt; they keep their turns.
+func claudeCodeCall(e *model.SessionEvent) bool {
+	return e.Client != nil && e.Client.Name == claudeCode || e.Source == model.ImportedSource(claudeCode)
+}
+
+const claudeCode = "claude-code"
 
 // queuedMessage reports whether the newest user message follows an assistant message that
 // called tools: in Anthropic's format that message carries the results, so any text in it was
@@ -93,14 +104,16 @@ var injectedLines = []string{"[Request interrupted by user", "[Image:", "Another
 // are taken out, trimmed: "" when the person typed none of it. Each tag is one pass that copies
 // what it keeps, so a message of many reminders costs its length, not its length squared.
 func humanText(s string) string {
-	if strings.HasPrefix(strings.TrimSpace(s), compactionSummary) {
-		return ""
-	}
 	for _, tag := range injectedTags {
-		if !strings.Contains(s, "<"+tag) {
+		// An open or a close: a message can hold only the close of a block cut off before it.
+		if !strings.Contains(s, "<"+tag) && !strings.Contains(s, "</"+tag+">") {
 			continue
 		}
 		s = stripTag(s, "<"+tag, "</"+tag+">")
+	}
+	// After the tags: a summary Claude Code prefixes with a reminder is still a summary.
+	if strings.HasPrefix(strings.TrimSpace(s), compactionSummary) {
+		return ""
 	}
 	var b strings.Builder
 	for line := range strings.Lines(s) {
@@ -116,9 +129,73 @@ func humanText(s string) string {
 	return strings.TrimSpace(b.String())
 }
 
-// stripTag removes each open...close block from s. An open tag whose name goes on
-// ("<agent-messages") is kept; an unclosed block runs to the end.
+// stripTag removes each open...close block from s, pairing them by depth: real messages nest
+// reminders, and the inner close comes first. A close with no open before it ends a block
+// whose open was cut off, so the text since the last kept point goes with it. An open tag whose
+// name goes on ("<agent-messages") is not one.
+//
+// WHEN THE OPENS OUTNUMBER THE CLOSES, depth would drop the rest of the message, and two real
+// shapes do that: a reminder that quotes an open tag (a file diff holding `"<system-reminder>"`)
+// and a tag the person typed ("why does <system-reminder> show up?"). So from the first open
+// left unmatched, each open is paired with the first close after it instead, and an open with
+// no close is kept as text. One pass each.
 func stripTag(s, open, close string) string {
+	var b strings.Builder
+	keep, depth := 0, 0 // keep: where the text not yet written or dropped starts
+	unmatched := -1     // where the outermost open still unmatched began
+	// The next open and close at or after i, found once each and kept until passed, so the scan
+	// stays linear however the tags are mixed.
+	nextO, nextC := -2, -2
+	find := func(cur *int, tag string, i int) int {
+		if *cur == -1 || *cur >= i {
+			return *cur
+		}
+		if k := strings.Index(s[i:], tag); k >= 0 {
+			*cur = i + k
+		} else {
+			*cur = -1
+		}
+		return *cur
+	}
+	for i := 0; i < len(s); {
+		o, c := find(&nextO, open, i), find(&nextC, close, i)
+		switch {
+		case o < 0 && c < 0:
+			i = len(s)
+		case o >= 0 && (c < 0 || o < c):
+			at := o
+			if j := at + len(open); j < len(s) && s[j] != '>' && s[j] != ' ' && s[j] != '\n' && s[j] != '\t' {
+				i = j // another tag's name: text
+				continue
+			}
+			if depth == 0 {
+				b.WriteString(s[keep:at])
+				unmatched = at
+			}
+			depth++
+			i = at + len(open)
+		default:
+			end := c + len(close)
+			if depth > 0 {
+				depth--
+			}
+			if depth == 0 {
+				keep = end // the block, or the cut-off block a stray close ends, is dropped
+			}
+			i = end
+		}
+	}
+	if depth == 0 {
+		b.WriteString(s[keep:])
+	} else {
+		b.WriteString(stripFirstClose(s[unmatched:], open, close))
+	}
+	return b.String()
+}
+
+// stripFirstClose removes each open...close block, pairing an open with the first close after
+// it; an open with no close after it is kept as text.
+func stripFirstClose(s, open, close string) string {
 	var b strings.Builder
 	for from := 0; ; {
 		k := strings.Index(s[from:], open)
@@ -132,11 +209,12 @@ func stripTag(s, open, close string) string {
 			from = j
 			continue
 		}
-		b.WriteString(s[from:i])
 		j := strings.Index(s[i:], close)
 		if j < 0 {
+			b.WriteString(s[from:])
 			return b.String()
 		}
+		b.WriteString(s[from:i])
 		from = i + j + len(close)
 	}
 }

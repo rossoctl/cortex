@@ -46,7 +46,7 @@ func TestPromptsToolLoopAndThinkTime(t *testing.T) {
 	r.turn("", 5, 3, c, []pipeline.InferenceToolResult{result("t1", "ok")}, "end_turn")
 	c = c.with(assistant("done"), user("now add a test for it"))
 	r.turn("", 20, 2, c, nil, "end_turn")
-	tl := Build("s", r.events, time.Time{})
+	tl := Build("s", claudeCodeEvents(r.events), time.Time{})
 	wantPrompts(t, tl, []float64{0, 20}, []int64{0, 12000})
 	if p := tl.Prompts[0]; p.End == nil || !p.End.Equal(at(8)) || p.FirstSeq != 1 || p.LastSeq != 3 {
 		t.Errorf("prompt 1 = %+v, want it to end at 8s with the loop's second call", p)
@@ -72,7 +72,7 @@ func TestPromptsInjectedMessages(t *testing.T) {
 	}
 	c = c.with(assistant("ok"), user("<system-reminder>todo list</system-reminder>\nplease also update the docs"))
 	r.turn("", 100, 1, c, nil, "end_turn")
-	tl := Build("s", r.events, time.Time{})
+	tl := Build("s", claudeCodeEvents(r.events), time.Time{})
 	wantPrompts(t, tl, []float64{0, 100}, []int64{0, 39000})
 }
 
@@ -86,7 +86,7 @@ func TestPromptsRetryAndSuggestionCall(t *testing.T) {
 	r.turn("", 30, 1, c.with(assistant("done"), user("[SUGGESTION MODE: Suggest what the user might type next]")), nil, "end_turn")
 	c = c.with(assistant("done"), user("thanks, now tag the release"))
 	r.turn("", 50, 1, c, nil, "end_turn")
-	tl := Build("s", r.events, time.Time{})
+	tl := Build("s", claudeCodeEvents(r.events), time.Time{})
 	wantPrompts(t, tl, []float64{0, 50}, []int64{0, 45000})
 }
 
@@ -99,7 +99,7 @@ func TestPromptsSubagentCallsJoinTheirPrompt(t *testing.T) {
 	r.turn("a7f3", 1, 30, conv{user("...")}, nil, "end_turn")
 	c = c.with(assistant(""), toolResultMsg())
 	r.turn("", 32, 1, c, []pipeline.InferenceToolResult{result("spawn1", "done\nagentId: a7f3")}, "end_turn")
-	tl := Build("s", r.events, time.Time{})
+	tl := Build("s", claudeCodeEvents(r.events), time.Time{})
 	wantPrompts(t, tl, []float64{0}, []int64{0})
 	if p := tl.Prompts[0]; p.End == nil || !p.End.Equal(at(33)) {
 		t.Errorf("prompt = %+v, want its end at the main call after the subagent", p)
@@ -114,7 +114,7 @@ func TestPromptsAwayRecapIsNotWork(t *testing.T) {
 	r.turn("", 600, 5, c.with(assistant("done"), user("The user stepped away and is coming back. Recap ...")), nil, "end_turn")
 	c = c.with(assistant("done"), user("what were the numbers?"))
 	r.turn("", 700, 2, c, nil, "end_turn")
-	tl := Build("s", r.events, time.Time{})
+	tl := Build("s", claudeCodeEvents(r.events), time.Time{})
 	wantPrompts(t, tl, []float64{0, 700}, []int64{0, 696000})
 }
 
@@ -127,7 +127,7 @@ func TestPromptsResume(t *testing.T) {
 	r.turn("", 10, 2, old[:3], nil, "end_turn")
 	// Later, --resume: the same history, then the new text.
 	r.turn("", 5000, 3, old.with(user("pick up where we left off")), nil, "end_turn")
-	tl := Build("s", r.events, time.Time{})
+	tl := Build("s", claudeCodeEvents(r.events), time.Time{})
 	wantPrompts(t, tl, []float64{0, 10, 5000}, []int64{0, 8000, 4988000})
 }
 
@@ -154,7 +154,7 @@ func TestPromptsReviewShapes(t *testing.T) {
 	tc2 := pipeline.InferenceMessage{Role: "assistant", ToolUseIDs: "t2"}
 	c = c.with(tc2, user("also check lint"))
 	r.turn("", 300, 1, c, []pipeline.InferenceToolResult{result("t2", "ok")}, "end_turn")
-	tl := Build("s", r.events, time.Time{})
+	tl := Build("s", claudeCodeEvents(r.events), time.Time{})
 	// Think time runs from the hand-back's call (the agent's work, ending at 41s), not the
 	// suggestion call's end at 35s.
 	wantPrompts(t, tl, []float64{0, 50, 300}, []int64{0, 9000, 0})
@@ -166,27 +166,57 @@ func TestPromptsReviewShapes(t *testing.T) {
 	}
 }
 
-// humanText costs the message's length, not its square: 24,000 reminders after some text.
-func TestHumanTextIsLinear(t *testing.T) {
-	small := "hi " + strings.Repeat("<system-reminder>x</system-reminder>", 6000)
-	large := "hi " + strings.Repeat("<system-reminder>x</system-reminder>", 24000)
-	ds, dl := bestOfTimes(func() { humanText(small) }), bestOfTimes(func() { humanText(large) })
-	// timing: compares the cost at two sizes; only their ratio is asserted
-	if ratio := float64(dl) / float64(max(ds, time.Microsecond)); ratio > 10 && dl > 50*time.Millisecond {
-		t.Errorf("humanText: %v at 6,000 reminders but %v at 24,000 (x%.1f): not linear", ds, dl, ratio)
+// humanText's cost on many reminders after some text, and on many stray closes: both a single
+// pass. A benchmark, not a test: time is not asserted (go test -bench HumanText).
+func BenchmarkHumanText(b *testing.B) {
+	many := "hi " + strings.Repeat("<system-reminder>x</system-reminder>", 24000)
+	stray := "<system-reminder>" + strings.Repeat("x</system-reminder>", 24000)
+	b.ResetTimer()
+	for range b.N {
+		humanText(many)
+		humanText(stray)
 	}
 }
 
-// bestOfTimes runs f twice and returns the shorter time.
-func bestOfTimes(f func()) time.Duration {
-	best := time.Duration(1<<63 - 1)
-	for range 2 {
-		start := time.Now()
-		f()
-		// timing: measures how humanText's cost scales with its input
-		best = min(best, time.Since(start))
+// claudeCodeEvents marks a synthetic session's events as Claude Code's, as the proxy does from
+// the User-Agent: the prompt rule is Claude Code's.
+func claudeCodeEvents(evs []pipeline.SessionEvent) []pipeline.SessionEvent {
+	for i := range evs {
+		evs[i].Client = &pipeline.EventClient{Name: "claude-code"}
 	}
-	return best
+	return evs
+}
+
+// Another agent's main calls start no prompt: the rule is Claude Code's markers.
+func TestPromptsClaudeCodeOnly(t *testing.T) {
+	var r rec
+	c := conv{user("<environment_context>cwd</environment_context>"), user("fix the test")}
+	r.turn("", 0, 1, c, nil, "end_turn")
+	r.turn("", 10, 1, c.with(assistant("ok"), user("<turn_aborted>x</turn_aborted>")), nil, "end_turn")
+	for i := range r.events {
+		r.events[i].Client = &pipeline.EventClient{Name: "codex"}
+		r.events[i].Inference.AgentRole = ""
+	}
+	if tl := Build("s", r.events, time.Time{}); len(tl.Prompts) != 0 || len(tl.Turns) != 2 {
+		t.Errorf("codex: prompts %+v, turns %d; want no prompts and both turns", tl.Prompts, len(tl.Turns))
+	}
+}
+
+// Clip keeps the prompts that overlap the window, with the session's numbering.
+func TestPromptsClip(t *testing.T) {
+	var r rec
+	c := conv{user("one")}
+	r.turn("", 0, 1, c, nil, "end_turn")
+	c = c.with(assistant("ok"), user("two"))
+	r.turn("", 100, 60, c, nil, "end_turn") // spans the window's start
+	c = c.with(assistant("ok"), user("three"))
+	r.add(pipeline.SessionEvent{At: at(300), Phase: pipeline.SessionRequest, RequestID: "open", Host: "llm.example",
+		Inference: &pipeline.InferenceExtension{AgentRole: pipeline.AgentRoleMain, Tools: tools, Messages: c, Stream: true}})
+	tl := Build("s", claudeCodeEvents(r.events), time.Time{})
+	tl.Clip(at(150), at(400))
+	if len(tl.Prompts) != 2 || tl.Prompts[0].Index != 2 || tl.Prompts[1].Index != 3 || tl.Prompts[1].End != nil {
+		t.Errorf("clipped prompts = %+v, want 2 (spanning the start) and 3 (open)", tl.Prompts)
+	}
 }
 
 // An open call leaves its prompt open.
@@ -194,7 +224,7 @@ func TestPromptsOpenCallLeavesThePromptOpen(t *testing.T) {
 	var r rec
 	r.add(pipeline.SessionEvent{At: at(0), Phase: pipeline.SessionRequest, RequestID: "r1", Host: "llm.example",
 		Inference: &pipeline.InferenceExtension{AgentRole: pipeline.AgentRoleMain, Tools: tools, Messages: conv{user("go")}, Stream: true}})
-	tl := Build("s", r.events, time.Time{})
+	tl := Build("s", claudeCodeEvents(r.events), time.Time{})
 	if len(tl.Prompts) != 1 || tl.Prompts[0].End != nil {
 		t.Errorf("prompts = %+v, want one, still open", tl.Prompts)
 	}
@@ -205,7 +235,7 @@ func TestPromptsOpenCallLeavesThePromptOpen(t *testing.T) {
 func TestPromptsOmittedWhenEmpty(t *testing.T) {
 	var r rec
 	r.turn("", 0, 1, conv{user("<system-reminder>x</system-reminder>")}, nil, "end_turn")
-	tl := Build("s", r.events, time.Time{})
+	tl := Build("s", claudeCodeEvents(r.events), time.Time{})
 	b, err := json.Marshal(tl)
 	if err != nil {
 		t.Fatal(err)
@@ -219,14 +249,25 @@ func TestHumanText(t *testing.T) {
 	for in, want := range map[string]string{
 		"hello":                                "hello",
 		"<system-reminder>a</system-reminder>": "",
-		"<system-reminder>a</system-reminder>\n  ship it ":             "ship it",
-		"<agent-message from=\"x\">done</agent-message>":               "",
-		"<agent-messages>are a word</agent-messages> here":             "<agent-messages>are a word</agent-messages> here",
-		"<system-reminder>unclosed":                                    "",
+		"<system-reminder>a</system-reminder>\n  ship it ": "ship it",
+		"<agent-message from=\"x\">done</agent-message>":   "",
+		"<agent-messages>are a word</agent-messages> here": "<agent-messages>are a word</agent-messages> here",
+		// an open with no close is text: the person typed the tag
+		"<system-reminder> is leaking into prompts, fix it":            "<system-reminder> is leaking into prompts, fix it",
+		"why does <system-reminder> show up?":                          "why does <system-reminder> show up?",
 		"[Request interrupted by user for tool use]":                   "",
 		"<user-prompt-submit-hook>ctx</user-prompt-submit-hook>fix it": "fix it",
 		// a subagent's hand-back, shaped as a real recording carried it
 		"<system-reminder>r</system-reminder>\n<tools-used-before-summary>x</tools-used-before-summary>\nAnother Claude session sent a message:\n<agent-message from=\"a1\">done</agent-message>\nThat \"other Claude session\" is an agent working inside this same session.": "",
+		// nested reminders, and a stray close whose open was cut off (#2128 review)
+		"<system-reminder>outer<system-reminder>inner</system-reminder>outer2</system-reminder>": "",
+		"<system-reminder>a</system-reminder> b </system-reminder>":                              "",
+		"<system-reminder>a</system-reminder>\nmy text\n<system-reminder>b</system-reminder>":    "my text",
+		// a close alone, and a reminder that quotes an open tag (a file diff)
+		"stray</system-reminder>hello": "hello",
+		"<system-reminder>file diff: t := \"<system-reminder>a\"</system-reminder>\nplease fix the test": "please fix the test",
+		// a compaction summary behind a reminder is still a summary
+		"<system-reminder>The date changed.</system-reminder>\n" + compactionSummary + " that ran out of context.": "",
 	} {
 		if got := humanText(in); got != want {
 			t.Errorf("humanText(%q) = %q, want %q", in, got, want)

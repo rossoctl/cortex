@@ -316,18 +316,25 @@ has no spawn link: nothing on the wire names the call that started it.
   the cached timeline.
 - A **prompt** groups the turns that one human instruction caused (#1922): the
   tool loop, the subagents it spawned and the retries, until the person types
-  again. Claude Code only, and derived from the request bodies (`source:
-  "derived"`). A main-agent call starts a prompt when its newest user message is
-  new since the agent's previous call and holds text once the messages Claude
-  Code injects are removed: `<system-reminder>`, slash-command scaffolding and
-  local output, `<task-notification>`, `<agent-message>`, an interrupt notice and
-  a compaction summary. Not a prompt: a tool result, a retry (`resent`), a
+  again. Claude Code only: a call whose client is Claude Code (or that was
+  imported from its transcripts). Another agent's calls keep their turns and
+  start no prompt. Derived from the request bodies (`source: "derived"`). A
+  main-agent call starts a prompt when its newest user message is new since the
+  agent's previous call and holds text once the messages Claude Code injects are
+  removed: `<system-reminder>` (nested ones too), slash-command scaffolding and
+  local output, `<task-notification>`, `<agent-message>` and the lines around it,
+  `<bash-input>`, `<bash-stdout>` and `<bash-stderr>`,
+  `<user-prompt-submit-hook>`, `<tools-used-before-summary>`, an interrupt
+  notice, an `[Image: …]` note, and a compaction summary (also behind a
+  reminder). Not a prompt: a tool result, a retry (`resent`), a
   suggestion-mode call, and the side calls left out of `turns`. Each turn, a
   subagent's too, belongs to the prompt open when it started, so a background
   subagent still working in a later prompt counts there. A prompt typed while
   tools ran (its text beside their results) has no `thinkMs`. `start` is the
   first call's request, and `end` is the end of the last call to finish (absent
-  while one is open). `firstSeq` and `lastSeq` are the first and last calls'
+  while one is open). A call that runs past the next prompt's start, such as a
+  background subagent's, carries `end` past it, so prompts can overlap. `index`
+  is the session's numbering, kept in a `?from=`/`?to=` window. `firstSeq` and `lastSeq` are the first and last calls'
   request events. `thinkMs` is the person's time before the prompt: from the end
   of the previous prompt's last main-agent call to this one's start. It is absent
   on the first prompt. No prompt text is carried. Computed on each build, never
