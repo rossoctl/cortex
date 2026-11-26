@@ -83,8 +83,8 @@ require (
 	github.com/prometheus/procfs v0.22.0 // indirect
 	github.com/redis/go-redis/v9 v9.23.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	github.com/rossoctl/accountant v0.8.0 // indirect
-	github.com/rossoctl/accountant/metrics v0.8.0 // indirect
+	github.com/rossoctl/accountant v0.9.0 // indirect
+	github.com/rossoctl/accountant/metrics v0.9.0 // indirect
 	github.com/rossoctl/context-guru v0.7.9 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/sirupsen/logrus v1.10.2 // indirect

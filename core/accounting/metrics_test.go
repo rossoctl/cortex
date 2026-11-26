@@ -108,16 +108,19 @@ func TestSink_SavedMatchesTheLedgerToTheMicro(t *testing.T) {
 }
 
 // endpointRates prices by endpoint, and fails the test when a prompt total reaches it paired with
-// another endpoint's: that is the binding Sink.mu exists to keep.
+// another endpoint's: that is the binding Sink.mu exists to keep. An endpoint's request is priced
+// at two sizes: its billed total, and that total plus the saved tokens (the size without the ops,
+// rossoctl/cortex#2135).
 type endpointRates struct {
 	t      *testing.T
 	input  map[string]float64
 	totals map[string]int
+	saved  int
 }
 
 func (e *endpointRates) Resolve(endpoint, _ string, promptTotal int) (pricing.Rates, pricing.Provenance) {
-	if e.totals[endpoint] != promptTotal {
-		e.t.Errorf("endpoint %q priced with prompt total %d, want %d", endpoint, promptTotal, e.totals[endpoint])
+	if want := e.totals[endpoint]; promptTotal != want && promptTotal != want+e.saved {
+		e.t.Errorf("endpoint %q priced with prompt total %d, want %d or %d", endpoint, promptTotal, want, want+e.saved)
 	}
 	var r pricing.Rates
 	r.Base[pricing.TierInput], r.Set[pricing.TierInput] = e.input[endpoint], true
@@ -131,7 +134,7 @@ func TestSink_ConcurrentObservationsKeepTheirOwnEndpoint(t *testing.T) {
 	mp, rd := manual(t)
 	r := &endpointRates{t: t,
 		input:  map[string]float64{"a.example": 1e-6, "b.example": 1e-3},
-		totals: map[string]int{"a.example": 100, "b.example": 200}}
+		totals: map[string]int{"a.example": 100, "b.example": 200}, saved: 10}
 	s := NewSink(mp, r)
 	res := accountant.Result{Ops: []accountant.PricedOp{{Kind: accountant.KindRewrite, Operator: "tool-prune",
 		Saved: accountant.TierTokens{Input: 10}}}}
@@ -317,19 +320,21 @@ func TestSink_SpendMatchesTheLedgerToTheMicro(t *testing.T) {
 	}
 }
 
-// requestBound prices a call at the request's binding: what a colliding spend is pushed at.
+// requestBound prices a call at the request's endpoint: what a colliding spend is pushed at. The
+// sink asks the pricer for each call's own prompt size (PriceAt), so only the endpoint falls back.
 func requestBound(c *accountant.ModelCall, model string) float64 {
 	cc := *c
 	cc.Model = model
 	tt := callTiers(&cc)
-	usd, _ := TierUSD(zone, "api.example", model, 30000, tt)
-	out, _ := USD(zone, "api.example", model, 30000, pricing.TierOutput, int64(cc.Usage.Output))
+	size := callPromptTotal(&cc)
+	usd, _ := TierUSD(zone, "api.example", model, size, tt)
+	out, _ := USD(zone, "api.example", model, size, pricing.TierOutput, int64(cc.Usage.Output))
 	return usd + out
 }
 
 // COLLISIONS (documented in bindingsFor): the pricer sees only a model, so a spend on the
 // request's own model with another host, or two spends on one model with different hosts, are
-// priced at the request's binding — and differ from the ledger, which prices each call apart.
+// priced at the request's endpoint — and differ from the ledger, which prices each call apart.
 func TestSink_SpendCollisionFallsBackToTheRequestBinding(t *testing.T) {
 	for _, c := range []struct {
 		name  string
