@@ -458,7 +458,7 @@ func (h *Host) end(p *pending, format wire.Format, meta accountant.RequestMeta, 
 	// The prefix another thread of the session kept warm: the ping did not keep it alive, so
 	// the rescue leaves it out (accountant R54, #2138). Every request is recorded; the bodies
 	// are compared only when this one carries ping facts, the only time the library reads it.
-	f.SharedWarm = h.siblings.sharedWarm(meta.Session, thread.ID, meta.At, f.TTL, fwdBody, fwdBPs, p.pinged)
+	f.SharedWarm = h.siblings.sharedWarm(meta, thread.ID, f.TTL, fwdBody, fwdBPs, p.pinged)
 	if h.factsHook != nil {
 		h.factsHook(f)
 	}

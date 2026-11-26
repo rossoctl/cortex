@@ -36,8 +36,11 @@ var sharedSystem = `[{"type":"text","text":"` + strings.Repeat("you are a helpfu
 
 // subagentBody is one subagent's body: the shared system prompt, then a turn of its own (about
 // 400 tokens), with a cache mark on it.
-func subagentBody(task string) []byte {
-	return []byte(`{"model":"claude-sonnet-4-5","max_tokens":10,"system":` + sharedSystem +
+func subagentBody(task string) []byte { return subagentBodyOn("claude-sonnet-4-5", task) }
+
+// subagentBodyOn is subagentBody on another model.
+func subagentBodyOn(model, task string) []byte {
+	return []byte(`{"model":"` + model + `","max_tokens":10,"system":` + sharedSystem +
 		`,"messages":[{"role":"user","content":[{"type":"text","text":"` + task + strings.Repeat(" lorem ipsum", 133) +
 		`","cache_control":{"type":"ephemeral"}}]}]}`)
 }
@@ -49,6 +52,11 @@ func threadRequest(t *testing.T, h *Host, thread string, body []byte, usage pipe
 		t.Fatal(err)
 	}
 	return runOn(t, p, "s1", "/v1/messages", body, 200, usage)
+}
+
+// rm is the RequestMeta of a request of session at at, on Sonnet.
+func rm(session string, at time.Time) accountant.RequestMeta {
+	return accountant.RequestMeta{Session: session, At: at, Model: "claude-sonnet-4-5"}
 }
 
 func parsed(t *testing.T, body []byte) (accountant.Body, []accountant.Breakpoint) {
@@ -76,15 +84,26 @@ func rescuedTokens(res accountant.Result) int {
 // EntryFacts it was ended with.
 func siblingScenario(t *testing.T, bAgain bool, bAt time.Duration) (accountant.Result, accountant.EntryFacts) {
 	t.Helper()
+	return siblingScenarioOn(t, "claude-sonnet-4-5", bAgain, bAt)
+}
+
+// siblingScenarioOn is siblingScenario with b on bModel. b on another model shares no cache entry
+// with a, so its first request writes its whole prompt.
+func siblingScenarioOn(t *testing.T, bModel string, bAgain bool, bAt time.Duration) (accountant.Result, accountant.EntryFacts) {
+	t.Helper()
 	now := pingT0
 	h := clockHost(t, &now)
 	seen := factsSeen(h)
-	bodyA, bodyB := subagentBody("task A"), subagentBody("task B")
+	bodyA, bodyB := subagentBody("task A"), subagentBodyOn(bModel, "task B")
+	bFirst := pipeline.InferenceExtension{Model: bModel, InputTokens: 3, CacheReadTokens: 1800, CacheWriteTokens: 400}
+	if bModel != "claude-sonnet-4-5" {
+		bFirst = pipeline.InferenceExtension{Model: bModel, InputTokens: 3, CacheWriteTokens: 2200}
+	}
 
 	if _, ok := h.Compute(threadRequest(t, h, "a", bodyA, pipeline.InferenceExtension{InputTokens: 3, CacheWriteTokens: 2200})); !ok {
 		t.Fatal("a, first request: no Result")
 	}
-	if _, ok := h.Compute(threadRequest(t, h, "b", bodyB, pipeline.InferenceExtension{InputTokens: 3, CacheReadTokens: 1800, CacheWriteTokens: 400})); !ok {
+	if _, ok := h.Compute(threadRequest(t, h, "b", bodyB, bFirst)); !ok {
 		t.Fatal("b, first request: no Result")
 	}
 	ping := accountant.Ping{
@@ -97,7 +116,7 @@ func siblingScenario(t *testing.T, bAgain bool, bAt time.Duration) (accountant.R
 	}
 	if bAgain {
 		now = pingT0.Add(bAt)
-		if _, ok := h.Compute(threadRequest(t, h, "b", bodyB, pipeline.InferenceExtension{InputTokens: 3, CacheReadTokens: 2200})); !ok {
+		if _, ok := h.Compute(threadRequest(t, h, "b", bodyB, pipeline.InferenceExtension{Model: bModel, InputTokens: 3, CacheReadTokens: 2200})); !ok {
 			t.Fatal("b, second request: no Result")
 		}
 	}
@@ -150,6 +169,19 @@ func TestSharedWarm_SiblingPastTTLIsNotASibling(t *testing.T) {
 	}
 }
 
+// TestSharedWarm_SiblingOnAnotherModelIsNotASibling: b sends the same system prefix on Haiku. The
+// provider caches each model apart, so b kept nothing warm for a (Sonnet), and the ping rescued the
+// whole read.
+func TestSharedWarm_SiblingOnAnotherModelIsNotASibling(t *testing.T) {
+	res, f := siblingScenarioOn(t, "claude-haiku-4-5", true, 6*time.Minute)
+	if f.SharedWarm != nil {
+		t.Errorf("EntryFacts.SharedWarm = %+v, want nil (b is on another model)", *f.SharedWarm)
+	}
+	if n := rescuedTokens(res); n != 2200 {
+		t.Errorf("rescue = %d tokens, want 2200", n)
+	}
+}
+
 func TestSiblingStore_ChoosesSiblings(t *testing.T) {
 	fwdA, bpsA := parsed(t, subagentBody("task A"))
 	fwdB, bpsB := parsed(t, subagentBody("task B"))
@@ -158,14 +190,17 @@ func TestSiblingStore_ChoosesSiblings(t *testing.T) {
 	for name, c := range map[string]struct {
 		thread string        // the thread that sent b's body
 		at     time.Duration // when it sent it, after pingT0
-		want   bool          // a's request at pingT0+5m sees a shared prefix
+		model  string        // b's model; "-" is a's (Sonnet)
+		want   bool          // a's request (Sonnet) at pingT0+5m sees a shared prefix
 	}{
-		"another thread, inside the TTL": {"b", 2 * time.Minute, true},
-		"another thread, at the TTL":     {"b", 0, true},
-		"another thread, past the TTL":   {"b", -time.Second, false},
-		"another thread, later":          {"b", 6 * time.Minute, false},
-		"another session's thread":       {"", 2 * time.Minute, false},
-		"the same thread":                {"a", 2 * time.Minute, false},
+		"another thread, inside the TTL": {"b", 2 * time.Minute, "-", true},
+		"another thread, at the TTL":     {"b", 0, "-", true},
+		"another thread, past the TTL":   {"b", -time.Second, "-", false},
+		"another thread, later":          {"b", 6 * time.Minute, "-", false},
+		"another session's thread":       {"", 2 * time.Minute, "-", false},
+		"the same thread":                {"a", 2 * time.Minute, "-", false},
+		"another model":                  {"b", 2 * time.Minute, "claude-haiku-4-5", false},
+		"an unknown model":               {"b", 2 * time.Minute, "", true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			var s siblingStore
@@ -173,8 +208,12 @@ func TestSiblingStore_ChoosesSiblings(t *testing.T) {
 			if c.thread == "" {
 				session, c.thread = "s2", "b"
 			}
-			s.sharedWarm(session, c.thread, pingT0.Add(c.at), ttl, fwdB, bpsB, false)
-			got := s.sharedWarm("s1", "a", pingT0.Add(ttl), ttl, fwdA, bpsA, true)
+			sib := rm(session, pingT0.Add(c.at))
+			if c.model != "-" {
+				sib.Model = c.model
+			}
+			s.sharedWarm(sib, c.thread, ttl, fwdB, bpsB, false)
+			got := s.sharedWarm(rm("s1", pingT0.Add(ttl)), "a", ttl, fwdA, bpsA, true)
 			if (got != nil) != c.want {
 				t.Errorf("sharedWarm = %+v, want a position: %v", got, c.want)
 			}
@@ -187,11 +226,11 @@ func TestSiblingStore_RecordsWithoutWant(t *testing.T) {
 	fwdA, bpsA := parsed(t, subagentBody("task A"))
 	fwdB, bpsB := parsed(t, subagentBody("task B"))
 	var s siblingStore
-	s.sharedWarm("s1", "b", pingT0, time.Minute, fwdB, bpsB, false)
-	if got := s.sharedWarm("s1", "a", pingT0, time.Minute, fwdA, bpsA, false); got != nil {
+	s.sharedWarm(rm("s1", pingT0), "b", time.Minute, fwdB, bpsB, false)
+	if got := s.sharedWarm(rm("s1", pingT0), "a", time.Minute, fwdA, bpsA, false); got != nil {
 		t.Errorf("sharedWarm without want = %+v, want nil", *got)
 	}
-	if got := s.sharedWarm("s1", "c", pingT0, time.Minute, fwdA, bpsA, true); got == nil {
+	if got := s.sharedWarm(rm("s1", pingT0), "c", time.Minute, fwdA, bpsA, true); got == nil {
 		t.Error("a and b were not recorded without want")
 	}
 }
@@ -202,9 +241,9 @@ func TestSiblingStore_KeepsTheLaterRequest(t *testing.T) {
 	fwdA, bpsA := parsed(t, subagentBody("task A"))
 	fwdB, bpsB := parsed(t, subagentBody("task B"))
 	var s siblingStore
-	s.sharedWarm("s1", "b", pingT0.Add(4*time.Minute), 5*time.Minute, fwdB, bpsB, false)
-	s.sharedWarm("s1", "b", pingT0, 5*time.Minute, fwdB, bpsB, false)
-	if got := s.sharedWarm("s1", "a", pingT0.Add(8*time.Minute), 5*time.Minute, fwdA, bpsA, true); got == nil {
+	s.sharedWarm(rm("s1", pingT0.Add(4*time.Minute)), "b", 5*time.Minute, fwdB, bpsB, false)
+	s.sharedWarm(rm("s1", pingT0), "b", 5*time.Minute, fwdB, bpsB, false)
+	if got := s.sharedWarm(rm("s1", pingT0.Add(8*time.Minute)), "a", 5*time.Minute, fwdA, bpsA, true); got == nil {
 		t.Error("the earlier request replaced b's later one")
 	}
 }
@@ -213,7 +252,7 @@ func TestSiblingStore_IsBounded(t *testing.T) {
 	fwd, bps := parsed(t, subagentBody("task A"))
 	var s siblingStore
 	for i := range siblingsCap + 1 {
-		s.sharedWarm(fmt.Sprintf("s%d", i/10), fmt.Sprintf("t%d", i%10), pingT0.Add(time.Duration(i)*time.Second),
+		s.sharedWarm(rm(fmt.Sprintf("s%d", i/10), pingT0.Add(time.Duration(i)*time.Second)), fmt.Sprintf("t%d", i%10),
 			time.Minute, fwd, bps, false)
 	}
 	if n := s.len(); n != siblingsTrimTo {
@@ -229,7 +268,7 @@ func TestSiblingStore_IsBounded(t *testing.T) {
 
 	var one siblingStore
 	for i := range siblingThreadsCap + 1 {
-		one.sharedWarm("s1", fmt.Sprintf("t%d", i), pingT0.Add(time.Duration(i)*time.Second), time.Minute, fwd, bps, false)
+		one.sharedWarm(rm("s1", pingT0.Add(time.Duration(i)*time.Second)), fmt.Sprintf("t%d", i), time.Minute, fwd, bps, false)
 	}
 	if n := len(one.sessions["s1"]); n != siblingThreadsCap || one.len() != siblingThreadsCap {
 		t.Errorf("threads in s1 = %d (count %d), want %d", n, one.len(), siblingThreadsCap)
@@ -247,7 +286,7 @@ func TestSiblingStore_Concurrent(t *testing.T) {
 	for i := range 32 {
 		wg.Go(func() {
 			for j := range 50 {
-				s.sharedWarm(fmt.Sprintf("s%d", i%4), fmt.Sprintf("t%d", i), pingT0.Add(time.Duration(j)*time.Second),
+				s.sharedWarm(rm(fmt.Sprintf("s%d", i%4), pingT0.Add(time.Duration(j)*time.Second)), fmt.Sprintf("t%d", i),
 					time.Minute, fwd, bps, j%2 == 0)
 			}
 		})

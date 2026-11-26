@@ -380,11 +380,13 @@ ping does not get credit for it.
 - `core/accounting` keeps each `(session, thread)`'s last request: its time (`RequestMeta.At`),
   its forwarded `Body` and its breakpoints. Hashes and sizes only (R2). `sibling.go` holds it.
 - At `EndRequest`, if the request carries ping facts, it sets `EntryFacts.SharedWarm` to
-  `accountant.SharedWarmFrom(forwarded, siblings)`. A sibling is another thread of the session whose
-  last request was not after this one and was inside the TTL before it. The rescue leaves that
+  `accountant.SharedWarmFrom(forwarded, siblings)`. A sibling is another thread of the session, on the
+  same model, whose last request was not after this one and was inside the TTL before it. The
+  provider caches each model apart. If either model is unknown, the thread counts. The rescue leaves that
   prefix out.
 - The store has the same limits as `threadBilling`: 10,000 entries, trimmed to 9,000 by age. A
-  session keeps at most 64 threads. The store is not in the snapshot.
+  session keeps at most 64 threads; past that it drops its oldest, which can still be warm under a
+  1h TTL. The store is not in the snapshot.
 - A sibling that is missed (its record has not ended yet, or the process restarted) overstates the
   rescue. A sibling whose request failed understates it. Both are accepted.
 - Not covered: a ping on a sibling thread also refreshes the shared prefix, and the store does not

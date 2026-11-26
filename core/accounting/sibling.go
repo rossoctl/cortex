@@ -11,7 +11,8 @@ import (
 // siblingsCap and siblingsTrimTo bound siblingStore over all sessions, the same way threadBilling
 // and the library's own Trackers are bounded (10,000 threads, trimmed to 9,000 by age).
 // siblingThreadsCap bounds the threads of one session, so one busy session cannot push out the
-// others: a session past it drops its oldest thread, which is past any TTL by then.
+// others: a session past it drops its oldest thread. That thread can still be inside a 1h TTL. Then
+// it is a missed sibling, which overstates the rescue, as before this store.
 const (
 	siblingsCap       = threadBillingCap
 	siblingsTrimTo    = threadBillingTrimTo
@@ -34,16 +35,27 @@ type siblingStore struct {
 }
 
 type siblingEntry struct {
-	at  time.Time
-	fwd accountant.Body
-	bps []accountant.Breakpoint
+	at    time.Time
+	model string // modelID of the request
+	fwd   accountant.Body
+	bps   []accountant.Breakpoint
+}
+
+// modelID names the model as the library compares it: ModelKey when set, else Model as written.
+func modelID(m accountant.RequestMeta) string {
+	if m.ModelKey != "" {
+		return m.ModelKey
+	}
+	return m.Model
 }
 
 // sharedWarm records this request as thread's last in session, and, when want is true, returns
 // the last position of fwd that a sibling kept warm, or nil when none did.
 //
-// The host chooses the siblings: another thread of the session whose last request was inside ttl
-// before at, and not after it. accountant.SharedWarmFrom decides where the shared prefix ends. It
+// The host chooses the siblings: another thread of the session, on the same model, whose last
+// request was inside ttl before at, and not after it. The provider caches each model apart, so a
+// thread on another model keeps nothing warm for this one (the library seeds a fork from its parent
+// on the same rule). When either model is unknown, the thread counts: that can only lower a saving. accountant.SharedWarmFrom decides where the shared prefix ends. It
 // compares bodies, so it runs outside the lock, and only when want is true: the library reads
 // SharedWarm only on a request that carries a keep-alive ping's facts.
 //
@@ -51,8 +63,9 @@ type siblingEntry struct {
 // own goroutines, in any order. A sibling whose record has not ended yet is missed, and the
 // rescue is then overstated, as before this store. A sibling that got an error (a 429) did not
 // warm the cache, but it still lowers the rescue: a doubtful figure may only lower a saving (R54).
-func (s *siblingStore) sharedWarm(session, thread string, at time.Time, ttl time.Duration,
+func (s *siblingStore) sharedWarm(meta accountant.RequestMeta, thread string, ttl time.Duration,
 	fwd accountant.Body, bps []accountant.Breakpoint, want bool) *accountant.Position {
+	session, at, model := meta.Session, meta.At, modelID(meta)
 	if session == "" {
 		return nil
 	}
@@ -61,13 +74,13 @@ func (s *siblingStore) sharedWarm(session, thread string, at time.Time, ttl time
 	threads := s.sessions[session]
 	if want {
 		for id, e := range threads {
-			if id == thread || e.at.After(at) || at.Sub(e.at) > ttl {
+			if id == thread || e.at.After(at) || at.Sub(e.at) > ttl || (model != "" && e.model != "" && e.model != model) {
 				continue
 			}
 			sibs = append(sibs, accountant.Sibling{Body: e.fwd, Breakpoints: e.bps})
 		}
 	}
-	s.putLocked(session, thread, siblingEntry{at: at, fwd: fwd, bps: bps})
+	s.putLocked(session, thread, siblingEntry{at: at, model: model, fwd: fwd, bps: bps})
 	s.mu.Unlock()
 	if len(sibs) == 0 {
 		return nil
