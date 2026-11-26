@@ -1,7 +1,9 @@
 package accounting
 
 import (
+	"net/http"
 	"testing"
+	"time"
 
 	"github.com/rossoctl/accountant"
 	"github.com/rossoctl/cortex/core/cost/pricing"
@@ -38,6 +40,7 @@ func TestHost_SavingsWithheldOnAFatalCheck(t *testing.T) {
 	mp, rd := manual(t)
 	rates := testRates(pricing.ProvConfigured)
 	h := New(Options{Resolver: rates, Sink: NewSink(mp, rates)})
+	h.computeWait = time.Hour // wait on the record, not the clock
 	pctx := overlapRequest(t, h)
 
 	res, ok := h.Compute(pctx)
@@ -78,8 +81,14 @@ func TestHost_SavingsOneOperatorIsBooked(t *testing.T) {
 	mp, rd := manual(t)
 	rates := testRates(pricing.ProvConfigured)
 	h := New(Options{Resolver: rates, Sink: NewSink(mp, rates)})
-	pctx := request(t, h, "s1", "/v1/messages", clientBody("hi"),
-		&operator{fwd: forwardedBody("hi"), ops: []accountant.Operation{pruneOp()}}, 200, coldUsage())
+	h.computeWait = time.Hour // wait on the record, not the clock
+	// Only the penalty_unknown branch may mark this saving estimated, so nothing else does: an API
+	// key gives basis usd (every other basis is estimated), and a measured token count keeps the
+	// op exact (a size in bytes only is converted, and marked estimated).
+	op := pruneOp()
+	op.SizeBefore.Tokens = 1000
+	pctx := requestWithHeaders(t, h, "s1", http.Header{"X-Api-Key": {"sk-ant-api03-x"}}, clientBody("hi"),
+		&operator{fwd: forwardedBody("hi"), ops: []accountant.Operation{op}}, 200, coldUsage())
 	ss, ex, ok := h.Savings(pctx)
 	if !ok || ex.Withheld != "" {
 		t.Fatalf("Savings = ok %v, Withheld %q, want a booked saving", ok, ex.Withheld)
@@ -88,8 +97,19 @@ func TestHost_SavingsOneOperatorIsBooked(t *testing.T) {
 	if got.USD <= 0 || got.TokensAvoided <= 0 {
 		t.Errorf("saving = %+v, want a priced saving", got)
 	}
+	if got.Basis != BasisUSD {
+		t.Fatalf("basis = %q, want usd", got.Basis)
+	}
 	res, _ := h.Compute(pctx)
-	if penaltyUnknown(res) && !got.Estimated {
+	if !penaltyUnknown(res) {
+		t.Fatalf("Unpriced = %+v, want penalty_unknown: a thread's first request has no history", res.Unpriced)
+	}
+	for _, o := range res.Ops {
+		if o.Estimated {
+			t.Fatalf("op %+v is estimated: the test needs an exact op to see the branch", o)
+		}
+	}
+	if !got.Estimated {
 		t.Errorf("saving = %+v, want Estimated: the Result lists penalty_unknown", got)
 	}
 	if err := h.Close(); err != nil {
