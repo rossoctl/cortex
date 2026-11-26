@@ -267,7 +267,9 @@ type pending struct {
 	thread  threadBillingKey
 	tiered  bool
 	asked1h bool
-	// clientBytes and forwardedBytes are the sizes of the two bodies, for the size bound of
+	// clientBytes is the client's own body's size, and forwardedBytes the size of the body the
+	// provider bills (pctx.BilledBody) — the bytes actually sent when no plugin set that hook, a
+	// stub-sized copy when one did (context-guru's tool deferral). Both for the size bound of
 	// accountant.Withhold (tokensBefore).
 	clientBytes, forwardedBytes int
 	// unplaced is true when a plugin's billed-body hook could not describe its change to the

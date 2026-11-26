@@ -50,9 +50,10 @@ func (c *Context) ClientBody() []byte { return c.clientBody }
 // library: the host books no figure for the request (SkipInput.UnplacedDeferral).
 //
 // context-guru's tool deferral needs it: a tool with defer_loading stays in the bytes sent, but
-// the provider bills no definition for it. A nil f clears the hook, for a request sent again
-// without the change. Under on_error: observe the call does nothing, because the change was
-// not sent.
+// the provider bills no definition for it. RequestEnd reads the hook before the first send, so
+// a Resender does not need to clear it on a resend; the one nil call is OnRequest's own, for a
+// write that SetBody did not apply. Under on_error: observe the call does nothing, because the
+// change was not sent.
 func (c *Context) SetBilledBody(f func(forwarded []byte) (billed []byte, unplaced bool)) {
 	if f != nil && c.Observing() {
 		return

@@ -883,8 +883,12 @@ func (p *ContextGuru) Shutdown(context.Context) error {
 	if d := p.stateDisk.Swap(nil); d != nil {
 		_ = d.Close()
 	}
-	// The pointer stays: a request still draining on this instance reads it in OnFinish (Retry uses
-	// only the in-memory gate and prober). Init acquires once, so this releases once.
+	// The pointer stays: a request still draining on this instance reads it in OnFinish. Flow.Retry
+	// calls Prober.Forget, which persists through the file (Prober.Persist = hist.SaveVerdict) when
+	// this was the last user and release just closed it — that write then only logs (hist's own
+	// DEBUG), and the forgotten verdict does not survive a restart. The effect is small: the break
+	// Retry records is itself in-memory only and does not survive a restart either. Init acquires
+	// once, so this releases once.
 	p.defer_.release()
 	return nil
 }

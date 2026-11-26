@@ -97,22 +97,24 @@ func acquireDeferHost(path string) *deferHost {
 	return h
 }
 
-// release drops one user. The last one flushes the history and closes the file.
+// release drops one user. The last one flushes the history and closes the file, with the
+// registry lock held for the whole flush: a config reload's new instance can Init while the
+// old instance's Shutdown is still draining (reloadOnce starts the old pipeline's Stop in the
+// background and returns), and acquireDeferHost must not build a second Mem on this file while
+// the first one's final flush is still writing it (CodeRabbit review finding).
 func (h *deferHost) release() {
 	if h == nil {
 		return
 	}
 	deferHostsMu.Lock()
+	defer deferHostsMu.Unlock()
 	h.users--
-	last := h.users == 0
-	if last {
-		delete(deferHosts, h.path)
+	if h.users > 0 {
+		return
 	}
-	deferHostsMu.Unlock()
-	if last {
-		h.stop()
-		_ = h.file.Close()
-	}
+	delete(deferHosts, h.path)
+	h.stop()
+	_ = h.file.Close()
 }
 
 // startDefer builds the deferral state in Init, when the engine's pipeline asks for deferral, and
@@ -211,7 +213,15 @@ func (p *ContextGuru) deferTools(pctx *pipeline.Context, provider bschemas.Model
 		return out, nil
 	}
 	pipeline.SetState(pctx, deferStateKey, &deferState{provider: provider, api: api, di: di})
-	return out, di.Orig
+	// di.Orig is captured inside Flow.Apply AFTER RepairRefs runs (context-guru v0.7.9,
+	// tooldefer/flow.go), so on a thread whose transcript names a removed tool, di.Orig already
+	// carries the repair stub. accrec.OwnDeferred(out, pre) only credits a tool deferred in out
+	// and not already deferred in pre, so using di.Orig here would leave that stub's full
+	// definition in the accountant's billed body, though the provider bills none of it. body, the
+	// input to Apply, is the correct pre-deferral snapshot (clawgenti review finding) — it is
+	// byte-identical to di.Orig except when RepairRefs fired, and Resend keeps using st.di.Orig,
+	// which is the body to resend, unaffected by this.
+	return out, body
 }
 
 // startProbe runs the provider check in the background, on the request's own credential, through
@@ -286,6 +296,18 @@ func deferEnvelopeOps(in, billed, pre []byte) []accountant.Operation {
 // once. When that original is refused too because its transcript names a tool `tools` lacks, it
 // sends it once more with a deferred stub for that tool (rossoctl/context-guru#871). The client
 // never sees deferral's own 400: Claude Code would turn its tool search off for the session.
+//
+// It returns false at once for every request this plugin did not defer, which is most of them:
+// deferState is set only on a changed, deferred request (deferTools). But implementing Resender
+// at all makes this plugin a Resender in EVERY chain it runs in, at every preset, not only
+// ultrahigh: resenderOf is a type assertion on the method's presence, with no way to say "only
+// when configured for deferral". pipeline.Pipeline.HasResenders() then reports true for that
+// chain, and a forward-proxy request on it reads up to pipeline.ResendPeekLimit (64 KiB) of
+// every non-2xx answer's body before relaying it — a quiet latency cost for a slow-streaming or
+// open-ended error body, on every host that pipeline chain is used for, whether or not the
+// request is Anthropic Messages or ultrahigh (clawgenti review finding). For an ordinary error
+// body this costs nothing measurable; a follow-up could add a pctx-level opt-in that
+// resendIfAsked checks before peeking, so an unrelated chain pays nothing at all.
 func (p *ContextGuru) Resend(_ context.Context, pctx *pipeline.Context, status int, body []byte) bool {
 	st := pipeline.GetState[deferState](pctx, deferStateKey)
 	if st == nil || st.di == nil {

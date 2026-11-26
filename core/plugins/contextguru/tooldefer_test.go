@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/rossoctl/context-guru/accrec"
 	"github.com/rossoctl/context-guru/accwire"
 	"github.com/rossoctl/context-guru/tooldefer"
 	"github.com/tidwall/gjson"
@@ -39,6 +41,29 @@ func deferBody(t *testing.T) []byte {
 		"model": deferModel, "max_tokens": 1024, "tools": tools,
 		"messages": []map[string]any{{"role": "user", "content": "hi"}},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// deferBodyWithMissingRef is deferBody, with a transcript turn that names a tool `tools` no
+// longer declares: context-guru's RepairRefs adds a deferred stub for it before Flow.Apply
+// decides anything else (rossoctl/context-guru#871).
+func deferBodyWithMissingRef(t *testing.T) []byte {
+	t.Helper()
+	var doc map[string]any
+	if err := json.Unmarshal(deferBody(t), &doc); err != nil {
+		t.Fatal(err)
+	}
+	doc["messages"] = append(doc["messages"].([]any), map[string]any{
+		"role": "user", "content": []map[string]any{
+			{"type": "tool_result", "tool_use_id": "t1", "content": []map[string]any{
+				{"type": "tool_reference", "tool_name": "mcp__gone__x"},
+			}},
+		},
+	})
+	b, err := json.Marshal(doc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,8 +237,11 @@ func TestToolDefer_MissingToolGetsAStub(t *testing.T) {
 		t.Fatal("premise: the first refusal was not resent")
 	}
 	missing := `{"type":"error","error":{"type":"invalid_request_error","message":"Tool reference 'mcp__gone__x' not found in available tools"}}`
+	// go.mod pins context-guru exactly, so a RepairFromError that cannot parse this error text
+	// is not a future-version concern to skip past: it means the stub round this test exercises
+	// does not work at the pinned version, and a Skip would hide that regression (review finding).
 	if _, ok := tooldefer.RepairFromError([]byte(missing), pctx.Body); !ok {
-		t.Skip("this context-guru version reads another error text for a missing tool reference")
+		t.Fatal("tooldefer.RepairFromError does not parse this missing-tool error text at the pinned context-guru version")
 	}
 	if !resend(p, pctx, http.StatusBadRequest, missing) {
 		t.Fatal("the missing-tool refusal was not resent with a stub")
@@ -296,4 +324,70 @@ func TestToolDefer_ResentRequestBooksNoFigure(t *testing.T) {
 	if _, ok := h.Compute(pctx); ok {
 		t.Fatal("a resent request booked a figure")
 	}
+}
+
+// A tool RepairRefs stubs is billed as the minimal stub accrec.DeferredStub gives, the same as
+// one toolfilter itself deferred: the accountant's pre-deferral snapshot must be the body BEFORE
+// Flow.Apply ran RepairRefs, not di.Orig, which Flow.Apply captures AFTER (context-guru v0.7.9,
+// tooldefer/flow.go:109-113,160). di.Orig already carries the repair stub, so accrec.OwnDeferred
+// would read it as already deferred before this request and leave its StubTools-sized definition
+// (name + description + input_schema) in the billed body (clawgenti review finding).
+func TestToolDefer_ARepairedToolIsBilledAsTheMinimalStub(t *testing.T) {
+	p := deferPlugin(t, "h8")
+	h := accounting.New(accounting.Options{})
+	t.Cleanup(func() { _ = h.Close() })
+	pipe, err := pipeline.New([]pipeline.Plugin{noReq{p}}, pipeline.WithAccountant(h))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pctx := deferPctx(t, "h8", true)
+	pctx.Body = deferBodyWithMissingRef(t)
+	if act := pipe.Run(context.Background(), pctx); act.Type != pipeline.Continue {
+		t.Fatalf("action = %v", act.Type)
+	}
+	if !strings.Contains(string(pctx.Body), "mcp__gone__x") {
+		t.Fatal("premise: RepairRefs added no stub for the missing tool")
+	}
+	billed, unplaced := pctx.BilledBody(pctx.Body)
+	if unplaced {
+		t.Fatal("billed body unplaced")
+	}
+	got := gjson.GetBytes(billed, `tools.#(name=="mcp__gone__x")`).Raw
+	if want := accrec.DeferredStub("mcp__gone__x"); got != want {
+		t.Fatalf("billed stub for the repaired tool = %s, want the minimal stub %s", got, want)
+	}
+}
+
+// release holds the registry lock for the whole flush, so a concurrent acquireDeferHost for the
+// same path cannot build a second Mem on the file while the first one's final flush is still
+// writing it (CodeRabbit review finding).
+func TestToolDefer_ReleaseHoldsTheRegistryLockThroughTheFlush(t *testing.T) {
+	path := filepath.Join(t.TempDir(), tooldefer.FileName)
+	f, err := tooldefer.OpenFile(path, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, started := make(chan struct{}), make(chan struct{})
+	h := &deferHost{path: path, file: f, hist: tooldefer.NewMem(f.DB), prober: tooldefer.NewProber(),
+		gate: tooldefer.NewGate(), users: 1, stop: func() { close(started); <-gate }}
+	deferHostsMu.Lock()
+	deferHosts[path] = h
+	deferHostsMu.Unlock()
+
+	done := make(chan struct{})
+	go func() { h.release(); close(done) }()
+	<-started // release() has called h.stop(); it is now blocked on <-gate.
+
+	// At this instant release()'s goroutine has already called deferHostsMu.Lock() (Go's channel
+	// send in stop() happens-after that Lock, by release's own code order) and has not yet
+	// Unlock()ed: Unlock only runs after h.stop() returns, which it cannot do until gate closes.
+	// So a correct release still holds the lock here; TryLock succeeding means it does not.
+	if deferHostsMu.TryLock() {
+		deferHostsMu.Unlock()
+		close(gate)
+		<-done
+		t.Fatal("release() released the registry lock before its flush finished")
+	}
+	close(gate)
+	<-done
 }
