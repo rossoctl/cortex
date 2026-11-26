@@ -119,12 +119,12 @@ deletes the PVCs and the data with them. To stop one install from sending, turn 
 
 ## What is lost when something fails
 
-Nothing is queued anywhere. Proxies send running totals every 30 seconds.
+Nothing is queued anywhere. Proxies send running totals every 60 seconds.
 
 | Event | Effect |
 |---|---|
 | Collector or Prometheus down for a while | The next push after it returns carries the totals. No count is lost. The graph shows one step at that time, not a slope. |
-| A proxy stops without a clean exit | The counts since its last push are lost: at most about 30 seconds. |
+| A proxy stops without a clean exit | The counts since its last successful push are lost: at most about one push interval (60 seconds by default, longer if pushes were failing or the interval is configured higher). |
 | A machine is off for a day | Its totals resume when it is back. The days between are not in the graph. |
 | A pod restarts | Prometheus, Alertmanager and Grafana keep their data on their PVCs. |
 

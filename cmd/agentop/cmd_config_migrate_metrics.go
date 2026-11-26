@@ -23,7 +23,7 @@ const metricsPushURL = "https://cortex-central.apps.epoc001.ete14.res.ibm.com/co
 // builtinConfigYAML (cmd/cortex/local.go): a new install and a migrated one must
 // push the same way.
 var metricsPushLines = []string{
-	"# Metrics push. Every 30s the accountant's counters -- tokens and dollars saved,",
+	"# Metrics push. Every 60s the accountant's counters -- tokens and dollars saved,",
 	"# request counts and timings, labelled by model -- go to the central collector",
 	"# over OTLP/HTTP. No prompt, path, host, session or key is sent. No token is",
 	"# needed: the central collector takes a Cortex push without one. A collector",
@@ -44,7 +44,7 @@ var metricsPushLines = []string{
 	"  enabled: true",
 	"  url: " + metricsPushURL,
 	`  # token: ""                  # or METRICS_PUSH_TOKEN; sent as Authorization: Bearer`,
-	"  # interval: 30s              # or METRICS_PUSH_INTERVAL",
+	"  # interval: 60s              # or METRICS_PUSH_INTERVAL",
 }
 
 // metricsPushSendsLine and metricsPushStopLine say what the push sends and how to

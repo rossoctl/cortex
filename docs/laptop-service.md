@@ -814,7 +814,7 @@ metrics_push:
   enabled: true     # default true, but with no URL nothing is sent
   url: https://cortex-central.apps.epoc001.ete14.res.ibm.com/cortex   # Cortex posts to <url>/v1/metrics
   token: ""         # sent as Authorization: Bearer <token>
-  interval: 30s
+  interval: 60s
 ```
 
 A `~/.cortex/config.yaml` written before this block was added has no `metrics_push:` block.
@@ -842,7 +842,7 @@ refuses the whole save until the restart.
 | `enabled` | `METRICS_PUSH` | `true` | A value that is not a boolean turns the push off. |
 | `url` | `METRICS_PUSH_URL` | *(none; the built-in config sets the central collector)* | Must be `https`. `http` is allowed only to a loopback address. A URL with user info (`https://user:pass@host`) or a query string is refused, because neither is sent: put the credential in `token`. In the file that fails startup; in `METRICS_PUSH_URL` it logs a WARN and turns the push off. |
 | `token` | `METRICS_PUSH_TOKEN` | *(none)* | Never logged. `/config` serves it redacted. |
-| `interval` | `METRICS_PUSH_INTERVAL` | `30s` | How often the counters are pushed. |
+| `interval` | `METRICS_PUSH_INTERVAL` | `60s` | How often the counters are pushed. |
 
 What is sent: the `llm.savings.*` counters (tokens saved and added by tier and component, their
 dollar value, cache effects, request and check counts); `llm.inference.tokens` / `cost_usd` /

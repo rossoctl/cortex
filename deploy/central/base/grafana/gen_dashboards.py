@@ -164,7 +164,7 @@ def inc(metric, by="", win="$__range", extra="", new_series_fallback=True, ancho
 # A dollar counter moves in steps: one event is one step. rate() * 3600 over a ~1 min window turns a
 # $1.75 step into a $105/h spike for one minute (context-guru #1273). So money over time is shown as
 # the dollars in each bar: increase() over $__interval, with a floor of BAR so each bar spans several
-# 30 s pushes. inc() keeps its new-series fallback here: a keep-alive series is born with its first
+# 60 s pushes. inc() keeps its new-series fallback here: a keep-alive series is born with its first
 # ping already in it, and increase() alone would lose that ping. The increase() is anchored, for the
 # reasons in count_bar(): without it a $1.75 ping read as $2.19, and a ping between two bars was lost.
 BAR = "5m"
