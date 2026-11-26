@@ -533,10 +533,25 @@ func (h *Host) end(p *pending, format wire.Format, meta accountant.RequestMeta, 
 // record (non-inference traffic, a refused request), when a W6.1 rule skips it, when the record
 // is not ended within computeWait, and when the library panics. All of those record the request
 // with no saving: accounting fails open.
+//
+// The Tier 1 counters (llm.inference.tokens, cost_usd, estimated_cost_usd, llm.cache.misses) book
+// every request whose response reports usage, also when ok is false (rossoctl/cortex#2013): the
+// skips keep the saving correct, and the provider bills the request whatever the accountant
+// does. A priced request books them with its Result (observe); every other request books them
+// in bill.
 func (h *Host) Compute(pctx *pipeline.Context) (accountant.Result, bool) {
 	if h == nil || pctx == nil {
 		return accountant.Result{}, false
 	}
+	res, ok := h.compute(pctx)
+	if !ok {
+		h.bill(pctx)
+	}
+	return res, ok
+}
+
+// compute is Compute without the Tier 1 booking of a request it gives no Result.
+func (h *Host) compute(pctx *pipeline.Context) (accountant.Result, bool) {
 	p := pipeline.GetState[pending](pctx, pendingKey)
 	if p == nil {
 		return accountant.Result{}, false
@@ -637,6 +652,62 @@ func (h *Host) Compute(pctx *pipeline.Context) (accountant.Result, bool) {
 		}
 	}
 	return p.result, p.ok
+}
+
+// billedKey is the pctx state key bill latches on. Compute's own latch is on the pending handle,
+// and a request with no record (no session, an unknown path) has none, so a second Compute call
+// would book it twice.
+const billedKey = "accounting.billed"
+
+type billed struct{}
+
+// bill books the Tier 1 counters, once, for a request Compute gives no Result. It reads only what
+// the response billed, so it needs no record: usage, model, endpoint, billing mode. It books
+// nothing when the response reports no usage, or counts no request could have reported
+// (pricing.PlausibleUsage), because the ledger refuses those counts too.
+//
+// The usage is the last upstream round's. A resent request's earlier rounds were refusals the
+// listener read and recorded as rows of their own; they report no usage.
+func (h *Host) bill(pctx *pipeline.Context) {
+	if h.sink == nil {
+		return
+	}
+	inf := pctx.Extensions.Inference
+	if inf == nil {
+		return
+	}
+	pu := pricing.UsageFromInference(inf)
+	if pu.PromptTotal()+pu.Output == 0 || !pricing.PlausibleUsage(pu) {
+		return
+	}
+	if pipeline.GetState[billed](pctx, billedKey) != nil {
+		return
+	}
+	pipeline.SetState(pctx, billedKey, &billed{})
+	billing := accountant.Billing{Mode: accountant.BillingUnknown}
+	if b := pipeline.GetState[accountant.Billing](pctx, billingKey); b != nil {
+		billing = *b
+	}
+	// RequestID is never empty here: an empty one marks a keep-alive ping.
+	meta := accountant.RequestMeta{RequestID: pctx.RequestID(), Session: pctx.SessionID, Model: inf.Model,
+		At: h.now(), Billing: billing}
+	// pu, not the raw counters: the gate and the booking read one usage. UsageFromInference drops
+	// a 1h count that is not a subset of the cache writes, and fills a prompt or output total a
+	// gateway reported only as prompt_tokens, completion_tokens or total_tokens, as the ledger does.
+	u := accountant.Usage{Input: pu.Input, CacheRead: pu.CacheRead, CacheWrite: pu.CacheWrite,
+		CacheWrite1h: pu.CacheWrite1h}
+	endpoint := pctx.Host
+	if _, redirected, ok := pctx.RedirectTarget(); ok {
+		endpoint = redirected
+	}
+	// No Result, so the miss has no phase: cold_start on a thread's first request, else other.
+	firstOnThread := false
+	if p := pipeline.GetState[pending](pctx, pendingKey); p != nil {
+		firstOnThread = p.firstOnThread
+	}
+	cause := missCause(accountant.Result{Phase: accountant.PhaseUnknown}, firstOnThread, u.CacheWrite > 0)
+	output := pu.Output
+	h.goObserve(func() { h.sink.ObserveBill(meta, u, output, endpoint, pu.PromptTotal(), cause) })
 }
 
 // withheld is the W6.5 gate pctx's Result failed, or "" (pending.withheld). Call it after
