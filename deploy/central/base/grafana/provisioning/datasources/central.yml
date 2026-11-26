@@ -3,7 +3,7 @@
 # the two can live in one Grafana without colliding.
 #
 # timeInterval sets the floor for $__rate_interval, used by this datasource's rate() and
-# histogram_quantile() panels -- Cortex's own and context-guru's (#4319), which both write to
+# histogram_quantile() panels -- Cortex's own and context-guru's (receiver port 4319), which both write to
 # this Prometheus. Do not lower it below Cortex's metrics_push.interval default (60s,
 # core/config/accounting.go): a smaller floor leaves rate() windows with too few samples.
 
