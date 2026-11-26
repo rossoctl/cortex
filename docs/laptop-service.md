@@ -863,9 +863,12 @@ sent. Dollar counters move only for requests billed per token (an API key); a su
 login moves the token counters alone.
 
 `llm.inference.tokens` / `cost_usd` / `estimated_cost_usd` and `llm.cache.misses` /
-`miss_cost_usd` count every request whose response reports usage. That includes a request the
-accountant does not price, for example one with no session ID, an unknown path, a history the
-provider holds, a resend or a non-2xx status: the provider bills it all the same. Only
+`miss_cost_usd` count every inference request that Cortex parses and whose response reports
+usage. That includes a request the accountant does not price, for example one with no session
+ID, a path the accountant cannot read (such as `/v1/completions`), a history the provider holds,
+a resend or a non-2xx status: the provider bills it all the same. They do not count a request
+the inference parser does not read, such as `/v1/embeddings`, or counts no request could report
+(`pricing.PlausibleUsage`). Only
 `llm.savings.*` is limited to the requests the accountant prices. A resend books the usage of
 its last round, because the refused rounds before it report none. A request the accountant does
 not price has no cache phase, so its miss counts as `cold_start` on the first request of its
