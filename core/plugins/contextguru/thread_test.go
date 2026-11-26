@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rossoctl/accountant"
 	cgstore "github.com/rossoctl/context-guru/store"
 	"github.com/rossoctl/context-guru/thread"
 	"github.com/rossoctl/cortex/core/accounting"
@@ -328,5 +329,30 @@ func TestAnAgentIDTheEngineRefusesKeepsItsAccountingThread(t *testing.T) {
 				t.Fatalf("accountant thread %+v, want {%s main}", got, id)
 			}
 		})
+	}
+}
+
+// #2137: the plugin reports a client compaction to the accountant (R55) on the first request
+// after it, the one that holds the summary. Not on the compaction request itself, and not on a
+// later turn.
+func TestOnRequest_ReportsTheRequestAfterAClientCompaction(t *testing.T) {
+	p := configured(t, `{}`)
+	steps := []struct {
+		name string
+		body []byte
+		want accountant.CompactionTrigger
+	}{
+		{"first turn", threadBody(t, "fix the failing test in parser.go"), ""},
+		{"compaction request", threadBody(t, "fix the failing test in parser.go",
+			"Your task is to create a detailed summary of the conversation so far"), ""},
+		{"first request after", threadBody(t, "Summary: the parser test is fixed. Continue."), accountant.CompactionUnknown},
+		{"next turn", threadBody(t, "Summary: the parser test is fixed. Continue.", "now run the tests"), ""},
+	}
+	for _, s := range steps {
+		pctx := inferencePctx("/v1/messages", s.body)
+		invokeReq(p, pctx)
+		if got := pctx.ClientCompaction(); got != s.want {
+			t.Errorf("%s: ClientCompaction = %q, want %q", s.name, got, s.want)
+		}
 	}
 }

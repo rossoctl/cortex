@@ -167,6 +167,22 @@ func (c *Context) AccountingThread() (id, parent string, ok bool) {
 	return c.accountingThread, c.accountingParent, c.accountingThreadSet
 }
 
+// SetClientCompaction records that this request is the first one after a client compaction
+// (accountant R55). The context-guru plugin calls it from its thread tracker. The accounting host
+// passes it to the accountant as RequestMeta.Compaction. An empty trigger is ignored, so a plugin
+// that saw no compaction leaves an earlier verdict in place.
+func (c *Context) SetClientCompaction(t accountant.CompactionTrigger) {
+	if t == "" {
+		return
+	}
+	c.clientCompaction = t
+}
+
+// ClientCompaction returns the verdict SetClientCompaction recorded, or "" when none did.
+func (c *Context) ClientCompaction() accountant.CompactionTrigger {
+	return c.clientCompaction
+}
+
 // BillingSnapshot returns accountant.BillingFrom(c.Headers) as it stood the FIRST time this pctx
 // was handed to a Pipeline.Run — before any plugin, inbound or outbound, can have rewritten the
 // credential header BillingFrom reads. Computed and cached lazily, so a caller that reaches it

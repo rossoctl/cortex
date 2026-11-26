@@ -338,6 +338,9 @@ func (h *Host) RequestEnd(pctx *pipeline.Context) {
 		Model:     model,
 		At:        h.now(),
 		Billing:   billing,
+		// R55: the first request after a client compaction. The library records it in
+		// Result.Compaction and prices nothing from it.
+		Compaction: pctx.ClientCompaction(),
 	}
 	thread := ThreadOf(pctx)
 	seen := h.setThreadBilling(pctx.SessionID, thread.ID, billing.Mode)

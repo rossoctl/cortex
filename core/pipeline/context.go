@@ -485,6 +485,8 @@ type Context struct {
 	accountingThread    string
 	accountingParent    string
 	accountingThreadSet bool
+	// clientCompaction holds SetClientCompaction's verdict: "" or an accountant.CompactionTrigger.
+	clientCompaction accountant.CompactionTrigger
 	// billing and billingSet hold BillingSnapshot's answer, captured once by the FIRST
 	// Pipeline.Run call on this pctx (inbound or outbound, whichever runs first) — before any
 	// plugin, inbound or outbound, can rewrite the credential header accountant.BillingFrom

@@ -106,5 +106,6 @@ func withAccountant(rec event.Event, a accounted) event.Event {
 	rec.UnattributedBreakUSD = a.extras.UnattributedBreakUSD
 	rec.Thread = a.extras.Thread
 	rec.Spends = a.extras.Spends
+	rec.Compaction = a.extras.Compaction
 	return rec
 }

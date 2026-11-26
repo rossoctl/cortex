@@ -336,6 +336,24 @@ type Event struct {
 	// (usd basis), PluginSpendUnits (subscriptionEquivalent) or PluginSpendUnknownMicros, so the
 	// existing spend totals keep their meaning. ADDITIVE and omitempty.
 	Spends []SpendRecord `json:"spends,omitempty"`
+
+	// Compaction is set on the first request after a client compaction (accountant R55,
+	// Result.Compaction): the request whose body holds the summary in place of the old history.
+	// It names the changes the compaction ended, so a reader can tell a saving that ended
+	// because the client compacted from one that ended for another reason. It is a record only:
+	// no figure and no total reads it. ADDITIVE and omitempty.
+	Compaction *CompactionRecord `json:"compaction,omitempty"`
+}
+
+// CompactionRecord is what the accountant recorded for a client compaction (accountant
+// CompactionRecord).
+type CompactionRecord struct {
+	// Trigger is how the compaction started: "manual" (/compact), "auto", or "unknown". Cortex
+	// cannot yet tell manual from auto, so it is "unknown" today.
+	Trigger string `json:"trigger"`
+	// Ended is the ChangeID of each change that ended on this request. It is [] and not null when
+	// none did.
+	Ended []string `json:"ended"`
 }
 
 // SpendRecord is one model call a context operator made for a request (accountant wiring W7.1,

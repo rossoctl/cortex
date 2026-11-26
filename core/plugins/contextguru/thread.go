@@ -3,6 +3,8 @@ package contextguru
 import (
 	"log/slog"
 
+	"github.com/rossoctl/accountant"
+
 	agentall "github.com/rossoctl/context-guru/agent/all"
 	"github.com/rossoctl/context-guru/thread"
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -49,6 +51,12 @@ func (p *ContextGuru) resolveThread(pctx *pipeline.Context, scope string, body [
 	res, err := p.threads.ResolveSession("", scope, agentID, body, agentall.IsClientCompaction(pctx.Headers, body))
 	if err != nil {
 		slog.Error("context-guru recovered from a panic in thread identification; using the session", "err", err)
+	}
+	if res.AfterCompaction {
+		// The tracker marks the request that holds the summary, not the compaction request
+		// itself. The wire does not tell /compact from an auto compaction, so the verdict is
+		// "unknown" (as in context-guru's proxy).
+		pctx.SetClientCompaction(accountant.CompactionUnknown)
 	}
 	pipeline.SetState(pctx, reqThreadStateKey, &reqThread{res: res})
 	return res, true

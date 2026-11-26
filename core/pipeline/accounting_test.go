@@ -317,3 +317,16 @@ func TestReportOps_AfterRunIsDroppedAndCounted(t *testing.T) {
 		t.Errorf("ops = %+v, want only the in-request op", ops)
 	}
 }
+
+// SetClientCompaction keeps a verdict, and an empty one does not erase it.
+func TestContext_ClientCompaction(t *testing.T) {
+	var c Context
+	if got := c.ClientCompaction(); got != "" {
+		t.Fatalf("new Context: ClientCompaction = %q, want empty", got)
+	}
+	c.SetClientCompaction(accountant.CompactionUnknown)
+	c.SetClientCompaction("")
+	if got := c.ClientCompaction(); got != accountant.CompactionUnknown {
+		t.Fatalf("ClientCompaction = %q, want %q", got, accountant.CompactionUnknown)
+	}
+}

@@ -228,6 +228,16 @@ accounting:
   `pctx.SetAccountingThread(id, parent)`, which overrides the default. That keeps context-guru's
   own thread split where it exists. A difference between the two thread rules goes in the
   differences file. *Builder's call:* the exact setter name.
+- **Client compaction (R55).** If the context-guru plugin ran, it calls
+  `pctx.SetClientCompaction(accountant.CompactionUnknown)` on the first request after a client
+  compaction: the request that holds the summary (`thread.Result.AfterCompaction`). The host copies
+  it into `RequestMeta.Compaction`, and the accountant lists the changes that ended in
+  `Result.Compaction`. The verdict is always `unknown`, because the wire does not tell `/compact`
+  from an auto compaction. With no context-guru plugin, the host reports nothing.
+  `Host.Savings` copies `Result.Compaction` into `Extras.Compaction`, and the inference parser
+  writes it on the cost record as `event.Event.Compaction`
+  (`"compaction":{"trigger":"unknown","ended":[<ChangeID>...]}`). A compaction alone is a reason to
+  publish a record. No figure and no total reads it.
 - **Facts.** `facts.Provider` and `facts.For` (section 5.2). The host is the destination host after
   any redirect, because that is the server that billed.
 - **Persistence (laptop only).** Write a `Snapshot()` every 60s to `~/.cortex/accountant-state.json`
@@ -247,6 +257,7 @@ including none.
      `Opts.ThreadOf` can be set.
   2. Call `pctx.ReportOps(res.Trace.Ops...)`.
   3. Set the thread from `res.Trace.Thread` with `pctx.SetAccountingThread` (section 5.4).
+     On the first request after a client compaction, call `pctx.SetClientCompaction` (section 5.4).
   4. Wrap `cgModel`. Each in-request model call adds a `KindSpend` op with `Call` = `ModelCall{Host,
      Model, Usage, Detached:false}` and an empty `ChangeID` (W4.6).
   - context-guru reports a replayed change on every turn under the same `ChangeID`, and the library
