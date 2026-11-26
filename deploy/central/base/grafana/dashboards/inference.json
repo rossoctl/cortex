@@ -482,7 +482,8 @@
                 "value": 0
               }
             ]
-          }
+          },
+          "min": 0
         },
         "overrides": []
       },
@@ -705,7 +706,7 @@
       "gridPos": {
         "x": 12,
         "y": 21,
-        "w": 12,
+        "w": 8,
         "h": 8
       },
       "targets": [
@@ -799,6 +800,51 @@
           "displayMode": "table",
           "placement": "bottom"
         }
+      }
+    },
+    {
+      "id": 14,
+      "type": "stat",
+      "title": "Average time the proxy added",
+      "description": "Mean of the time the proxy's own work added before the request went upstream, over the selected range. Sum of the time divided by the number of requests. Response-side work is not in it.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "central-prom"
+      },
+      "gridPos": {
+        "x": 20,
+        "y": 21,
+        "w": 4,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum((increase(llm_inference_added_seconds_sum{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) and last_over_time(llm_inference_added_seconds_sum{proxy=~\"$proxy\", machine=~\"$machine\"}[30d] offset $__range)) or (increase(llm_inference_added_seconds_sum{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) >= last_over_time(llm_inference_added_seconds_sum{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) or last_over_time(llm_inference_added_seconds_sum{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) / ((sum((increase(llm_inference_added_seconds_count{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) and last_over_time(llm_inference_added_seconds_count{proxy=~\"$proxy\", machine=~\"$machine\"}[30d] offset $__range)) or (increase(llm_inference_added_seconds_count{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) >= last_over_time(llm_inference_added_seconds_count{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) or last_over_time(llm_inference_added_seconds_count{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) > 0)",
+          "refId": "A",
+          "instant": true,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "central-prom"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "no data",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
       }
     },
     {

@@ -70,7 +70,7 @@
       "id": 1,
       "type": "bargauge",
       "title": "Net by component (USD, selected range)",
-      "description": "Saved minus added of each component's operations. Cache effects are not in it: they have no component label (see Cache effects). So a keep-alive rescue is not here, and the keeper shows only its ping cost: its whole net is under Cache management in the Fleet dashboard's Net saved by source. A red bar is a component whose operations cost more than they save.",
+      "description": "Saved minus added of each component's operations. Cache effects are not in it: they have no component label (see Cache effects). So the keeper (ping cost only) and context-guru (the plugin's own model calls, whose saving is on the component rows) are not shown. The keeper's whole net is under Cache management in the Fleet dashboard's Net saved by source. A red value (no bar) is a component whose operations cost more than they save.",
       "datasource": {
         "type": "prometheus",
         "uid": "central-prom"
@@ -83,7 +83,7 @@
       },
       "targets": [
         {
-          "expr": "(((sum by (component)((increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) and last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[30d] offset $__range)) or (increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) >= last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) or last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) or (sum by (component)((increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) and last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[30d] offset $__range)) or (increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) >= last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) or last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) * 0) - ((sum by (component)((increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) and last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[30d] offset $__range)) or (increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) >= last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) or last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) or (sum by (component)((increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) and last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[30d] offset $__range)) or (increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) >= last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) or last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) * 0))",
+          "expr": "(((sum by (component)((increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) and last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[30d] offset $__range)) or (increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) >= last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range])) or last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]))) or (sum by (component)((increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) and last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[30d] offset $__range)) or (increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) >= last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range])) or last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]))) * 0) - ((sum by (component)((increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) and last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[30d] offset $__range)) or (increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) >= last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range])) or last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]))) or (sum by (component)((increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) and last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[30d] offset $__range)) or (increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) >= last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range])) or last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]))) * 0))",
           "legendFormat": "{{component}}",
           "refId": "A",
           "datasource": {
@@ -116,7 +116,8 @@
                 "value": 0
               }
             ]
-          }
+          },
+          "min": 0
         },
         "overrides": []
       },
@@ -125,11 +126,33 @@
         "displayMode": "basic",
         "showUnfilled": true,
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
+          "values": true,
+          "calcs": [],
+          "fields": "/^Last \\*$/"
         }
-      }
+      },
+      "transformations": [
+        {
+          "id": "reduce",
+          "options": {
+            "mode": "seriesToRows",
+            "reducers": [
+              "lastNotNull"
+            ]
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Last *",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ]
     },
     {
       "id": 2,
@@ -230,7 +253,8 @@
                 "value": 0
               }
             ]
-          }
+          },
+          "min": 0
         },
         "overrides": []
       },
@@ -354,7 +378,8 @@
                 "value": 0
               }
             ]
-          }
+          },
+          "min": 0
         },
         "overrides": []
       },
@@ -466,7 +491,7 @@
       "id": 8,
       "type": "table",
       "title": "Components with a negative net",
-      "description": "Read this table first: a component here has operations that cost more than they save. Cache effects are not in it, so the keeper shows its pings and not its rescues: read it on the Cache dashboard. A component with no saved series at all shows no row; it appears in Net by component.",
+      "description": "Read this table first: a component here has operations that cost more than they save. Cache effects are not in it. The keeper and context-guru are not shown: they only spend, and their saving is elsewhere (the keeper's on the Cache dashboard). A component with no saved series at all shows no row; it appears in Net by component.",
       "datasource": {
         "type": "prometheus",
         "uid": "central-prom"
@@ -479,7 +504,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (component)((increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) and last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[30d] offset $__range)) or (increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) >= last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) or last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))",
+          "expr": "sum by (component)((increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) and last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[30d] offset $__range)) or (increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) >= last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range])) or last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]))",
           "refId": "A",
           "datasource": {
             "type": "prometheus",
@@ -489,7 +514,7 @@
           "format": "table"
         },
         {
-          "expr": "sum by (component)((increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) and last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[30d] offset $__range)) or (increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) >= last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) or last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))",
+          "expr": "sum by (component)((increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) and last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[30d] offset $__range)) or (increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]) >= last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range])) or last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",component!~\"keeper|context-guru\"}[$__range]))",
           "refId": "B",
           "datasource": {
             "type": "prometheus",

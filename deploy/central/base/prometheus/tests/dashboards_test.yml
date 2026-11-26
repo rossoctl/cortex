@@ -408,3 +408,52 @@ tests:
             value: -0.4500000000000003
           - labels: '{source="Total"}'
             value: -0.4500000000000003
+
+  # ---- Ping failure ratio: failed and timeout over sent pings -------------------------------------
+  # Sent pings are ok, failed and timeout. skipped was not sent, and a ping with no outcome (an older
+  # cortex build) has an unknown outcome, so neither is in the ratio. Every series exists from the
+  # start, so the fallback in inc() never engages.
+  - name: the ping failure ratio counts failed and timeout over sent pings
+    interval: 1m
+    input_series:
+      - series: 'llm_keepalive_pings_total{proxy="cortex",machine="m1",model="m",outcome="ok"}'
+        values: '0+3x60'
+      - series: 'llm_keepalive_pings_total{proxy="cortex",machine="m1",model="m",outcome="failed"}'
+        values: '0+1x60'
+      - series: 'llm_keepalive_pings_total{proxy="cortex",machine="m1",model="m",outcome="timeout"}'
+        values: '0+1x60'
+      - series: 'llm_keepalive_pings_total{proxy="cortex",machine="m1",model="m",outcome="skipped"}'
+        values: '0+7x60'
+      - series: 'llm_keepalive_pings_total{proxy="cortex",machine="m1",model="m"}'
+        values: '0+9x60'
+    promql_expr_test:
+      # (60 + 60) / (180 + 60 + 60) = 0.4
+      - eval_time: 60m
+        expr: '(sum((increase(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"failed|timeout"}[1h]) and last_over_time(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"failed|timeout"}[30d] offset 1h)) or (increase(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"failed|timeout"}[1h]) >= last_over_time(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"failed|timeout"}[1h])) or last_over_time(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"failed|timeout"}[1h])) or sum((increase(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"ok|failed|timeout"}[1h]) and last_over_time(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"ok|failed|timeout"}[30d] offset 1h)) or (increase(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"ok|failed|timeout"}[1h]) >= last_over_time(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"ok|failed|timeout"}[1h])) or last_over_time(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"ok|failed|timeout"}[1h])) * 0) / ((sum((increase(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"ok|failed|timeout"}[1h]) and last_over_time(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"ok|failed|timeout"}[30d] offset 1h)) or (increase(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"ok|failed|timeout"}[1h]) >= last_over_time(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"ok|failed|timeout"}[1h])) or last_over_time(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"ok|failed|timeout"}[1h]))) > 0)'
+        exp_samples:
+          - labels: '{}'
+            value: 0.4
+
+  # A fleet whose pings all succeed has no failed or timeout series. It must read 0, not no data.
+  - name: a fleet with only ok pings reads a failure ratio of 0
+    interval: 1m
+    input_series:
+      - series: 'llm_keepalive_pings_total{proxy="cortex",machine="m1",model="m",outcome="ok"}'
+        values: '0+1x60'
+    promql_expr_test:
+      - eval_time: 60m
+        expr: '(sum((increase(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"failed|timeout"}[1h]) and last_over_time(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"failed|timeout"}[30d] offset 1h)) or (increase(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"failed|timeout"}[1h]) >= last_over_time(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"failed|timeout"}[1h])) or last_over_time(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"failed|timeout"}[1h])) or sum((increase(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"ok|failed|timeout"}[1h]) and last_over_time(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"ok|failed|timeout"}[30d] offset 1h)) or (increase(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"ok|failed|timeout"}[1h]) >= last_over_time(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"ok|failed|timeout"}[1h])) or last_over_time(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"ok|failed|timeout"}[1h])) * 0) / ((sum((increase(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"ok|failed|timeout"}[1h]) and last_over_time(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"ok|failed|timeout"}[30d] offset 1h)) or (increase(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"ok|failed|timeout"}[1h]) >= last_over_time(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"ok|failed|timeout"}[1h])) or last_over_time(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"ok|failed|timeout"}[1h]))) > 0)'
+        exp_samples:
+          - labels: '{}'
+            value: 0
+
+  # No ping sent in the range: no data, not 0 and not a division by zero.
+  - name: no ping sent in the range gives no data
+    interval: 1m
+    input_series:
+      - series: 'llm_keepalive_pings_total{proxy="cortex",machine="m1",model="m",outcome="ok"}'
+        values: '5x120'
+    promql_expr_test:
+      - eval_time: 120m
+        expr: '(sum((increase(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"failed|timeout"}[1h]) and last_over_time(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"failed|timeout"}[30d] offset 1h)) or (increase(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"failed|timeout"}[1h]) >= last_over_time(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"failed|timeout"}[1h])) or last_over_time(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"failed|timeout"}[1h])) or sum((increase(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"ok|failed|timeout"}[1h]) and last_over_time(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"ok|failed|timeout"}[30d] offset 1h)) or (increase(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"ok|failed|timeout"}[1h]) >= last_over_time(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"ok|failed|timeout"}[1h])) or last_over_time(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"ok|failed|timeout"}[1h])) * 0) / ((sum((increase(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"ok|failed|timeout"}[1h]) and last_over_time(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"ok|failed|timeout"}[30d] offset 1h)) or (increase(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"ok|failed|timeout"}[1h]) >= last_over_time(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"ok|failed|timeout"}[1h])) or last_over_time(llm_keepalive_pings_total{proxy=~".*", machine=~".*",outcome=~"ok|failed|timeout"}[1h]))) > 0)'
+        exp_samples: []

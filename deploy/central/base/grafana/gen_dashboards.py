@@ -24,6 +24,11 @@ DIR_SAVED, DIR_ADDED = ',direction="saved"', ',direction="added"'
 RESCUE_SAVED, RESCUE_ADDED = ',effect="rescue",direction="saved"', ',effect="rescue",direction="added"'
 TIER_READ = ',tier="cache_read"'
 TIER_PROMPT = ',tier=~"cache_read|cache_write_5m|cache_write_1h|input"'
+# The per-component panels leave out the two spend-only operators. keeper is the keep-alive ping cost: its
+# saving is the rescue cache effect, which has no component label. context-guru is the plugin's own model
+# calls: their saving is on the component rows (extract_llm, summarize). So both rows can only be red, and
+# they would read as components to turn off. Their cost stays in every total and in Net by kind.
+NOT_SPEND_ONLY = ',component!~"keeper|context-guru"'
 
 
 def var(name, label, query, multi=True):
@@ -239,6 +244,30 @@ def ratio(num, den):
     return f"{num} / (({den}) > 0)"
 
 
+# The ping outcomes that are in the failure ratio. skipped is not: that ping was not sent. A ping with
+# no outcome label (an older cortex build) is not either: its outcome is unknown.
+PING_FAILED = ',outcome=~"failed|timeout"'
+PING_SENT = ',outcome=~"ok|failed|timeout"'
+
+
+def failure_colors(d):
+    """A failure share is green at 0, orange from 1 %, red from 5 %. A fixed red showed 0 % in red."""
+    d["fieldConfig"]["defaults"]["color"] = {"mode": "thresholds"}
+    d["fieldConfig"]["defaults"]["thresholds"] = {
+        "mode": "absolute",
+        "steps": [{"color": GREEN, "value": None}, {"color": ORANGE, "value": 0.01}, {"color": RED, "value": 0.05}],
+    }
+    return d
+
+
+def ping_failure_ratio():
+    """Failed and timed-out pings divided by sent pings, over the range. A fleet whose pings all
+    succeed has no failed or timeout series, and an unpadded numerator then shows no data, not 0 %.
+    So the numerator is padded with the denominator times zero."""
+    sent = inc("llm_keepalive_pings_total", extra=PING_SENT)
+    return ratio(f"({inc('llm_keepalive_pings_total', extra=PING_FAILED)} or {sent} * 0)", sent)
+
+
 def unattributed(expr, label):
     """expr with an empty label filled in as "unattributed". A by-label panel otherwise names a
     series without the label "Value": cortex builds before feat/ping-miss-labels push
@@ -256,7 +285,7 @@ def spend(by=""):
     return inc("llm_inference_cost_usd_total", by)
 
 
-def net(by="", fn="inc", new_series_fallback=True):
+def net(by="", fn="inc", new_series_fallback=True, extra=""):
     """The net saving, saved side minus added side, per label value. For a by in NET_LABELS, both
     sides include the cache effects and the interaction (accountant docs/metrics/metrics.md, "The net
     saving"): leaving them out shows a keep-alive ping as a cost and never its rescue. For any other
@@ -267,13 +296,16 @@ def net(by="", fn="inc", new_series_fallback=True):
     other side's label values times zero. The total (no by) is padded the same way: a fleet whose
     only activity so far is keep-alive pings has an added side and no saved side, and an unpadded
     difference shows that as no data instead of a cost. new_series_fallback is forwarded to inc()
-    (ignored when fn="bar", which always keeps it); see inc()'s own doc comment."""
+    (ignored when fn="bar", which always keeps it); see inc()'s own doc comment. extra is a label filter
+    for the operations-only net (a by outside NET_LABELS)."""
     if by in NET_LABELS:
         s = saved_side(by, fn, new_series_fallback)
         a = added_side(by, fn, new_series_fallback)
     else:
         side = (
-            (lambda m: inc(m, by, new_series_fallback=new_series_fallback)) if fn == "inc" else (lambda m: bar(m, by))
+            (lambda m: inc(m, by, extra=extra, new_series_fallback=new_series_fallback))
+            if fn == "inc"
+            else (lambda m: bar(m, by, extra))
         )
         s, a = side("llm_savings_saved_usd_total"), side("llm_savings_added_usd_total")
     return f"((({s}) or ({a}) * 0) - (({a}) or ({s}) * 0))"
@@ -370,6 +402,7 @@ def series(
     time_from=None,
     interval=None,
     fixed_color=None,
+    sort_desc=False,
     lines=(),
 ):
     d = {
@@ -415,9 +448,21 @@ def series(
             "mode": "absolute",
             "steps": [{"color": RED, "value": None}, {"color": GREEN, "value": 0}],
         }
+        # Every bar starts at zero. With no min, Grafana starts the bars at the smallest value, so one
+        # negative row shifts the start of all the bars. A bar gauge cannot draw below zero: a negative
+        # row shows no bar and a red number.
+        d["fieldConfig"]["defaults"]["min"] = 0
         # A bar that is a cost, not a net saving, has no good side of zero: one fixed colour.
         if fixed_color:
             d["fieldConfig"]["defaults"]["color"] = color(fixed_color)
+        # Grafana does not keep the order of the series that Prometheus returns, so sort_desc() in the
+        # query does not sort the bars. Grafana sorts them: one row per series, then rows by value.
+        if sort_desc:
+            d["transformations"] = [
+                {"id": "reduce", "options": {"mode": "seriesToRows", "reducers": ["lastNotNull"]}},
+                {"id": "sortBy", "options": {"sort": [{"field": "Last *", "desc": True}]}},
+            ]
+            d["options"]["reduceOptions"] = {"values": True, "calcs": [], "fields": "/^Last \\*$/"}
     if kind == "barchart":
         d["options"] = {"legend": {"displayMode": "hidden"}, "xTickLabelRotation": 0}
         d["fieldConfig"]["defaults"]["color"] = color(GREEN)
@@ -763,7 +808,7 @@ def savings():
         series(
             1,
             "Net by component (USD, selected range)",
-            [(net("component"), "{{component}}")],
+            [(net("component", extra=NOT_SPEND_ONLY), "{{component}}")],
             0,
             0,
             9,
@@ -771,7 +816,8 @@ def savings():
             unit=USD,
             kind="bargauge",
             instant=True,
-            desc="Saved minus added of each component's operations. Cache effects are not in it: they have no component label (see Cache effects). So a keep-alive rescue is not here, and the keeper shows only its ping cost: its whole net is under Cache management in the Fleet dashboard's Net saved by source. A red bar is a component whose operations cost more than they save.",
+            sort_desc=True,
+            desc="Saved minus added of each component's operations. Cache effects are not in it: they have no component label (see Cache effects). So the keeper (ping cost only) and context-guru (the plugin's own model calls, whose saving is on the component rows) are not shown. The keeper's whole net is under Cache management in the Fleet dashboard's Net saved by source. A red value (no bar) is a component whose operations cost more than they save.",
         )
     )
     P.append(
@@ -877,7 +923,10 @@ def savings():
         table(
             8,
             "Components with a negative net",
-            [inc("llm_savings_saved_usd_total", "component"), inc("llm_savings_added_usd_total", "component")],
+            [
+                inc("llm_savings_saved_usd_total", "component", extra=NOT_SPEND_ONLY),
+                inc("llm_savings_added_usd_total", "component", extra=NOT_SPEND_ONLY),
+            ],
             13,
             17,
             11,
@@ -909,7 +958,7 @@ def savings():
                     },
                 },
             ],
-            desc="Read this table first: a component here has operations that cost more than they save. Cache effects are not in it, so the keeper shows its pings and not its rescues: read it on the Cache dashboard. A component with no saved series at all shows no row; it appears in Net by component.",
+            desc="Read this table first: a component here has operations that cost more than they save. Cache effects are not in it. The keeper and context-guru are not shown: they only spend, and their saving is elsewhere (the keeper's on the Cache dashboard). A component with no saved series at all shows no row; it appears in Net by component.",
             unit_by_col={"saved": USD, "added": USD, "net": USD},
         )
     )
@@ -980,20 +1029,23 @@ def cache():
         )
     )
     P.append(
-        series(
-            4,
-            "Ping outcomes",
-            [(unattributed(count_bar("llm_keepalive_pings_total", "outcome"), "outcome"), "{{outcome}}")],
-            8,
-            8,
-            10,
-            8,
-            stack=True,
-            bars=True,
-            interval=BAR,
-            colors={"ok": GREEN, "skipped": BLUE, "failed": RED, "timeout": ORANGE},
-            desc="Pings, by outcome. A timeout is a ping that ran to its 60 s limit; it is booked at its projected cost (#754). A skipped ping leaves no row, so it does not show. unattributed is an older cortex build, which did not label the outcome."
-            + COUNT_DESC,
+        failure_colors(
+            stat(
+                4,
+                "Ping failure ratio",
+                ping_failure_ratio(),
+                8,
+                8,
+                w=10,
+                h=8,
+                unit="percentunit",
+                decimals=1,
+                big=True,
+                desc="Share of the sent pings that failed or timed out over the selected range. A failed or timed-out ping "
+                "does not keep the cache warm, and a timeout is still booked at its projected cost (#754). A skipped ping "
+                "was not sent, and an unattributed ping (an older cortex build) has no outcome, so neither is in the ratio. "
+                "No data means no ping with a known outcome was sent in the range.",
+            )
         )
     )
     P.append(
@@ -1041,7 +1093,7 @@ def cache():
             ],
             0,
             16,
-            16,
+            24,
             8,
             unit=USD,
             stack=True,
@@ -1051,17 +1103,6 @@ def cache():
             colors={"ping cost": ORANGE, "rescue (net of reads)": GREEN, "net": BLUE},
             desc="Do the pings pay? The rescue is a write that became a read, so its value is the write saved minus the read paid. Ping cost is below zero, rescue above, and the line is the net."
             + BAR_DESC,
-        )
-    )
-    P.append(
-        text(
-            7,
-            "Shared-warm tokens",
-            "**No data yet.**\n\nThe counter `llm_keepalive_shared_warm_tokens_total` needs #853.",
-            16,
-            16,
-            8,
-            8,
         )
     )
     return dash("central-cache", "Cache and keep-alive", "Does the cache pay, and do pings pay?", P, ["cache"])
@@ -1567,11 +1608,26 @@ def inference():
             ],
             12,
             21,
-            12,
+            8,
             8,
             unit="s",
             colors={"p50": GREEN, "p95": YELLOW, "p99": RED},
             desc="What the proxy's own work added on top of the upstream time (R46).",
+        )
+    )
+    P.append(
+        stat(
+            14,
+            "Average time the proxy added",
+            ratio(inc("llm_inference_added_seconds_sum"), inc("llm_inference_added_seconds_count")),
+            20,
+            21,
+            w=4,
+            h=8,
+            unit="s",
+            decimals=1,
+            desc="Mean of the time the proxy's own work added before the request went upstream, over the selected range. "
+            "Sum of the time divided by the number of requests. Response-side work is not in it.",
         )
     )
     P.append(
