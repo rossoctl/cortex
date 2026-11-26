@@ -99,10 +99,19 @@ func TestRegression_MysqlRedirectInCompactJSON(t *testing.T) {
 		`[["mysql -p\"` + pw + `\"<in.sql"],["<x>"]]`,
 		`{"cmds":[["mysql -u root -p\"` + pw + `\">out.sql"]],"next":[["<y>"]]}`,
 		`[["mysqldump -p'` + pw + `'>a.sql"],[">b"]]`,
+		// the same gap in JSON inside a JSON string (#2125 review)
+		`{"body":"[[[\"mysql -p\"]],[[\"<x>\"]]]"}`,
 	} {
 		out, _ := New().String(in)
 		if !json.Valid([]byte(out)) || strings.Contains(out, pw) {
 			t.Errorf("%s -> %s: want valid JSON without the password", in, out)
+		}
+	}
+	// An escaped password before a redirect may start or end with what is no string gap.
+	for _, p := range []string{"Secret9(" + "x", "Secret9:" + "x", ":Secret9" + "x"} {
+		in := `{"cmd":"mysql -u root -p\"` + p + `\"<dump.sql"}`
+		if out, _ := New().String(in); strings.Contains(out, p) || !json.Valid([]byte(out)) {
+			t.Errorf("%s -> %s: want the password gone", in, out)
 		}
 	}
 }

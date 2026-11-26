@@ -19,7 +19,7 @@ import (
 // that held a secret.
 //
 //   - Keys are not redacted: the secret rules run on values only. A number under a secret name
-//     ("pin": 12345678) is checked as text would be, and becomes a string when redacted.
+//     ("password": 12345678) is checked as text would be, and becomes a string when redacted.
 //   - JSON in JSON (tool arguments and tool results hold JSON in a string): a decoded string
 //     that is itself a JSON object or array is scanned the same way, up to maxJSONDepth, with
 //     the string's key for its top-level values, and the outer string is encoded again when the
@@ -222,7 +222,7 @@ func (j *jsonScan) document(doc string, depth int, outerKey string) (string, boo
 				i++
 			}
 			if c == '-' || c >= '0' && c <= '9' {
-				// A number under a secret-named key ("pin": 12345678) is checked as text would
+				// A number under a secret-named key ("password": 12345678) is checked as text would
 				// be. A redacted one becomes a string: the marker is not a number.
 				repl = j.number(doc[start:i], start, valueKey(), repl)
 			}
@@ -357,31 +357,65 @@ var binaryMagic = []string{"\x89PNG", "\xff\xd8\xff", "GIF8", "RIFF", "%PDF", "I
 // string sits only says it should be binary, so text there ("source": {"type": "base64",
 // "data": "my key is ..."} in a tool's arguments) is still read.
 //
-// The whole string is decoded, line by line ("=" only as a line's final padding), and what follows
-// the format's header must not read as text: not valid UTF-8, and not mostly printable ASCII. A
-// real image is compressed data, which is neither; a header put in front of base64 text
-// ("iVBORw0KGgo..." then a config file) is read.
+// Every line must be base64 ("=" only as a line's final padding), the whole string. Only a
+// prefix is decoded, binaryPrefix bytes, and what follows the format's header there must not
+// read as text: not valid UTF-8, and not mostly printable ASCII. A real image is compressed
+// data, which is neither; a header put in front of base64 text ("iVBORw0KGgo..." then a config
+// file) is read. The prefix is enough: an image with text appended after it is already caught by
+// its compressed head failing readsAsText, so the whole-string check only ever caught "header,
+// then text", and the prefix catches that too, without decoding 30 MB for a 40 MB image. A
+// string built to get past it (a header, then 64 KiB of non-text, then text) is skipped: that is
+// no real image, and the cost of reading every image whole.
 func isBinaryBase64(s string) bool {
 	if len(s) < 16 {
 		return false
 	}
-	buf := make([]byte, 0, len(s)/4*3)
+	var buf []byte
 	for line := range strings.SplitSeq(strings.ReplaceAll(s, `\r`, `\n`), `\n`) {
 		if line == "" {
 			continue
 		}
-		b, err := base64.StdEncoding.DecodeString(line)
-		if err != nil {
+		if !base64Line(line) {
 			return false
 		}
-		buf = append(buf, b...)
+		if len(buf) < binaryPrefix {
+			// Only the prefix's share of the line: an image in JSON is one long line.
+			b, err := base64.StdEncoding.DecodeString(line[:min(len(line), binaryPrefix/3*4)])
+			if err != nil {
+				return false
+			}
+			buf = append(buf, b...)
+		}
 	}
+	buf = buf[:min(len(buf), binaryPrefix)]
 	for _, m := range binaryMagic {
 		if strings.HasPrefix(string(buf[:min(len(buf), len(m))]), m) {
 			return !readsAsText(buf[len(m):])
 		}
 	}
 	return false
+}
+
+// binaryPrefix is how much of a base64 string isBinaryBase64 decodes.
+const binaryPrefix = 64 << 10
+
+// base64Line reports whether line is standard base64 with its padding: a multiple of 4
+// characters of the alphabet, "=" only as its last one or two. No decoding.
+func base64Line(line string) bool {
+	if len(line)%4 != 0 {
+		return false
+	}
+	pad := len(line) - len(strings.TrimRight(line, "="))
+	if pad > 2 {
+		return false
+	}
+	for i := 0; i < len(line)-pad; i++ {
+		c := line[i]
+		if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '+' || c == '/') {
+			return false
+		}
+	}
+	return true
 }
 
 // readsAsText reports whether b is text in any language, not compressed, random or zeroed data:

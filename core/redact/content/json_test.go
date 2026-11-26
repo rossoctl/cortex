@@ -321,17 +321,55 @@ func TestJSON_RandomDocuments(t *testing.T) {
 	}
 }
 
-// A number under a password key in raw JSON: String keeps the JSON valid (an unquoted marker
-// would not be), and JSON redacts the number as a string.
+// A number under a password key is redacted in every layer and shape, and a JSON text stays
+// JSON: the text rule writes its marker as a JSON string there (Edit.Quote), with the escaped
+// quote in JSON inside a JSON string. The inputs are the review's (#2125): an SSE event, NDJSON,
+// a log line, a bare member, a truncated body, a partial tool argument, JSON-shaped text in a
+// string, a curl -d payload.
 func TestJSON_NumberUnderASecretKey(t *testing.T) {
-	for _, in := range []string{`{"password":12345678}`, `{"a":1,"password": 87654321,"b":2}`} {
-		if out, _ := New().String(in); !json.Valid([]byte(out)) {
-			t.Errorf("String: %s -> %s: invalid JSON", in, out)
+	nums := [][]byte{[]byte("12345678"), []byte("87654321"), []byte("23456789"), []byte("99887766")}
+	gone := func(b []byte) bool {
+		for _, n := range nums {
+			if bytes.Contains(b, n) {
+				return false
+			}
 		}
+		return true
+	}
+	for _, in := range []string{`{"password":12345678}`, `{"a":1,"password": 87654321,"b":2}`,
+		`{"password":12345678.5}`, `{"password":-12345678}`, `{"password":12345678E3}`,
+		"data: {\"password\":12345678}\n\n", "{\"password\":12345678}\n{\"password\":23456789}\n",
+		`log: request body {"password": 12345678} sent`, `"db_password": 99887766`} {
+		out, _ := New().String(in)
+		if !gone([]byte(out)) {
+			t.Errorf("String: %q -> %q: the number survived", in, out)
+		}
+		if json.Valid([]byte(in)) && !json.Valid([]byte(out)) {
+			t.Errorf("String: %s -> %s: valid JSON in, invalid out", in, out)
+		}
+		for _, line := range strings.Split(strings.TrimSpace(in), "\n") {
+			if json.Valid([]byte(line)) {
+				if o, _ := New().String(line); !json.Valid([]byte(o)) {
+					t.Errorf("String: line %s -> %s: invalid JSON", line, o)
+				}
+			}
+		}
+	}
+	for _, in := range []string{`{"password":12345678}`, `{"user":"bob","password":12345678,"note":"trunc`,
+		`{"args":"{\"password\": 12345678"}`, `{"log":"sent {\"password\": 12345678} ok"}`,
+		`{"cmd":"curl -d '{\"password\":12345678}' http://x"}`} {
 		out, _ := New().JSON([]byte(in))
-		if !json.Valid(out) || bytes.Contains(out, []byte("12345678")) || bytes.Contains(out, []byte("87654321")) {
-			t.Errorf("JSON: %s -> %s: want valid JSON without the number", in, out)
+		if !gone(out) {
+			t.Errorf("JSON: %s -> %s: the number survived", in, out)
 		}
+		if json.Valid([]byte(in)) && !json.Valid(out) {
+			t.Errorf("JSON: %s -> %s: valid JSON in, invalid out", in, out)
+		}
+	}
+	// Raw JSON inside a JSON string, redacted as text: the escaped quote keeps it valid.
+	in := `{"args":"{\"password\":12345678}"}`
+	if out, _ := New().String(in); !json.Valid([]byte(out)) || !gone([]byte(out)) {
+		t.Errorf("String: %s -> %s", in, out)
 	}
 }
 
@@ -389,8 +427,11 @@ func TestJSON_ValuesOnlyAgainstBytes(t *testing.T) {
 		}
 	}
 	t.Logf("5000 documents: %d (document, value secret) pairs Bytes redacts, JSON every one; %d documents with a key secret only Bytes redacts", valueFinds, keyMisses)
-	if valueFinds < 500 || keyMisses == 0 {
-		t.Errorf("the generator no longer reaches both cases: %d value finds, %d key misses", valueFinds, keyMisses)
+	if valueFinds < 500 {
+		t.Errorf("the generator plants too few value secrets: %d value finds", valueFinds)
+	}
+	if keyMisses == 0 {
+		t.Errorf("no key secret is missed: if keys are now redacted (option b of the PR's open question), update this test")
 	}
 }
 

@@ -259,10 +259,7 @@ func findKeywords(text string, at []int, out []Edit) []Edit {
 		}
 		t := nameTier(name)
 		ok := t != tierNone && secretShaped(t, text[vs:ve], mode) &&
-			!(mode == valueBare && (callAfter(text, ve, vs) || t == tierPassword && proseAfter(text, vs, ve))) &&
-			// A number in raw JSON ("password":12345678) would lose its JSON with an unquoted
-			// marker; the JSON layer redacts it, as a string, instead.
-			!(mode == valueBare && allDigits(text[vs:ve]) && jsonMemberValue(text, vs))
+			!(mode == valueBare && (callAfter(text, ve, vs) || t == tierPassword && proseAfter(text, vs, ve)))
 		covered = rejectedCover(ok, s+m[1], vs, ve)
 		if !ok && ve-vs >= longRejected {
 			// A long rejected URL can still hold an assignment in its query string
@@ -282,7 +279,14 @@ func findKeywords(text string, at []int, out []Edit) []Edit {
 			}
 		}
 		if ok {
-			out = append(out, Edit{Start: vs, End: ve, Cat: t.cat()})
+			e := Edit{Start: vs, End: ve, Cat: t.cat()}
+			if mode == valueBare && jsonNumber.MatchString(text[vs:ve]) {
+				// A number that is a JSON member's value ("password":12345678, also 12345678.5,
+				// -12345678 or 1e9): the marker is written as a JSON string, so a JSON text stays
+				// JSON (Edit.Quote).
+				e.Quote = jsonMemberQuote(text, vs)
+			}
+			out = append(out, e)
 		}
 	}
 	return out
@@ -691,19 +695,30 @@ func isHex(v string) bool {
 
 func allDigits(v string) bool { return v != "" && strings.Trim(v, "0123456789") == "" }
 
-// jsonMemberValue reports whether vs starts a raw JSON member's value: after a quoted key and
-// ":" (`"pin":1234`, `"password": 12345678`).
-func jsonMemberValue(text string, vs int) bool {
+// jsonNumber is a JSON number, as RFC 8259 writes one.
+var jsonNumber = regexp.MustCompile(`^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$`)
+
+// jsonMemberQuote returns the quote a JSON member's value starting at vs needs, when vs follows
+// a quoted key and ":" (`"password": 12345678`): `"`, or the key's own escaped quote in JSON
+// inside a JSON string (`\"password\":12345678` gives `\"`). "" when vs is no member's value.
+func jsonMemberQuote(text string, vs int) string {
 	i := vs - 1
 	for i >= 0 && (text[i] == ' ' || text[i] == '\t') {
 		i--
 	}
 	if i < 0 || text[i] != ':' {
-		return false
+		return ""
 	}
 	for i--; i >= 0 && (text[i] == ' ' || text[i] == '\t'); i-- {
 	}
-	return i >= 0 && text[i] == '"'
+	if i < 0 || text[i] != '"' {
+		return ""
+	}
+	j := i
+	for j > 0 && text[j-1] == '\\' {
+		j--
+	}
+	return text[j : i+1]
 }
 
 // tokenShaped reports whether v looks like a generated token rather than words or an
