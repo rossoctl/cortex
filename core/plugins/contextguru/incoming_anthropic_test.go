@@ -201,6 +201,28 @@ func TestOnFinishStashesOnlySuccessfulMainRequests(t *testing.T) {
 	}
 }
 
+// A main-agent request that declares no tools at all is still stashed when it is on the primary
+// thread (review finding): main stashed every successful main-agent turn regardless of tools, and
+// an Anthropic client that never declares a tool (a plain chat app through Cortex) must still get
+// a prefix ask, or its summary is never produced. The non-primary rule (a session's tool-less side
+// calls, on their own p: thread) is unaffected: see TestStashIsKeyedByThread.
+func TestOnFinishStashesAToolLessPrimaryThread(t *testing.T) {
+	p := configured(t, `{`+offline+`}}`)
+	pctx := inferencePctx("/v1/messages", []byte(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}]}`))
+	pctx.Host = "gw"
+	pctx.Headers = http.Header{"X-Api-Key": {"sk-caller"}}
+	pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "claude-sonnet-5", AgentRole: pipeline.AgentRoleMain}
+	invokeReq(p, pctx)
+	if th, _ := requestThread(pctx); th.ID != thread.Primary {
+		t.Fatalf("setup: thread %q, want the primary thread", th.ID)
+	}
+	pctx.StatusCode = 200
+	p.OnFinish(context.Background(), pctx)
+	if p.stash.get(engineKey(pctx)) == nil {
+		t.Fatal("a tool-less primary-thread request was not stashed")
+	}
+}
+
 // The body OnRequest snapshots for stashSent is kept on the REQUEST's own pctx
 // (pipeline.SetState), not in a map keyed by session id. Two requests that share one session id
 // — Claude Code sends one-shot calls (title, permission monitor) under the main turn's session —

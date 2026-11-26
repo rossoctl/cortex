@@ -392,9 +392,11 @@ const pendingBodyStateKey = "context-guru-pending-body"
 // moves to a p: thread, and every prefix ask there found nothing, so its summary never came.
 // thread.Key gives the session itself for the primary thread, so that key is unchanged.
 //
-// A request that declares no tools is not stashed: a session's side calls (a title, a permission
-// check) are tool-less threads of their own, and the stash holds only maxStashSessions entries. An
-// agent's turns declare tools, so the main conversation is stashed on whichever thread it is on.
+// A tool-less request on a NON-PRIMARY thread is not stashed (review finding): a session's side
+// calls (a title, a permission check) are always such threads, and the stash holds only
+// maxStashSessions entries. The primary thread is stashed regardless of tools, as main did before
+// this PR: an Anthropic client that declares no tools at all (a plain chat app through Cortex)
+// still gets its prefix ask stashed, and so still gets a summary.
 //
 // Nothing is stashed for a redirected request (review finding): inference-router runs after
 // context-guru (agentop server add appends it last), so the incoming-model hold this plugin took
@@ -414,7 +416,7 @@ func (p *ContextGuru) stashSent(pctx *pipeline.Context) {
 		return
 	}
 	th := pipeline.GetState[cgThread](pctx, cgThreadStateKey)
-	if th == nil || !gjson.GetBytes(pre.body, "tools.0").Exists() {
+	if th == nil || (th.id != thread.Primary && !gjson.GetBytes(pre.body, "tools.0").Exists()) {
 		return
 	}
 	provider, _ := dialectFor(pctx.Path)
