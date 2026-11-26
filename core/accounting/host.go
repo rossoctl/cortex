@@ -72,7 +72,8 @@ type Options struct {
 // It holds nothing per request beyond the handle it leaves on the request's own pctx, and
 // nothing per thread beyond what accountant.Trackers keeps (the library bounds that to 10,000
 // threads) plus one BillingMode per (session, thread) in threadBilling, for keep-alive pings
-// (design §5.7) — threadBilling is bounded the same way (threadBillingCap/threadBillingTrimTo).
+// (design §5.7), and one last forwarded body per (session, thread) in siblings, for
+// EntryFacts.SharedWarm. Both are bounded the same way (threadBillingCap/threadBillingTrimTo).
 type Host struct {
 	trackers *accountant.Trackers
 	resolver pricing.Resolver
@@ -112,6 +113,10 @@ type Host struct {
 	// highest id.
 	pingListeners   map[uint64]pingListenerEntry
 	pingListenerSeq uint64
+
+	// siblings holds each (session, thread)'s last forwarded body, for EntryFacts.SharedWarm
+	// (sibling.go, accountant R54). It has its own lock and is bounded like threadBilling.
+	siblings siblingStore
 
 	// Test hooks. beforeEnd runs first on the record's goroutine, computeHook just before the
 	// library's Compute, onEnd with the ops the record was given, metaHook with the
@@ -450,6 +455,10 @@ func (h *Host) end(p *pending, format wire.Format, meta accountant.RequestMeta, 
 		p.ping = threadBillingKey{session: meta.Session, thread: thread.ID}
 		p.pingWindow, p.pinged = pf.PingWindow, true
 	}
+	// The prefix another thread of the session kept warm: the ping did not keep it alive, so
+	// the rescue leaves it out (accountant R54, #2138). Every request is recorded; the bodies
+	// are compared only when this one carries ping facts, the only time the library reads it.
+	f.SharedWarm = h.siblings.sharedWarm(meta, thread.ID, f.TTL, fwdBody, fwdBPs, p.pinged)
 	if h.factsHook != nil {
 		h.factsHook(f)
 	}
