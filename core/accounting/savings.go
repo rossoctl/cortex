@@ -30,7 +30,9 @@ type Extras struct {
 	// with no ChangeID (a change that had already ended), an effect whose ChangeID only a dry run
 	// reported, and a split, TTL or mark effect with no owning op. Positive is a cost; an unowned
 	// effect that saved makes it smaller. InBaseline effects are not in it: the client body would
-	// have had them too.
+	// have had them too. Host.Savings also puts here the long-context re-rate that no op owns
+	// (accountant.USDFigure.UnownedReRateUSD). That is rare: the ops that moved the prompt size own
+	// the re-rate, so an op that pushes a prompt over a price line pays it.
 	UnattributedBreakUSD float64
 	// Thread is the accountant thread of the request. Savings leaves it empty: a Result does not
 	// name its thread. Host.Savings fills it, here and on each Spends entry.
@@ -123,6 +125,47 @@ func Savings(res accountant.Result, price func(model, host string, tt accountant
 // KeeperOperator, which has no op on the request, comes last.
 func SavingsBilled(res accountant.Result, price func(model, host string, tt accountant.TierTokens) (float64, bool),
 	spend SpendPrice, reqModel, reqHost string, mode accountant.BillingMode, w config.SubscriptionWeights) ([]event.Saving, Extras) {
+	return savingsBilled(res, nil, price, spend, reqModel, reqHost, mode, w)
+}
+
+// figured is the dollars of accountant.Figure for one request, grouped the way SavingsBilled
+// groups them. Figure prices the tokens an op saved at the prompt size without the ops, the
+// tokens it caused at the billed size, and re-rates the tokens that stay when the two sizes are
+// on different sides of a price line, so a saving is the whole bill difference
+// (rossoctl/cortex#2135).
+type figured struct {
+	// saved and caused are per operator: its moved tokens by Direction, plus its re-rate share by
+	// the share's sign. A spend's call usage is not here: Extras.Spends prices each call.
+	saved, caused map[string]float64
+	// effects is the value of res.CacheEffects[i], SavedUSD - CausedUSD: positive saves.
+	effects []float64
+	// unownedReRate is the re-rate no op owns, because no op has a net saving: positive saves.
+	unownedReRate float64
+}
+
+func newFigured(fig accountant.USDFigure) *figured {
+	f := &figured{saved: map[string]float64{}, caused: map[string]float64{}, unownedReRate: fig.UnownedReRateUSD}
+	for _, l := range fig.Lines {
+		if l.Kind == accountant.KindSpend {
+			continue
+		}
+		if l.Direction == accountant.DirSaved {
+			f.saved[l.Operator] += l.USD
+		} else {
+			f.caused[l.Operator] += l.USD
+		}
+	}
+	for _, e := range fig.Effects {
+		f.effects = append(f.effects, e.SavedUSD-e.CausedUSD)
+	}
+	return f
+}
+
+// savingsBilled is SavingsBilled. With fig nil, every dollar is priced at one prompt size. With
+// fig set, the applied ops and the cache effects take their dollars from fig, and price still
+// gives the estimated flags and the dry runs, which Figure does not price.
+func savingsBilled(res accountant.Result, fig *figured, price func(model, host string, tt accountant.TierTokens) (float64, bool),
+	spend SpendPrice, reqModel, reqHost string, mode accountant.BillingMode, w config.SubscriptionWeights) ([]event.Saving, Extras) {
 	basis := BasisOf(mode)
 	ex := Extras{OpsVersion: res.Version}
 	type key struct {
@@ -183,6 +226,9 @@ func SavingsBilled(res accountant.Result, price func(model, host string, tt acco
 		a.estimated = a.estimated || op.Estimated
 		saved, savedEst := priceAt(reqModel, reqHost, op.Saved)
 		caused, causedEst := priceAt(reqModel, reqHost, op.Caused)
+		if fig != nil && !op.DryRun {
+			saved, caused = 0, 0 // fig's dollars, added per operator below
+		}
 		a.saving.USD += saved
 		a.saving.PenaltyUSD += caused
 		a.estimated = a.estimated || savedEst || causedEst
@@ -191,12 +237,25 @@ func SavingsBilled(res accountant.Result, price func(model, host string, tt acco
 		a.penUnits += Units(w, op.Caused, 0)
 	}
 
-	for _, ce := range res.CacheEffects {
+	if fig != nil {
+		for opName, usd := range fig.saved {
+			get(key{opName, false}).saving.USD += usd
+		}
+		for opName, usd := range fig.caused {
+			get(key{opName, false}).saving.PenaltyUSD += usd
+		}
+		ex.UnattributedBreakUSD -= fig.unownedReRate
+	}
+
+	for i, ce := range res.CacheEffects {
 		if ce.InBaseline {
 			continue
 		}
 		net := ce.Net()
 		value, est := priceAt(reqModel, reqHost, net)
+		if fig != nil && i < len(fig.effects) {
+			value = fig.effects[i]
+		}
 		op, owned := owner[ce.ChangeID]
 		if ce.Kind == accountant.EffectRescue {
 			op, owned = KeeperOperator, true
@@ -329,9 +388,12 @@ func largestTier(t accountant.TierTokens) string {
 }
 
 // Savings is Compute, then SavingsBilled: pctx's request priced with the process rate table, at
-// the request's model, the endpoint it was sent to (after any redirect: the server that bills)
-// and its prompt total, in the billing mode the client's credential implied, with the configured
-// subscription weights. Extras.Thread is the request's accountant thread. ok is Compute's: false
+// the request's model and the endpoint it was sent to (after any redirect: the server that
+// bills). accountant.Figure gives the dollars of the applied ops and the cache effects, so each
+// side is priced at its own prompt size and a saving is the whole bill difference
+// (rossoctl/cortex#2135). A dry run is priced at the billed prompt total. It is priced in the
+// billing mode the client's credential implied, with the configured subscription weights.
+// Extras.Thread is the request's accountant thread. ok is Compute's: false
 // when there is no Result, so there is no figure — EXCEPT that a request with a reported spend
 // (an operator's own model call, pctx.ReportedOps) still answers ok with just that spend, savings
 // excluded, when Compute refused for a reason that is about PRICING THE REQUEST rather than about
@@ -386,11 +448,24 @@ func (h *Host) Savings(pctx *pipeline.Context) ([]event.Saving, Extras, bool) {
 		}
 		return nil, ex, true
 	}
-	// The request's own ops price at the request's prompt size, so its long-context tier applies.
+	// The applied ops and the cache effects take their dollars from accountant.Figure: saved
+	// tokens at the prompt size without the ops, caused tokens at the billed size, and a re-rate of
+	// the tokens that stay when the two sizes are on different sides of a long-context line
+	// (rossoctl/cortex#2135). price, at the billed size, gives the estimated flags and prices the
+	// dry runs, which Figure leaves out.
 	price := func(m, at string, tt accountant.TierTokens) (float64, bool) {
 		return TierUSD(h.resolver, at, m, promptTotal, tt)
 	}
-	ss, ex := SavingsBilled(res, price, spend, model, host, mode, h.weights)
+	inf := pctx.Extensions.Inference
+	fig := accountant.Figure(accountant.FigureInput{
+		Model: model,
+		// The usage Compute was given (Host.Compute), so the two prompt sizes are the library's.
+		Billed: accountant.Usage{Input: inf.InputTokens, CacheRead: inf.CacheReadTokens,
+			CacheWrite: inf.CacheWriteTokens, CacheWrite1h: inf.CacheWrite1hTokens},
+		Output: inf.OutputTokens,
+		Result: res,
+	}, sizedRates{r: h.resolver, endpoint: host})
+	ss, ex := savingsBilled(res, newFigured(fig), price, spend, model, host, mode, h.weights)
 	// The rate table's level for the request's own rates, on every saving that has a dollar
 	// figure: event.Saving.Provenance, which a reader (tool-prune's pane, agentop) uses to say
 	// whether the figure came from configured or bundled rates.

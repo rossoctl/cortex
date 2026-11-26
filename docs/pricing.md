@@ -716,7 +716,7 @@ comes out a release after the rename ships.
 | `settled` | a figure exists — **including a deliberate zero**, which is the gateway saying the call was free. Without it, "free" and "nobody priced this" were indistinguishable, and a cache hit got re-priced from the rate table |
 | `prompt_usd` | the modelled cost of the prompt alone, tier-weighted. A breakdown, **not** a component of a sum: it is the table's figure even when `cost_usd` is the gateway's |
 | `output_usd` | the modelled cost of the generated tokens alone, at the output rate, resolved at the **request's** prompt size so a long-context premium reaches the completion too. The other half of the same breakdown, so a per-row UI can show what a response row cost rather than what the exchange cost. Priced from the table, **never** `cost_usd` − `prompt_usd`: that difference mixes a possibly-authoritative total with a modelled half, so it reports a gateway-vs-table delta as the completion's cost and can go negative. (`modelled` − `prompt_usd` would be sound; mixing sources is the problem, not subtraction.) `prompt_usd` + `output_usd` equals the modelled total to the micro |
-| `avoided[]` | cost that was **not** incurred, one entry per context operator (`tool-prune`, `context-guru.*`, `keeper`), as the accountant priced it: `tokensAvoided`, `usd` (what it saved, gross), `penaltyUsd` (what it caused, priced: a rewrite inside the cached prefix, a cache break it owns), the `tier` with the largest saving, `basis`, `operator`, `opsVersion`, and two honesty flags: `estimated` (an estimated op or rate, and every basis but `usd`) and `projected` (measured but never applied — that money *was* spent). `basis` is `usd` for a request billed per token, `subscriptionEquivalent` for one on a subscription login (its `usd` is what the API would have charged, and `units`/`penaltyUnits` value it in usage-limit units), or `unknown` |
+| `avoided[]` | cost that was **not** incurred, one entry per context operator (`tool-prune`, `context-guru.*`, `keeper`), as the accountant priced it: `tokensAvoided`, `usd` (what it saved, gross), `penaltyUsd` (what it caused, priced: a rewrite inside the cached prefix, a cache break it owns), the `tier` with the largest saving (both dollar figures are the whole bill difference: see [Savings metrics](#savings-metrics) for the prompt sizes), `basis`, `operator`, `opsVersion`, and two honesty flags: `estimated` (an estimated op or rate, and every basis but `usd`) and `projected` (measured but never applied — that money *was* spent). `basis` is `usd` for a request billed per token, `subscriptionEquivalent` for one on a subscription login (its `usd` is what the API would have charged, and `units`/`penaltyUnits` value it in usage-limit units), or `unknown` |
 | `spends[]` | the context operators' own model calls on this request (a context-guru summary call, for instance), one record each with its tokens, `usd` and `basis`. Not part of `cost_usd`: those calls do not pass through the proxy. `projected` marks the call of an operator under `on_error: observe` and `refused` one the accountant did not price: both stay visible here and are in no `pluginSpend*` total |
 | `purpose` | `keep-alive` on the record of a keep-alive ping's spend. Absent on the agent's own requests |
 | `basis`, `units`, `estimated` | on a keep-alive ping's record only. `basis` follows the billing mode of the thread's last request, because a ping uses the same credential: `usd` (an API key), `subscriptionEquivalent` (a subscription login: `cost_usd` is what the API would have charged, and `units` is the ping's tokens, output included, times the `accounting.subscription_weights`) or `unknown`. `estimated` is set on every basis but `usd`. A ping recorded before this field has no `basis` and reads as `usd` |
@@ -795,7 +795,16 @@ ledger (`core/accounting.USD`), from the same rate table and the same `pricing:`
 the same binding:
 
 - A request's own tokens (saved, added, cache effects, interaction) are priced at the request's
-  model, its endpoint (after any redirect) and its prompt total, as `avoided[].usd` is.
+  model and its endpoint (after any redirect), as `avoided[].usd` is. The library
+  (`accountant.Figure`) picks the prompt size:
+  - Saved tokens are priced at the prompt size **without** the operators' changes.
+  - Added tokens are priced at the billed prompt size.
+  - If the two sizes are on different sides of a [long-context line](#long-context-tiers), the
+    tokens that stay (output included) are re-priced too. That amount is the **re-rate**. Each
+    operator with a net saving gets a share of it, in proportion to its net saved tokens.
+  - So a saving is the whole bill difference. Example: a prune takes a prompt from 250k to 150k
+    tokens, at $3/M below 200k and $6/M above. The saving is $1.50 − $0.45 = $1.05, not
+    100k × $3/M = $0.30.
 - An operator's model call (`kind="spend"` on `llm.savings.added.*`) is priced at the call's
   own model, its own host (the request's endpoint when it names none) and its own prompt total,
   as `spends[].usd` is (`core/accounting.CallUSD`).
@@ -821,6 +830,11 @@ counted in a total (accountant R12). A call the accountant refused to price (it 
 `llm.savings.unpriced`) has no figure to count. The ledger still records each one in
 `spends[]`, flagged `projected` or `refused`, so you can see it. No spend total and no counter
 includes either.
+
+**A figure that fails a gate is withheld.** The library (`accountant.Withhold`) withholds a request with
+a fatal check or an unpriced operation. The counters then book only the spends of that request. They add 1
+to `llm.savings.withheld{reason}` and count the request as `result="withheld"` in `llm.savings.requests`.
+Cortex does not give the library a size before the change yet, so the size gate is not used.
 
 **Only `basis: usd` is money here too.** A request on a subscription login, or with no
 credential Cortex can read, moves the token counters and `llm.savings.estimated`, never a

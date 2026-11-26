@@ -179,8 +179,9 @@ func rates() pricing.Resolver {
 	return pricing.NewRegistry(tab)
 }
 
-// everyCounter is a Result that moves every llm.savings.* counter: a saved and a caused op, a
-// spend, a cache effect, an interaction, an unpriced op and a failed check.
+// everyCounter is a Result that moves every llm.savings.* counter of a booked request: a saved and
+// a caused op, a spend, a cache effect and an interaction. It passes the gates of
+// accountant.Withhold, so the sink books its savings.
 func everyCounter() accountant.Result {
 	return accountant.Result{
 		Ops: []accountant.PricedOp{
@@ -191,15 +192,25 @@ func everyCounter() accountant.Result {
 		},
 		CacheEffects: []accountant.CacheEffect{{Kind: accountant.EffectBreak, Caused: accountant.TierTokens{CacheWrite5m: 300}}},
 		Interaction:  accountant.TierTokens{Input: 70},
-		Unpriced:     []accountant.Unpriced{{OpID: "o9", Reason: "no_size"}},
-		Checks:       []accountant.CheckFailure{{Check: "sum"}},
 	}
+}
+
+// gated is a Result that fails the gates of accountant.Withhold: an unpriced op and a failed
+// fatal check. The sink books none of its savings, and it moves llm.savings.withheld,
+// llm.savings.unpriced and llm.savings.check_failures.
+func gated() accountant.Result {
+	res := everyCounter()
+	res.Unpriced = []accountant.Unpriced{{OpID: "o9", Reason: "no_size"}}
+	res.Checks = []accountant.CheckFailure{{Check: "sum"}}
+	return res
 }
 
 func observe(s *accounting.Sink) {
 	meta := accountant.RequestMeta{RequestID: "r1", Session: "s1", Model: "claude-sonnet-4-5", At: time.Now(),
 		Billing: accountant.Billing{Mode: accountant.BillingAPI}}
 	s.Observe(meta, accountant.Usage{Input: 3, CacheRead: 2000}, 0, everyCounter(), "api.anthropic.com", 2003, false)
+	meta.RequestID = "r2"
+	s.Observe(meta, accountant.Usage{Input: 3, CacheRead: 2000}, 0, gated(), "api.anthropic.com", 2003, false)
 }
 
 // The series names and label keys Cortex pushes. The central collector's label allow-list is,
@@ -217,7 +228,7 @@ var (
 		"llm.savings.saved.usd": true, "llm.savings.added.usd": true,
 		"llm.savings.cache_effect.usd": true, "llm.savings.interaction.usd": true,
 		"llm.savings.requests": true, "llm.savings.unpriced": true,
-		"llm.savings.check_failures": true, "llm.savings.estimated": true,
+		"llm.savings.check_failures": true, "llm.savings.estimated": true, "llm.savings.withheld": true,
 		"llm.proxy.export_failures": true, "llm.proxy.info": true,
 		// Tier 1 (core/accounting/metrics.go's own instruments, not accountant/metrics'):
 		// llm.inference.*, llm.keepalive.*, llm.cache.*.
@@ -311,7 +322,7 @@ func TestStart_PushesTheSavingsCounters(t *testing.T) {
 	})
 	for _, want := range []string{"llm.savings.saved.tokens", "llm.savings.added.tokens", "llm.savings.saved.usd",
 		"llm.savings.added.usd", "llm.savings.cache_effect.usd", "llm.savings.interaction.usd", "llm.savings.requests",
-		"llm.savings.unpriced", "llm.savings.check_failures", "llm.savings.estimated"} {
+		"llm.savings.unpriced", "llm.savings.check_failures", "llm.savings.estimated", "llm.savings.withheld"} {
 		if !names[want] {
 			t.Errorf("series %s was not pushed; got %v", want, names)
 		}

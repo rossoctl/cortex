@@ -234,7 +234,8 @@ func (s *Sink) Observe(meta accountant.RequestMeta, u accountant.Usage, output i
 	}()
 	s.pricer.request = binding{endpoint: endpoint, promptTotal: promptTotal}
 	s.pricer.byModel = bindingsFor(meta.Model, s.pricer.request, res)
-	s.sink.Observe(acmetrics.Observation{Meta: meta, Usage: u, Result: res})
+	// Output lets the sink re-rate the output tokens when the request crosses a price line.
+	s.sink.Observe(acmetrics.Observation{Meta: meta, Usage: u, Output: output, Result: res})
 	s.observeInferenceMetrics(meta, u, output, missCause(res, firstOnThread, u.CacheWrite > 0))
 }
 
@@ -414,10 +415,14 @@ type binding struct {
 // model (the request's model when the call names none, as the library prices it) bound to the
 // call's host (the request's endpoint when it names none) and the call's own prompt total.
 //
-// COLLISIONS FALL BACK TO THE REQUEST'S BINDING. The pricer sees a model and nothing else, so one
+// The sink asks for most rates with PriceAt, which gives the prompt size itself: the size without
+// the ops and the billed size for the request's tokens, and the call's own size for a spend. A
+// binding's promptTotal is used only by Price, when the sink does not know the size.
+//
+// COLLISIONS FALL BACK TO THE REQUEST'S ENDPOINT. The pricer sees a model and nothing else, so one
 // model can have only one binding per observation. When a spend's model is the request's own
 // model with a different binding, or two spends share a model with different bindings, that
-// model is priced at the request's binding, and the pushed spend dollars can differ from the
+// model is priced at the request's endpoint, and the pushed spend dollars can differ from the
 // ledger's spends[] (which price each call apart). A spend on a model of its own, the common
 // case, agrees to the micro.
 func bindingsFor(reqModel string, req binding, res accountant.Result) map[string]binding {
@@ -466,32 +471,38 @@ type boundPricer struct {
 // the request's for a model with none. The same function prices the ledger, so the two cannot
 // price one token differently.
 func (p *boundPricer) Price(model string, _ time.Time, t acmetrics.Tier) (float64, bool) {
-	b, ok := p.byModel[model]
-	if !ok {
-		b = p.request
-	}
-	// llm.savings.*.usd is dollars by name; an endpoint priced in another currency (pricing.
-	// UnitOf non-empty) has no rate this Pricer can report as one (review finding). (0, true) is
-	// "no money, and estimated", the same answer an unknown tier gets below.
-	if pricing.UnitOf(p.resolver, b.endpoint, model) != "" {
-		return 0, true
-	}
-	// CacheWrite1h has no pricing.Tier of its own — see pricing.Tier's doc — so it is priced
-	// through USD1h rather than pricingTier+USD, same as priceUsageSplit and missPremiumUSD.
-	if t == acmetrics.TierCacheWrite1h {
-		return USD1h(p.resolver, b.endpoint, model, b.promptTotal, 1)
-	}
-	tier, ok := pricingTier(t)
-	if !ok {
-		// An unknown tier has no rate: (0, true) is "no money, and estimated", which is what
-		// the Pricer contract asks for a rate the host does not know.
-		return 0, true
-	}
-	return USD(p.resolver, b.endpoint, model, b.promptTotal, tier, 1)
+	b := p.bindingOf(model)
+	return p.rate(model, b.endpoint, b.promptTotal, t)
 }
 
-// pricingTier maps the library's metrics tier onto Cortex's rate table. CacheWrite1h is not
-// here: Price handles it separately, through USD1h.
+// PriceAt is Price at the prompt size the sink asks for, in place of the binding's. It makes
+// boundPricer an acmetrics.SizedPricer, so the sink prices saved tokens at the size without the
+// operations, caused tokens at the billed size, and re-rates the tokens that stay when the two
+// sizes are on different sides of a price line (rossoctl/cortex#2135). The ledger prices with
+// the same sizes (sizedRates).
+func (p *boundPricer) PriceAt(model string, _ time.Time, t acmetrics.Tier, promptTokens int64) (float64, bool) {
+	return p.rate(model, p.bindingOf(model).endpoint, int(promptTokens), t)
+}
+
+func (p *boundPricer) bindingOf(model string) binding {
+	if b, ok := p.byModel[model]; ok {
+		return b
+	}
+	return p.request
+}
+
+func (p *boundPricer) rate(model, endpoint string, promptTotal int, t acmetrics.Tier) (float64, bool) {
+	// llm.savings.*.usd is dollars by name; an endpoint priced in another currency (pricing.
+	// UnitOf non-empty) has no rate this Pricer can report as one (review finding). (0, true) is
+	// "no money, and estimated", the same answer an unknown tier gets.
+	if pricing.UnitOf(p.resolver, endpoint, model) != "" {
+		return 0, true
+	}
+	return tierRate(p.resolver, endpoint, model, promptTotal, t)
+}
+
+// pricingTier maps the library's tier onto Cortex's rate table. CacheWrite1h is not here:
+// tierRate handles it separately, through USD1h.
 func pricingTier(t acmetrics.Tier) (pricing.Tier, bool) {
 	switch t {
 	case acmetrics.TierInput:

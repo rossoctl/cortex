@@ -1,6 +1,8 @@
 package accounting
 
 import (
+	"time"
+
 	"github.com/rossoctl/accountant"
 	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/cost/settle"
@@ -87,4 +89,30 @@ func TierUSD(r pricing.Resolver, endpoint, model string, promptTotal int, tt acc
 	total += usd1h
 	estimated = estimated || est1h
 	return total, estimated
+}
+
+// tierRate is the rate of one token of tier t at the endpoint, the model and the prompt total:
+// USD, or USD1h for TierCacheWrite1h, which has no pricing.Tier of its own. An unknown tier has
+// no rate: (0, true), "no money, and estimated".
+func tierRate(r pricing.Resolver, endpoint, model string, promptTotal int, t accountant.Tier) (float64, bool) {
+	if t == accountant.TierCacheWrite1h {
+		return USD1h(r, endpoint, model, promptTotal, 1)
+	}
+	tier, ok := pricingTier(t)
+	if !ok {
+		return 0, true
+	}
+	return USD(r, endpoint, model, promptTotal, tier, 1)
+}
+
+// sizedRates is the ledger's accountant.SizedPricer: tierRate at one endpoint, at the prompt size
+// accountant.Figure asks for. Figure asks for two sizes on a request: the size without the
+// operations for what they saved, and the billed size for what they caused (rossoctl/cortex#2135).
+type sizedRates struct {
+	r        pricing.Resolver
+	endpoint string
+}
+
+func (s sizedRates) PriceAt(model string, _ time.Time, t accountant.Tier, promptTokens int64) (float64, bool) {
+	return tierRate(s.r, s.endpoint, model, int(promptTokens), t)
 }
