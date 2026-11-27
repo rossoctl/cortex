@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"strconv"
@@ -1271,6 +1272,23 @@ func stripForUpstream(r *http.Request, ownEncoding, keepUpgrade bool) {
 		r.Header.Set("Connection", "Upgrade")
 		r.Header.Set("Upgrade", "websocket")
 	}
+
+	// Strip Claude Code's internal session-tracking headers. The proxy reads
+	// them for attribution and subagent detection (they land in pctx.Headers at
+	// construction, before any plugin runs) but must not reach the upstream:
+	// they serve no purpose there and would otherwise expose internal session
+	// identifiers to external APIs. Prefix-based so future X-Claude-Code-*
+	// additions are covered without a change here.
+	maps.DeleteFunc(r.Header, func(k string, _ []string) bool {
+		return strings.HasPrefix(k, "X-Claude-Code-")
+	})
+
+	// Strip Anthropic-Dangerous-Direct-Browser-Access. This header signals to
+	// Anthropic's API that a request originates directly from a browser (used by
+	// the Claude Desktop browser extension and similar). Requests proxied through
+	// Cortex are not direct browser requests; forwarding the header would be both
+	// misleading and an unnecessary leak of the client's internal context.
+	r.Header.Del("Anthropic-Dangerous-Direct-Browser-Access")
 
 	// Strip the client's Accept-Encoding so Go's transport negotiates content
 	// coding on its own behalf.

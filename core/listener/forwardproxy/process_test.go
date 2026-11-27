@@ -924,6 +924,54 @@ func TestForwardProxy_StripsCortexAttributionHeaders(t *testing.T) {
 	}
 }
 
+// X-Claude-Code-* headers are read by the proxy for attribution and subagent detection
+// but must not reach the upstream. A client that sends them (Claude Code on every
+// inference request, including when it runs inside IBM Bob) must not expose those
+// internal session identifiers to external APIs. The headers are stripped in
+// stripForUpstream, after the pipeline has captured them from pctx.Headers, so
+// attribution still works correctly — the row lands in the right session bucket.
+func TestForwardProxy_StripsClaudeCodeHeaders(t *testing.T) {
+	var saw http.Header
+	upstream := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { saw = r.Header.Clone() }))
+	defer upstream.Close()
+	store := session.New(0, 0, 0)
+	defer store.Close()
+	p, _ := pipeline.New(nil)
+	srv := &Server{OutboundPipeline: pipeline.NewHolder(p), Sessions: store, Client: http.DefaultClient,
+		SessionIDHeaders: []string{session.ClaudeCodeSessionHeader}}
+	proxy := httptest.NewServer(srv.Handler())
+	defer proxy.Close()
+	via := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(mustParseURL(proxy.URL))}}
+
+	const sessionID = "a1b2c3d4-0000-0000-0000-000000000001"
+	req, _ := http.NewRequest(http.MethodGet, upstream.URL, nil)
+	// Lowercase as Claude Code sends them — exercises canonicalization too.
+	req.Header.Set("x-claude-code-session-id", sessionID)
+	req.Header.Set("x-claude-code-agent-id", "agent-abc")
+	req.Header.Set("x-claude-code-parent-agent-id", "parent-def")
+	resp, err := via.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+
+	// None of the three headers must reach the upstream.
+	for _, h := range []string{
+		session.ClaudeCodeSessionHeader,
+		pipeline.ClaudeCodeAgentIDHeader,
+		pipeline.ClaudeCodeParentAgentIDHeader,
+	} {
+		if v := saw.Get(h); v != "" {
+			t.Errorf("upstream saw %s = %q; want it stripped", h, v)
+		}
+	}
+	// Attribution still works: the session header was read before stripping,
+	// so the event was filed under the correct session bucket.
+	if store.View(sessionID) == nil {
+		t.Errorf("no session row under %q; session header was not read before being stripped", sessionID)
+	}
+}
+
 // After a restart the proxy has forgotten which process named which session. RestoreClaims
 // puts back what the archive kept, so a process that named a session before the restart —
 // Bob's plugin host, which sends its session header only on inference — still files its
