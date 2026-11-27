@@ -20,8 +20,11 @@ import (
 //   - a retry (Turn.Resent), which adds nothing;
 //   - a suggestion-mode call ("[SUGGESTION MODE"), and the side calls toolpair already drops
 //     (title, topic probe, progress label, away recap);
-//   - the first request after a compaction, whose newest user message is the summary: the
-//     prompt it serves goes on.
+//   - the compaction's own request, and the first request after it, whose newest user message is
+//     the summary: the prompt they serve goes on;
+//   - text beside tool results that came with the tools ("Tool loaded.", a skill's body): only a
+//     message the person typed while the tools ran, in Claude Code's wrapper for it, is theirs;
+//   - a message or a notice from another Claude session.
 //
 // COMPUTED WHEN THE TIMELINE IS BUILT, NEVER STORED: each new injected marker is a rule change,
 // and a stored grouping would go stale. The text is not in the timeline: it is content.
@@ -68,11 +71,25 @@ func claudeCodeCall(e *model.SessionEvent) bool {
 const claudeCode = "claude-code"
 
 // queuedMessage reports whether the newest user message follows an assistant message that
-// called tools: in Anthropic's format that message carries the results, so any text in it was
-// typed while the tools ran.
+// called tools: in Anthropic's format that message carries the results. Text in it is the
+// person's only inside Claude Code's wrapper for a message typed while the tools ran
+// (queuedIntro); any other text there came with the tools: "Tool loaded." after a tool search, a
+// skill's body after the model called the skill.
 func queuedMessage(msgs []model.InferenceMessage) bool {
 	i := newestUser(msgs)
 	return i > 0 && msgs[i-1].Role == "assistant" && msgs[i-1].ToolUseIDs != ""
+}
+
+// queuedIntro starts the wrapper Claude Code puts around a message the person typed while tools
+// ran; queuedText is what they typed, or "" when the message holds no such wrapper.
+const queuedIntro = "The user sent a new message while you were working:"
+
+func queuedText(s string) string {
+	_, after, ok := strings.Cut(s, queuedIntro)
+	if !ok {
+		return ""
+	}
+	return humanText(after)
 }
 
 // suggestionPrompt marks Claude Code's suggestion-mode call: the whole context and tool list,
@@ -83,22 +100,30 @@ const suggestionPrompt = "[SUGGESTION MODE"
 // of the conversation so far, in the person's place.
 const compactionSummary = "This session is being continued from a previous conversation"
 
+// compactionRequest starts the user message of the call that makes that summary: sent as the
+// main agent, with its tools, so it is no side call, but no one typed it.
+const compactionRequest = "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools."
+
 // injectedTags are the blocks Claude Code puts in a user message that the person did not type:
 // reminders, a slash command's scaffolding and its local output, a subagent's or a background
-// task's notification. A message holding only these is no prompt; one holding them and text is,
-// judged on the text.
+// task's notification, and a message from another Claude session. A message holding only these
+// is no prompt; one holding them and text is, judged on the text. A cross-session message is
+// injected even when the other session relays something on the person's behalf: it was not typed
+// here.
 var injectedTags = []string{"system-reminder", "command-name", "command-message", "command-args",
 	"local-command-stdout", "local-command-stderr", "local-command-caveat", "task-notification",
-	"agent-message", "user-prompt-submit-hook", "bash-input", "bash-stdout", "bash-stderr",
-	"tools-used-before-summary"}
+	"agent-message", "cross-session-message", "user-prompt-submit-hook", "bash-input", "bash-stdout",
+	"bash-stderr", "tools-used-before-summary"}
 
 // injectedLines are lines Claude Code writes in the person's place, matched by their start:
-// an interrupt notice, the note beside an image a tool returned, and the envelope around a
-// subagent's or another session's <agent-message> (the line that introduces it and the note
-// after it). Checked on a real recording: a subagent's hand-back is a user message of these and
-// tags only.
-var injectedLines = []string{"[Request interrupted by user", "[Image:", "Another Claude session sent a message",
-	`That "other Claude session" is`}
+// an interrupt notice, the note beside an image a tool returned ("[Image: original 2100x200,
+// displayed at ..."; a line the person types starting "[Image:" is theirs), the envelope around a
+// subagent's or another session's message (the line that introduces it and the note after it),
+// the notices about other sessions, and the note after a message typed while tools ran. Checked
+// on a real recording: a subagent's hand-back is a user message of these and tags only.
+var injectedLines = []string{"[Request interrupted by user", "[Image: original ", "Another Claude session sent a message",
+	`That "other Claude session" is`, "[Cross-session idle notice]", "[Cross-session delivery notice]",
+	"This is how Claude Code surfaces messages the user sends mid-turn"}
 
 // humanText returns what is left of a user message's text once the injected blocks and lines
 // are taken out, trimmed: "" when the person typed none of it. Each tag is one pass that copies
@@ -111,8 +136,9 @@ func humanText(s string) string {
 		}
 		s = stripTag(s, "<"+tag, "</"+tag+">")
 	}
-	// After the tags: a summary Claude Code prefixes with a reminder is still a summary.
-	if strings.HasPrefix(strings.TrimSpace(s), compactionSummary) {
+	// After the tags: a summary Claude Code prefixes with a reminder is still a summary, and so
+	// is the request that asks for one.
+	if t := strings.TrimSpace(s); strings.HasPrefix(t, compactionSummary) || strings.HasPrefix(t, compactionRequest) {
 		return ""
 	}
 	var b strings.Builder
@@ -232,10 +258,16 @@ func newestUser(msgs []model.InferenceMessage) int {
 
 // startsPrompt reports whether a request's newest user message was added since the agent's
 // previous call (at index prefix or later, prefix being the messages the two share) and holds
-// human text.
+// human text: beside tool results, only inside the queued-message wrapper.
 func startsPrompt(msgs []model.InferenceMessage, prefix int) bool {
 	i := newestUser(msgs)
-	return i >= 0 && i >= prefix && humanText(msgs[i].Content) != ""
+	if i < 0 || i < prefix {
+		return false
+	}
+	if queuedMessage(msgs) {
+		return queuedText(msgs[i].Content) != ""
+	}
+	return humanText(msgs[i].Content) != ""
 }
 
 // isSuggestionCall reports whether the newest user message asks for a suggestion.

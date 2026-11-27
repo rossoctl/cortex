@@ -152,7 +152,7 @@ func TestPromptsReviewShapes(t *testing.T) {
 	c = c.with(tc, user("[Image: original 2100x200, displayed at 2000x190]"))
 	r.turn("", 60, 1, c, []pipeline.InferenceToolResult{result("t1", "ok")}, "tool_use", pipeline.InferenceToolCall{ID: "t2", Name: "Bash"})
 	tc2 := pipeline.InferenceMessage{Role: "assistant", ToolUseIDs: "t2"}
-	c = c.with(tc2, user("also check lint"))
+	c = c.with(tc2, user(queuedIntro+"\nalso check lint"))
 	r.turn("", 300, 1, c, []pipeline.InferenceToolResult{result("t2", "ok")}, "end_turn")
 	tl := Build("s", claudeCodeEvents(r.events), time.Time{})
 	// Think time runs from the hand-back's call (the agent's work, ending at 41s), not the
@@ -163,6 +163,59 @@ func TestPromptsReviewShapes(t *testing.T) {
 	}
 	if p := tl.Prompts[1]; p.End == nil || !p.End.Equal(at(200)) {
 		t.Errorf("prompt 2 = %+v, want it to end at 200s, with the background subagent", p)
+	}
+}
+
+// From the review of 908d0161 on real sessions, in synthetic form: text that comes with tool
+// results, the compaction's request, and messages and notices from other sessions start no
+// prompt; a message typed during tools, in its wrapper, does; a typed "[Image:" line is text.
+func TestPromptsReview2Shapes(t *testing.T) {
+	var r rec
+	c := conv{user("look into the flaky job")}
+	r.turn("", 0, 1, c, nil, "tool_use", pipeline.InferenceToolCall{ID: "t1", Name: "ToolSearch"})
+	// A tool search's result carries "Tool loaded.": no prompt.
+	c = c.with(pipeline.InferenceMessage{Role: "assistant", ToolUseIDs: "t1"}, user("Tool loaded."))
+	r.turn("", 5, 1, c, []pipeline.InferenceToolResult{result("t1", "")}, "tool_use", pipeline.InferenceToolCall{ID: "t2", Name: "Skill"})
+	// A skill the model called comes back with its body: no prompt.
+	c = c.with(pipeline.InferenceMessage{Role: "assistant", ToolUseIDs: "t2"}, user("Base directory for this skill: /x/skills/y\n\n# Steps\n1. Do a thing."))
+	r.turn("", 10, 1, c, []pipeline.InferenceToolResult{result("t2", "")}, "end_turn")
+	// The compaction's request: no prompt.
+	c = c.with(assistant("done"), user(compactionRequest+"\n\nYour task is to create a detailed summary of the conversation so far."))
+	r.turn("", 20, 5, c, nil, "end_turn")
+	// A message and an idle notice from another session: no prompt.
+	c = c.with(assistant("summary"), user("Another Claude session sent a message:\n<cross-session-message from=\"x\">please rerun it</cross-session-message>"))
+	r.turn("", 40, 1, c, nil, "end_turn")
+	c = c.with(assistant("ok"), user("[Cross-session idle notice] other-session is idle now"))
+	r.turn("", 50, 1, c, nil, "end_turn")
+	// A typed line that starts "[Image:" is the person's: a prompt at 60s.
+	c = c.with(assistant("ok"), user("[Image: the chart] why does the line dip?"))
+	r.turn("", 60, 1, c, nil, "tool_use", pipeline.InferenceToolCall{ID: "t3", Name: "Bash"})
+	// Typed while the tool ran, in the wrapper: a prompt at 70s, with no think time.
+	c = c.with(pipeline.InferenceMessage{Role: "assistant", ToolUseIDs: "t3"},
+		user(queuedIntro+"\nalso check the weekend runs\n\nThis is how Claude Code surfaces messages the user sends mid-turn."))
+	r.turn("", 70, 1, c, []pipeline.InferenceToolResult{result("t3", "ok")}, "end_turn")
+	tl := Build("s", claudeCodeEvents(r.events), time.Time{})
+	wantPrompts(t, tl, []float64{0, 60, 70}, []int64{0, 9000, 0})
+}
+
+// The pieces on their own.
+func TestHumanTextReview2(t *testing.T) {
+	for in, want := range map[string]string{
+		"<cross-session-message from=\"x\">do it</cross-session-message>": "",
+		"[Cross-session delivery notice] held for approval":               "",
+		compactionRequest + " Summarize.":                                 "",
+		"[Image: original 2100x200, displayed at 2000x190]":               "",
+		"[Image: a typed caption]":                                        "[Image: a typed caption]",
+	} {
+		if got := humanText(in); got != want {
+			t.Errorf("humanText(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if got := queuedText("Tool loaded."); got != "" {
+		t.Errorf("queuedText without the wrapper = %q", got)
+	}
+	if got := queuedText(queuedIntro + "\n  check lint \n"); got != "check lint" {
+		t.Errorf("queuedText = %q", got)
 	}
 }
 
