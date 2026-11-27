@@ -35,9 +35,14 @@ const valueChars = "[^\\s'\"`,;&(){}\\[\\]<>\\\\]"
 // double-quoted, single-quoted or bare. RE2 has no backreference to match a closing quote to its
 // opening one, so the four quotings are four alternatives; the value is group 2, 3, 4 or 5. A
 // quoted value runs to its closing quote, spaces and punctuation included; it cannot hold a
-// backslash or a line break, so it cannot run out of its JSON string.
+// backslash or a line break, so it cannot run out of its JSON string. JSON's "\n", "\r" and "\t"
+// escapes may stand at either end inside the quotes (a value copied with its newline, in a raw
+// body): they are outside the value, and kept.
 var keywordPattern = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_.-]*)(?:\\?["'])?[ \t]*(?::=|=>|[:=])[ \t]*` +
-	`(?:\\"([^"\\\r\n]+)\\"|"([^"\\\r\n]+)"|'([^'\\\r\n]+)'|(` + valueChars + `+))`)
+	`(?:\\"([^"\\\r\n]+)\\"|"` + jsonBreaks + `([^"\\\r\n]+)` + jsonBreaks + `"|'` + jsonBreaks + `([^'\\\r\n]+)` + jsonBreaks + `'|(` + valueChars + `+))`)
+
+// jsonBreaks is any run of JSON's line-break and tab escapes.
+const jsonBreaks = `(?:\\[nrt])*`
 
 type tier int
 
@@ -152,7 +157,9 @@ func hasSuffixAny(w string, suffixes []string) bool {
 	return false
 }
 
-// splitName splits a name into lowercase words.
+// splitName splits a name into lowercase words: at any ASCII byte that is not a letter or a
+// digit ("_", "-", ".", a space: "API Key", "Root Pass" are names too, as JSON keys and in
+// headers), and at case changes.
 func splitName(name string) []string {
 	var parts []string
 	start := 0
@@ -163,7 +170,7 @@ func splitName(name string) []string {
 	}
 	for i := 0; i < len(name); i++ {
 		c := name[i]
-		if c == '_' || c == '-' || c == '.' {
+		if c < 0x80 && !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9') {
 			flush(i)
 			start = i + 1
 			continue
@@ -445,8 +452,10 @@ func keyedValue(text, key string) (Edit, bool) {
 	if t == tierNone {
 		return Edit{}, false
 	}
-	start := len(text) - len(strings.TrimLeft(text, " \t"))
-	v := strings.TrimRight(text[start:], " \t")
+	// Line breaks around the value are trimmed like spaces, and kept in the output: a value
+	// copied with its newline ("hunter2\n") is the same secret.
+	start := len(text) - len(strings.TrimLeft(text, " \t\r\n"))
+	v := strings.TrimRight(text[start:], " \t\r\n")
 	for _, scheme := range []string{"bearer ", "basic ", "token ", "digest ", "negotiate ", "ntlm "} {
 		if t != tierPassword && len(v) > len(scheme) && strings.EqualFold(v[:len(scheme)], scheme) {
 			// An explicit credential scheme: the token after it is the secret, whatever its

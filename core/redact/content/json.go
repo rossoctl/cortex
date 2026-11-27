@@ -359,8 +359,9 @@ var binaryMagic = []string{"\x89PNG", "\xff\xd8\xff", "GIF8", "RIFF", "%PDF", "I
 //
 // Every line must be base64 ("=" only as a line's final padding), the whole string. Only a
 // prefix is decoded, binaryPrefix bytes, and what follows the format's header there must not
-// read as text: not valid UTF-8, and not mostly printable ASCII. A real image is compressed
-// data, which is neither; a header put in front of base64 text ("iVBORw0KGgo..." then a config
+// read as text (readsAsText): 10% or more control bytes, or else neither valid UTF-8 nor 90%
+// printable ASCII. A real image is compressed data, which is neither; a header put in front of
+// base64 text ("iVBORw0KGgo..." then a config
 // file) is read. The prefix is enough: an image with text appended after it is already caught by
 // its compressed head failing readsAsText, so the whole-string check only ever caught "header,
 // then text", and the prefix catches that too, without decoding 30 MB for a 40 MB image. A
