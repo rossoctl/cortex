@@ -1,0 +1,41 @@
+# Cases of moca's egress conformance suite that the hostegress build fails
+# today, one per line, each with the issue that makes it pass. check.sh fails
+# the job on a failing case missing from this list and on a listed case that
+# passes, so a fix removes its lines in the same change.
+
+# The harness resolver, refusal shape and timeouts (#2086).
+connect_tunnel_idle_deadline # #2086
+connect_tunnel_opaque # #2086
+dns_rebinding_resolved_once # #2086
+forged_session_header_ignored # #2086
+forward_response_header_timeout # #2086
+identity_from_connection # #2086
+metadata_address_403_even_if_permitted # #2086
+off_allowlist_named_403 # #2086, then its audit event in #2089
+per_session_request_cap_429 # #2086
+per_vm_conn_cap_429 # #2086
+plain_http_strips_proxy_and_moca_headers # #2086
+private_address_403 # #2086
+unregister_aborts_inflight # #2086
+
+# Credential injection (#2088).
+credential_injected_placeholder_overwritten # #2088
+credential_keyed_by_session # #2088
+credential_port_scoped # #2088
+credential_revoked_mid_connection_401 # #2088
+credential_selected_by_path_prefix # #2088
+credential_sets_every_header # #2088
+inner_host_mismatch_421 # #2088
+lookup_cached_single_flight # #2088
+lookup_error_503_no_dial # #2088
+no_credential_tunnelled_opaque # #2088
+path_traversal_refused_when_path_scoped # #2088
+plaintext_http_credential_403 # #2088
+trace_refused_on_intercepted_conn # #2088
+upstream_dropped_after_injection_502 # #2088
+upstream_unverified_502 # #2088
+
+# Its audit event is #2089's, but net/http first answers its Host header,
+# which carries userinfo, 400 before the proxy sees the request. No issue
+# covers that yet.
+audit_query_removed # #2089, and the 400

@@ -350,7 +350,7 @@ jobs:
       # silently yields nothing would flow into `go build -tags ""`.
       - name: Every profile resolves
         run: |
-          for profile in local full lite envoy cpex fullcpex; do
+          for profile in local full lite envoy cpex fullcpex hostegress; do
             tags=$(go run . "${profile}")
             [ -n "${tags}" ] || { echo "profile ${profile} resolved to no tags"; exit 1; }
             echo "${profile}: ${tags}"
@@ -463,17 +463,31 @@ jobs:
       # what a caller who forgets -tags gets — but the shipped artifacts are the
       # profiles, so build AND test each one here. build.yaml only exercises them
       # on tag/main pushes; this catches a profile-only regression on the PR.
+      # hostegress is built only here, and is the one profile that may link the
+      # moca driver: the driver's cmd/cortex tests run only in this loop, and its
+      # darwin and windows files compile only in its cross-builds.
       - name: Build + test each shipped profile
         if: matrix.binary == 'cortex' || matrix.binary == 'cortex-envoy'
         run: |
           case "${{ matrix.binary }}" in
-            cortex) profiles="local full lite" ;;
+            cortex) profiles="local full lite hostegress" ;;
             cortex-envoy) profiles="envoy" ;;
           esac
           for profile in ${profiles}; do
             echo "::group::profile ${profile}"
             TAGS=$(go -C ../../scripts/profile-tags run . "${profile}")
+            go vet -tags "${TAGS}" ./...
             go build -v -tags "${TAGS}" ./...
+            if [ "${profile}" = hostegress ]; then
+              GOOS=darwin go build -o /dev/null -tags "${TAGS}" .
+              GOOS=windows go build -o /dev/null -tags "${TAGS}" .
+            else
+              # A here-string, not a pipe, so the check holds under pipefail too.
+              deps=$(go list -deps -tags "${TAGS}" .)
+              if grep -q core/listener/vmcontrol <<<"${deps}"; then
+                echo "profile ${profile} links core/listener/vmcontrol"; exit 1
+              fi
+            fi
             go test -race -coverprofile=cover.out -tags "${TAGS}" ./...
             echo "coverage (profile ${profile}): $(go tool cover -func=cover.out | tail -1)"
             echo "::endgroup::"
@@ -662,6 +676,53 @@ jobs:
 
       - name: Run check-gateway-linkage.sh tests
         run: sh scripts/check-gateway-linkage_test.sh
+
+  # Runs moca's egress conformance suite, at the moca commit in MOCA_COMMIT,
+  # against the hostegress build. The job passes while the failing cases are
+  # exactly those in known-failures.txt.
+  moca-conformance:
+    name: moca egress conformance (hostegress)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GOWORK: "off"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5  # v7.1.0
+        with:
+          go-version-file: cmd/cortex/go.mod
+          cache-dependency-path: cmd/cortex/go.sum
+
+      - name: Run check.sh tests
+        run: sh scripts/moca-conformance/check_test.sh
+
+      - name: Build hostegress
+        working-directory: cmd/cortex
+        run: |
+          TAGS=$(go -C ../../scripts/profile-tags run . hostegress)
+          go build -tags "${TAGS}" -o "${RUNNER_TEMP}/cortex-hostegress" .
+
+      # The runner's module replaces moca's generated code with a path in the
+      # same repository, so it builds from a clone, not with go install.
+      - name: Build the conformance runner
+        run: |
+          git init -q "${RUNNER_TEMP}/moca"
+          cd "${RUNNER_TEMP}/moca"
+          git fetch -q --depth 1 https://github.com/rossoctl/moca.git "$(cat "${GITHUB_WORKSPACE}/scripts/moca-conformance/MOCA_COMMIT")"
+          git checkout -q FETCH_HEAD
+          cd remote-worker
+          go build -o "${RUNNER_TEMP}/moca-egress-conformance" ./cmd/moca-egress-conformance
+
+      # The output streams, so a job that times out still shows the case it hung on.
+      - name: Run the suite
+        run: |
+          { code=0
+            "${RUNNER_TEMP}/moca-egress-conformance" -bin "${RUNNER_TEMP}/cortex-hostegress" 2>&1 || code=$?
+            echo "${code}" >"${RUNNER_TEMP}/conformance.code"
+          } | tee "${RUNNER_TEMP}/conformance.txt"
+          sh scripts/moca-conformance/check.sh scripts/moca-conformance/known-failures.txt \
+            "${RUNNER_TEMP}/conformance.txt" "$(cat "${RUNNER_TEMP}/conformance.code")"
 
   # Static checks of the central metrics stack (deploy/central): Prometheus rules and their unit
   # tests, the collector config, the generated dashboards, and the Kustomize render through

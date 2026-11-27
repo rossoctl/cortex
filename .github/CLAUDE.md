@@ -8,7 +8,7 @@ including the PR title format and the Go checks that CI gates on, are in the roo
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| `ci.yaml` | PR to main/release-*, push to main | Pre-commit; `go vet`, build and tests for all 7 modules; a macOS job for `peerproc`, `tlsbridge`, `cmd/cortex` and `cmd/agentop`; a Windows job that builds core and `cmd/cortex` and tests `bootstrap`, the session archive and the cost ledger, without `-race` (`go-ci-windows`); the cgo `cpex` builds (`go-ci-cpex`); `go mod tidy -diff` for all 7 modules; proxy-init iptables, Python, install-script, release-notes-script and release-promote-script tests. `go fmt` rewrites rather than fails, so it does not gate |
+| `ci.yaml` | PR to main/release-*, push to main | Pre-commit; `go vet`, build and tests for all 7 modules, and for each `cmd/cortex` and `cmd/cortex-envoy` profile that `Build + test each shipped profile` builds (`local`, `full`, `lite`, `hostegress`, `envoy`), failing any but `hostegress` that links `core/listener/vmcontrol`; a macOS job for `peerproc`, `tlsbridge`, `cmd/cortex` and `cmd/agentop`; a Windows job that builds core and `cmd/cortex` and tests `bootstrap`, the session archive and the cost ledger, without `-race` (`go-ci-windows`); the cgo `cpex` builds (`go-ci-cpex`); `go mod tidy -diff` for all 7 modules; proxy-init iptables, Python, install-script, release-notes-script and release-promote-script tests; and moca's egress conformance suite against the `hostegress` build (`moca-conformance`, see [below](#moca-conformance)). `go fmt` rewrites rather than fails, so it does not gate |
 | `build.yaml` | Tag push (`v*`), push to main, manual; PRs to main build amd64 only and skip `**.md` | Multi-arch Docker builds for the six images below. Every Go image passes `GO_BUILD_TAGS` naming a profile — plugins are all opt-in, so an image built without tags registers none |
 | `praxis.yaml` | PR to main/release-*, push to main, on `praxis/**`, `docs/praxis-policy.md` or the Go parser paths it ports | `cargo fmt --check`, clippy and tests for `praxis/`. A failure blocks only when `praxis/`, the policy page, the workflow, or the Go side of praxis mode (the hop, the egress listener, `cmd/cortex`'s praxis wiring) changed |
 | `security-scans.yaml` | PR to main | Dependency review, shellcheck, YAML lint, Hadolint, Bandit, Trivy |
@@ -21,6 +21,21 @@ including the PR title format and the Go checks that CI gates on, are in the roo
 | `site-dispatch.yaml` | Push to main on `scripts/install.sh`, manual | Sends `docs-updated` to `rossoctl/.github`, so the site's `/cortex/install.sh` copy updates in minutes, not at its daily schedule. Needs the `SITE_DISPATCH_TOKEN` secret; without it, a warning only |
 
 Also: `release-smoke-linux.yaml` and `release-smoke-macos.yaml` (install a just-published release as a user does, on each platform; both counted by `scripts/collect-install-stats.sh`), `release-promote.yaml` (see [Release binaries](#release-binaries)), `dependabot-tidy.yml`, `install-stats.yaml`, `project.yml`, `self-assign.yml`, `stale.yaml`.
+
+### moca-conformance
+
+The job builds moca's `moca-egress-conformance` runner from a clone of
+`rossoctl/moca` at the commit in `scripts/moca-conformance/MOCA_COMMIT`, runs
+it against the `hostegress` build, and hands the output to
+`scripts/moca-conformance/check.sh`. It passes while the failing cases are
+exactly those in `known-failures.txt`. A change that makes a case pass removes
+its line, and one that breaks a case fails the job.
+
+To move to a newer moca, set `MOCA_COMMIT` to that commit, build the runner
+and `hostegress` as the job does, and run
+`moca-egress-conformance -bin <cortex>` (its listeners bind `127.0.0.1:0`, so
+it leaves a running Cortex alone). Then update `known-failures.txt` to match:
+a new case starts listed under the issue that will make it pass.
 
 `ci.yaml`'s Python job pip-installs `python-keycloak==5.3.1`, two majors behind the
 `>=7.1.1,<8` that `requirements.txt` declares. CI does not test the declared version.

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -44,6 +45,8 @@ func TestTags_ReproduceTodaysDefaults(t *testing.T) {
 		{"lite", []string{
 			"jwtvalidation", "litellm_budgettrack", "staticinject", "tokenexchange", "tokenexchangeaiac",
 		}},
+		// A full tag names a driver; a bare name is a plugin.
+		{"hostegress", []string{"include_driver_moca", "staticinject"}},
 	} {
 		t.Run(tc.profile, func(t *testing.T) {
 			got, err := Tags(ProfileName(tc.profile))
@@ -52,7 +55,10 @@ func TestTags_ReproduceTodaysDefaults(t *testing.T) {
 			}
 			var wantTags []string
 			for _, n := range tc.want {
-				wantTags = append(wantTags, "include_plugin_"+n)
+				if !strings.HasPrefix(n, "include_") {
+					n = "include_plugin_" + n
+				}
+				wantTags = append(wantTags, n)
 			}
 			sort.Strings(wantTags)
 			if strings.Join(got, ",") != strings.Join(wantTags, ",") {
@@ -87,5 +93,21 @@ func TestTags_FullCpexIsFullPlusCpex(t *testing.T) {
 func TestTags_UnknownProfile(t *testing.T) {
 	if _, err := Tags(ProfileName("desktop")); err == nil {
 		t.Fatal("want error for an undefined profile, got nil")
+	}
+}
+
+// TestTags_DriverOnlyProfile — a profile with a driver and no plugins resolves,
+// and one with neither fails closed.
+func TestTags_DriverOnlyProfile(t *testing.T) {
+	savedProfiles, savedDrivers := allProfiles, drivers
+	t.Cleanup(func() { allProfiles, drivers = savedProfiles, savedDrivers })
+	allProfiles = append(slices.Clone(allProfiles), "probe", "empty")
+	drivers = map[DriverName][]ProfileName{"moca": {"probe"}}
+
+	if tags, err := Tags("probe"); err != nil || !slices.Equal(tags, []string{"include_driver_moca"}) {
+		t.Errorf("probe: got %v, %v; want [include_driver_moca]", tags, err)
+	}
+	if _, err := Tags("empty"); err == nil {
+		t.Error("empty: want an error for a profile with no plugins or drivers")
 	}
 }
