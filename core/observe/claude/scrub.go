@@ -358,14 +358,7 @@ func capTitle(s string) string {
 	if red, ok := content.RedactCutKey(t); ok {
 		return fitEndMarker(red)
 	}
-	// A marker cut short at the end: "…[REDACTED:api_k", or any piece of "[REDACTED:" down to
-	// its "[".
-	if j := strings.LastIndexByte(t, '['); j >= 0 && !strings.Contains(t[j:], "]") {
-		if tail := t[j:]; strings.HasPrefix("[REDACTED:", tail) || strings.HasPrefix(tail, "[REDACTED:") {
-			t = t[:j]
-		}
-	}
-	return strings.TrimSpace(t)
+	return strings.TrimSpace(dropSeveredMarker(t))
 }
 
 // fitEndMarker is t, which ends in a redaction marker, cut to MaxTitleLen runes by shortening
@@ -389,7 +382,21 @@ func fitEndMarker(t string) string {
 	if len(pre) > room {
 		pre = pre[:room]
 	}
-	return strings.TrimSpace(string(pre)) + mark
+	// Shortening can cut an earlier marker in turn: drop what is left of it.
+	return strings.TrimSpace(dropSeveredMarker(string(pre))) + mark
+}
+
+// dropSeveredMarker removes a redaction marker a cut left short at t's end: "…[REDACTED:api_k",
+// or any piece of "[REDACTED:" down to its "[", which would read as a broken word.
+func dropSeveredMarker(t string) string {
+	j := strings.LastIndexByte(t, '[')
+	if j < 0 || strings.Contains(t[j:], "]") {
+		return t
+	}
+	if tail := t[j:]; strings.HasPrefix("[REDACTED:", tail) || strings.HasPrefix(tail, "[REDACTED:") {
+		return t[:j]
+	}
+	return t
 }
 
 // RedactStoredTitles runs the secret rules over the titles in m, which may have been harvested

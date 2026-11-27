@@ -1014,7 +1014,8 @@ func fitEndMarker(t string, n int) string {
 	if room <= 0 {
 		return strings.TrimRight(dropSeveredMarker(cutRunes(t, n)), " ")
 	}
-	return strings.TrimRight(cutRunes(t[:j], room), " ") + mark
+	// Shortening can cut an earlier marker in turn: drop what is left of it.
+	return strings.TrimRight(dropSeveredMarker(cutRunes(t[:j], room)), " ") + mark
 }
 
 // cutRunes is t cut to at most n runes.

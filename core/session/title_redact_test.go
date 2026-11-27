@@ -121,6 +121,21 @@ func TestSanitizeTitle_LastReviewProbes(t *testing.T) {
 	}
 }
 
+// Fitting the end marker shortens the text before it, which can cut an earlier marker: what is
+// left of that one is dropped, so the title holds only whole markers.
+func TestSanitizeTitle_FitEndMarkerKeepsEarlierMarkersWhole(t *testing.T) {
+	in := strings.Repeat("a", 46) + " " + fakeGitHubKey() + " " + "gh" + "p_" + strings.Repeat("Q", 20) + " tail"
+	for name, got := range map[string]string{
+		"sanitize": sanitizeTitle(in),
+		"stored":   redactStoredTitle(cutRunes(in, maxTitleLen)),
+	} {
+		if strings.Contains(got, "QQQQ") || strings.Count(got, "[") != strings.Count(got, "]") ||
+			utf8.RuneCountInString(got) > maxTitleLen {
+			t.Errorf("%s: %q, want whole markers only within %d runes", name, got, maxTitleLen)
+		}
+	}
+}
+
 // A title stored before the rules applied is redacted when an archived summary is read back.
 func TestRedactStoredTitle(t *testing.T) {
 	if got := redactStoredTitle("push with " + fakeGitHubKey()); got != "push with [REDACTED:api_key]" {

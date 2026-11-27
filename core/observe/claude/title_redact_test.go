@@ -103,6 +103,20 @@ func TestClipTitle_LastReviewProbes(t *testing.T) {
 	}
 }
 
+// Fitting the end marker can cut an earlier marker: what is left of that one is dropped.
+func TestClipTitle_FitEndMarkerKeepsEarlierMarkersWhole(t *testing.T) {
+	in := strings.Repeat("a", 46) + " " + fakeKey() + " " + "gh" + "p_" + strings.Repeat("Q", 20) + " tail"
+	r := []rune(in)
+	m := map[string]SessionMetadata{"s": {Title: string(r[:MaxTitleLen])}}
+	RedactStoredTitles(m)
+	for name, got := range map[string]string{"clip": clipTitle(in), "stored": m["s"].Title} {
+		if strings.Contains(got, "QQQQ") || strings.Count(got, "[") != strings.Count(got, "]") ||
+			utf8.RuneCountInString(got) > MaxTitleLen {
+			t.Errorf("%s: %q, want whole markers only within %d runes", name, got, MaxTitleLen)
+		}
+	}
+}
+
 // Titles harvested before the rules applied are redacted as the file is read; the rest of an
 // entry, and a clean title, are left as they were.
 func TestRedactStoredTitles(t *testing.T) {
