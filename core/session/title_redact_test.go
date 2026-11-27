@@ -63,6 +63,40 @@ func TestSanitizeTitle_DropsAnyPieceOfASeveredMarker(t *testing.T) {
 	}
 }
 
+// From the hostile review of b550bcb4, one probe per finding: a key hidden from the rules by an
+// ANSI escape or an invisible rune, a key pushed out of the window by a run of spaces, and a
+// stored title the old clip left with a key's prefix.
+func TestSanitizeTitle_ReviewProbes(t *testing.T) {
+	key := fakeGitHubKey()
+	for name, in := range map[string]string{
+		"ansi":         "token \x1b[1m" + key + "\x1b[0m please",
+		"zero-width":   "use " + key[:10] + "​" + key[10:],
+		"soft hyphen":  "use " + key[:10] + "­" + key[10:],
+		"combining":    "use " + key[:10] + "́" + key[10:],
+		"space window": "fix" + strings.Repeat(" ", 1274) + key,
+		"tab window":   "fix" + strings.Repeat("\t ", 900) + key,
+	} {
+		got := sanitizeTitle(in)
+		if strings.Contains(got, "GGGG") || strings.Contains(got, "gh"+"p") {
+			t.Errorf("%s: %q holds the key", name, got)
+		}
+	}
+	anthropic := "sk-" + "ant-" + "api03-" + strings.Repeat("A", 26) + "-" + strings.Repeat("B", 19)
+	for n := 9; n <= 16; n++ {
+		for _, k := range []string{key, anthropic} {
+			stored := cutRunes(strings.Repeat("word ", n)+k, maxTitleLen) // as the old clip stored it
+			got := redactStoredTitle(stored)
+			if strings.Contains(got, "gh"+"p_") || strings.Contains(got, "sk-") {
+				t.Errorf("%d words: stored %q -> %q", n, stored, got)
+			}
+		}
+	}
+	// A stored title shorter than the clip was not cut: a trailing "sk-" there is not a key.
+	if got := redactStoredTitle("try sk-" + "learn"); got != "try sk-"+"learn" {
+		t.Errorf("an uncut title changed: %q", got)
+	}
+}
+
 // A title stored before the rules applied is redacted when an archived summary is read back.
 func TestRedactStoredTitle(t *testing.T) {
 	if got := redactStoredTitle("push with " + fakeGitHubKey()); got != "push with [REDACTED:api_key]" {

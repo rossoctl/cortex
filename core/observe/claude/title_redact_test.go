@@ -47,6 +47,32 @@ func TestClipTitle_RedactsBeforeNormalizingAndDropsSeveredMarkers(t *testing.T) 
 	}
 }
 
+// From the hostile review of b550bcb4, one probe per finding, on the harvest's side.
+func TestClipTitle_ReviewProbes(t *testing.T) {
+	key := fakeKey()
+	for name, in := range map[string]string{
+		"ansi":         "token \x1b[1m" + key + "\x1b[0m please",
+		"zero-width":   "use " + key[:10] + "​" + key[10:],
+		"soft hyphen":  "use " + key[:10] + "­" + key[10:],
+		"combining":    "use " + key[:10] + "́" + key[10:],
+		"space window": "fix" + strings.Repeat(" ", 64<<10-20) + key,
+	} {
+		got := clipTitle(in)
+		if strings.Contains(got, "GGGG") || strings.Contains(got, "gh"+"p") {
+			t.Errorf("%s: %q holds the key", name, got)
+		}
+	}
+	for n := 9; n <= 16; n++ {
+		r := []rune(strings.Repeat("word ", n) + key)
+		stored := string(r[:min(len(r), MaxTitleLen)]) // as the old clip stored it
+		m := map[string]SessionMetadata{"s": {Title: stored}}
+		RedactStoredTitles(m)
+		if strings.Contains(m["s"].Title, "gh"+"p_") {
+			t.Errorf("%d words: stored %q -> %q", n, stored, m["s"].Title)
+		}
+	}
+}
+
 // Titles harvested before the rules applied are redacted as the file is read; the rest of an
 // entry, and a clean title, are left as they were.
 func TestRedactStoredTitles(t *testing.T) {

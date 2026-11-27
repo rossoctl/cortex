@@ -246,18 +246,54 @@ func scrubRunes(s string) string {
 // reasons core/session's sanitizeTitle gives: a key starting inside the title but running past the
 // cut is seen whole, and the rules read a line break as the end of a value, which normalizing
 // turns into a space ("PASSWORD=Sunflower\nHOST=db" would read as prose). The window is generous,
-// as the harvest runs off the viewer's path and markup can fill the start of a prompt. A marker
-// the cut would sever is dropped.
+// as the harvest runs off the viewer's path and markup can fill the start of a prompt. Each run
+// of whitespace is squeezed first (to a line break where it held one), so a long run cannot push
+// a key out of the window. A marker the cut would sever is dropped.
+//
+// The rules skip what would hide a key from them and that normalizing removes (StringSkipping):
+// an ANSI escape, a zero-width or format character, a combining mark inside it. And they run
+// again on the normalized text, as normalizing can put a key back together other ways too (markup
+// stripped from inside it). A key the cut leaves short is replaced (content.RedactCutKey).
 func clipTitle(s string) string {
-	if len(s) > titleRawBytes {
-		n := titleRawBytes
-		for n > 0 && !utf8.RuneStart(s[n]) {
-			n--
+	red, _ := titleRedactor.StringSkipping(squeezeSpace(s, titleRawBytes))
+	red, _ = titleRedactor.StringSkipping(normalizeTitle(red))
+	return capTitle(red)
+}
+
+// squeezeSpace is s with each run of whitespace made one character, "\n" where the run held a
+// line break and " " elsewhere, cut to at most n bytes at a rune boundary.
+func squeezeSpace(s string, n int) string {
+	var b strings.Builder
+	inRun, runBreak := false, false
+	flush := func() {
+		if inRun {
+			if runBreak {
+				b.WriteByte('\n')
+			} else {
+				b.WriteByte(' ')
+			}
+			inRun, runBreak = false, false
 		}
-		s = s[:n]
 	}
-	red, _ := titleRedactor.String(s)
-	return capTitle(normalizeTitle(red))
+	for _, r := range s {
+		if b.Len() >= n {
+			break
+		}
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			inRun = true
+			runBreak = runBreak || r == '\n' || r == '\r'
+			continue
+		}
+		flush()
+		if b.Len()+utf8.RuneLen(r) > n {
+			break
+		}
+		b.WriteRune(r)
+	}
+	if b.Len() < n {
+		flush()
+	}
+	return b.String()
 }
 
 // titleRawBytes is how much of a title's raw text the secret rules see.
@@ -273,6 +309,13 @@ func capTitle(s string) string {
 		return strings.TrimSpace(s)
 	}
 	t := string(r[:MaxTitleLen])
+	// A key the cut leaves short is a key: replaced, and the marker cut in turn if it must be.
+	if red, ok := content.RedactCutKey(t); ok {
+		if rr := []rune(red); len(rr) > MaxTitleLen {
+			red = string(rr[:MaxTitleLen])
+		}
+		t = red
+	}
 	// A marker cut short at the end: "…[REDACTED:api_k", or any piece of "[REDACTED:" down to
 	// its "[".
 	if j := strings.LastIndexByte(t, '['); j >= 0 && !strings.Contains(t[j:], "]") {
@@ -285,13 +328,19 @@ func capTitle(s string) string {
 
 // RedactStoredTitles runs the secret rules over the titles in m, which may have been harvested
 // before they applied. Both readers of the metadata file call it, so an old title is shown
-// redacted at once and the next harvest saves it so.
+// redacted at once and the next harvest saves it so. A stored title of MaxTitleLen runes was cut
+// there by the old clip, so a key prefix at its end ("… ghp_Gx7Gx7") is a key cut short: the
+// harvest skips unchanged transcripts, so it would never be rebuilt.
 func RedactStoredTitles(m map[string]SessionMetadata) {
 	for id, e := range m {
 		if e.Title == "" {
 			continue
 		}
-		if red, _ := titleRedactor.String(e.Title); red != e.Title {
+		red, _ := titleRedactor.StringSkipping(e.Title)
+		if utf8.RuneCountInString(e.Title) == MaxTitleLen {
+			red, _ = content.RedactCutKey(red)
+		}
+		if red != e.Title {
 			e.Title = capTitle(red)
 			m[id] = e
 		}
