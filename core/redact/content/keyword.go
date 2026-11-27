@@ -4,6 +4,7 @@ import (
 	"math"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // THE KEYWORD RULE: a secret-named key assigned a secret-shaped value, in text ("password=x",
@@ -127,6 +128,12 @@ func nameTier(name string) tier {
 func wordTier(parts []string, envName bool) tier {
 	t := tierNone
 	for i, p := range parts {
+		// "pass" before a number or a metric's word is the eval metric or a test's outcome, not a
+		// password: pass@1, pass@10, "Pass Rate", "Pass/Fail", pass_count. Not in a name in
+		// capitals, where DB_PASS_1 is an environment variable's password.
+		if p == "pass" && i+1 < len(parts) && (!envName && isDigits(parts[i+1]) || passMetricWords[parts[i+1]]) {
+			continue
+		}
 		words := []string{p}
 		if i+1 < len(parts) {
 			words = append(words, p+parts[i+1])
@@ -148,6 +155,13 @@ func wordTier(parts []string, envName bool) tier {
 	return t
 }
 
+// passMetricWords after "pass" make it a test's outcome or a rate, not a password.
+var passMetricWords = set("rate", "rates", "fail", "failed", "passed", "through", "count", "counts", "k", "at")
+
+func isDigits(s string) bool {
+	return s != "" && strings.Trim(s, "0123456789") == ""
+}
+
 func hasSuffixAny(w string, suffixes []string) bool {
 	for _, s := range suffixes {
 		if strings.HasSuffix(w, s) {
@@ -161,6 +175,15 @@ func hasSuffixAny(w string, suffixes []string) bool {
 // digit ("_", "-", ".", a space: "API Key", "Root Pass" are names too, as JSON keys and in
 // headers), and at case changes.
 func splitName(name string) []string {
+	// Unicode spaces (a no-break space, U+3000) split a name as a space does.
+	if strings.IndexFunc(name, func(r rune) bool { return r >= 0x80 && unicode.IsSpace(r) }) >= 0 {
+		name = strings.Map(func(r rune) rune {
+			if unicode.IsSpace(r) {
+				return ' '
+			}
+			return r
+		}, name)
+	}
 	var parts []string
 	start := 0
 	flush := func(end int) {

@@ -39,6 +39,41 @@ func TestReview3_KeyNamesWithSpaces(t *testing.T) {
 	}
 }
 
+// From the re-review of d9758ef9: "pass" in an eval metric or a test's outcome is no password
+// name (pass@k is the code-eval metric); "pass" as a password's name still is. And a name split by
+// a Unicode space is split.
+func TestReview3_PassMetricsAndUnicodeSpaces(t *testing.T) {
+	for _, in := range []string{
+		`{"pass@1": 0.8523, "pass@10": 0.9312}`,
+		`{"pass@1": "85.23%"}`,
+		`{"Pass Rate": "98.5% (197/200)"}`,
+		`{"Pass/Fail": "Passed"}`,
+		`{"pass_count": 197, "passed": "Hnt7rQx2Lp"}`,
+		`{"passport": "X1234567", "token count": 412, "Secret Santa": "Dana", "Key Points": "fast"}`,
+	} {
+		if out, _ := redactJSON(in); out != in {
+			t.Errorf("JSON %s changed: %s", in, out)
+		}
+		if b, _ := New().Bytes([]byte(in)); string(b) != in {
+			t.Errorf("Bytes %s changed: %s", in, b)
+		}
+	}
+	pw, tok := hntPassword(), mixed(32)
+	for _, tc := range []struct{ in, secret string }{
+		{`{"Root Pass": "` + pw + `"}`, pw},
+		{`{"Admin Pass": "` + pw + `"}`, pw},
+		{`{"db pass": "` + pw + `"}`, pw},
+		{`{"pass": "` + pw + `"}`, pw},
+		{`{"DB_PASS_1": "` + pw + `"}`, pw},
+		{"{\"API Key\": \"" + tok + "\"}", tok},
+		{"{\"Secret　Key\": \"" + tok + "\"}", tok},
+	} {
+		if out, _ := redactJSON(tc.in); strings.Contains(out, tc.secret) {
+			t.Errorf("JSON %s: leaked: %s", tc.in, out)
+		}
+	}
+}
+
 // A keyed value with a line break before or after it is the same secret; the break is kept.
 func TestReview3_KeyedValueWithALineBreak(t *testing.T) {
 	tok, pw := mixed(32), hntPassword()
