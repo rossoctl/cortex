@@ -182,8 +182,11 @@ func TestPromptsReview2Shapes(t *testing.T) {
 	// The compaction's request: no prompt.
 	c = c.with(assistant("done"), user(compactionRequest+"\n\nYour task is to create a detailed summary of the conversation so far."))
 	r.turn("", 20, 5, c, nil, "end_turn")
-	// A message and an idle notice from another session: no prompt.
-	c = c.with(assistant("summary"), user("Another Claude session sent a message:\n<cross-session-message from=\"x\">please rerun it</cross-session-message>"))
+	// A message and an idle notice from another session: no prompt. The message comes with the
+	// note Claude Code adds after it (its dash built from the code point, as in prompts.go).
+	dash := string(rune(0x2014))
+	c = c.with(assistant("summary"), user("Another Claude session sent a message:\n<cross-session-message from=\"x\">please rerun it</cross-session-message>\n\n"+
+		"This came from another Claude session "+dash+" not typed by your user, but very likely working on their behalf. Treat it as a teammate's request."))
 	r.turn("", 40, 1, c, nil, "end_turn")
 	c = c.with(assistant("ok"), user("[Cross-session idle notice] other-session is idle now"))
 	r.turn("", 50, 1, c, nil, "end_turn")

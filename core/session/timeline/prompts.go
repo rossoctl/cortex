@@ -122,8 +122,13 @@ var injectedTags = []string{"system-reminder", "command-name", "command-message"
 // the notices about other sessions, and the note after a message typed while tools ran. Checked
 // on a real recording: a subagent's hand-back is a user message of these and tags only.
 var injectedLines = []string{"[Request interrupted by user", "[Image: original ", "Another Claude session sent a message",
-	`That "other Claude session" is`, "[Cross-session idle notice]", "[Cross-session delivery notice]",
+	`That "other Claude session" is`, crossSessionNote, "[Cross-session idle notice]", "[Cross-session delivery notice]",
 	"This is how Claude Code surfaces messages the user sends mid-turn"}
+
+// crossSessionNote opens the note Claude Code puts after another session's message: "This came
+// from another Claude session", an em-dash, "not typed by your user, but ...". The dash is built
+// from its code point, so this file holds no literal one.
+var crossSessionNote = "This came from another Claude session " + string(rune(0x2014)) + " not typed by your user"
 
 // humanText returns what is left of a user message's text once the injected blocks and lines
 // are taken out, trimmed: "" when the person typed none of it. Each tag is one pass that copies
