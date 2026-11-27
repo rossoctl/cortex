@@ -97,6 +97,30 @@ func TestSanitizeTitle_ReviewProbes(t *testing.T) {
 	}
 }
 
+// From the last review of the titles: every whitespace the fold collapses is squeezed, the
+// squeeze reads a bounded part of the candidate, a value assigned to a secret's name is replaced
+// when the clip cut it, and a word replaced at the cut stays in sight as a marker.
+func TestSanitizeTitle_LastReviewProbes(t *testing.T) {
+	key := fakeGitHubKey()
+	for name, sp := range map[string]string{"nbsp": " ", "form feed": "\f", "nul": "\x00", "ideographic": "　"} {
+		if got := sanitizeTitle("fix" + strings.Repeat(sp, 1270) + key); strings.Contains(got, "gh"+"p") {
+			t.Errorf("%s run: %q holds the key", name, got)
+		}
+	}
+	// A huge run of spaces is not read to its end: the squeeze stops at titleScanBytes.
+	if got := sanitizeTitle("a" + strings.Repeat(" ", 2<<20) + "b"); got != "a" {
+		t.Errorf("a long run: %q, want the squeeze to stop before b", got)
+	}
+	stored := cutRunes(strings.Repeat("word ", 12)+"DB_PASSWORD=Sunflower", maxTitleLen)
+	if got := redactStoredTitle(stored); strings.Contains(got, "Sun") {
+		t.Errorf("a cut assignment: %q -> %q", stored, got)
+	}
+	stored = cutRunes(strings.Repeat("word ", 15)+"sk-"+"learning", maxTitleLen)
+	if got := redactStoredTitle(stored); !strings.HasSuffix(got, "[REDACTED:api_key]") || utf8.RuneCountInString(got) > maxTitleLen {
+		t.Errorf("a word replaced at the cut: %q -> %q, want the marker in sight", stored, got)
+	}
+}
+
 // A title stored before the rules applied is redacted when an archived summary is read back.
 func TestRedactStoredTitle(t *testing.T) {
 	if got := redactStoredTitle("push with " + fakeGitHubKey()); got != "push with [REDACTED:api_key]" {

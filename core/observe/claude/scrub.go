@@ -246,58 +246,103 @@ func scrubRunes(s string) string {
 // reasons core/session's sanitizeTitle gives: a key starting inside the title but running past the
 // cut is seen whole, and the rules read a line break as the end of a value, which normalizing
 // turns into a space ("PASSWORD=Sunflower\nHOST=db" would read as prose). The window is generous,
-// as the harvest runs off the viewer's path and markup can fill the start of a prompt. Each run
-// of whitespace is squeezed first (to a line break where it held one), so a long run cannot push
-// a key out of the window. A marker the cut would sever is dropped.
+// as the harvest runs off the viewer's path and markup can fill the start of a prompt. The text
+// is first squeezed as normalizeTitle will treat it (squeezeSpace), so a long run of spaces or of
+// runes it drops cannot push a key out of the window; where the squeeze cut, a key cut short at
+// the window's end is replaced (content.RedactCutKey). A marker the cut would sever is dropped.
 //
 // The rules skip what would hide a key from them and that normalizing removes (StringSkipping):
 // an ANSI escape, a zero-width or format character, a combining mark inside it. And they run
 // again on the normalized text, as normalizing can put a key back together other ways too (markup
 // stripped from inside it). A key the cut leaves short is replaced (content.RedactCutKey).
 func clipTitle(s string) string {
-	red, _ := titleRedactor.StringSkipping(squeezeSpace(s, titleRawBytes))
+	sq, spaced, at, cut := squeezeSpace(s, titleRawBytes, titleScanBytes)
+	// The rules first read the spaced copy, where each dropped rune is a space: dropping a form
+	// feed or a NUL glues what is on either side ("fix" and a key), and a key glued to a word has
+	// no boundary before it. What they find there is replaced in the squeezed text.
+	if edits := titleRedactor.Find(spaced, content.Context{}); len(edits) > 0 {
+		for i := range edits {
+			edits[i].Start = at[edits[i].Start]
+			if edits[i].End < len(at) {
+				edits[i].End = at[edits[i].End]
+			} else {
+				edits[i].End = len(sq)
+			}
+		}
+		sq = content.Apply(sq, edits)
+	}
+	red, _ := titleRedactor.StringSkipping(sq)
+	if cut {
+		red, _ = content.RedactCutKey(red)
+	}
 	red, _ = titleRedactor.StringSkipping(normalizeTitle(red))
 	return capTitle(red)
 }
 
-// squeezeSpace is s with each run of whitespace made one character, "\n" where the run held a
-// line break and " " elsewhere, cut to at most n bytes at a rune boundary.
-func squeezeSpace(s string, n int) string {
-	var b strings.Builder
-	inRun, runBreak := false, false
-	flush := func() {
-		if inRun {
-			if runBreak {
-				b.WriteByte('\n')
-			} else {
-				b.WriteByte(' ')
-			}
-			inRun, runBreak = false, false
-		}
+// squeezeSpace is s as scrubRunes will treat it, as far as the window goes: each run of separator
+// spaces (isSeparatorSpace, which scrubRunes folds) made one character, "\n" where the run held a
+// line break and " " elsewhere; every other non-printing rune (which scrubRunes drops: U+000B,
+// U+000C, U+0085, NUL, format characters) left out, but ESC, which starts an ANSI sequence the
+// later passes read whole. It writes at most n bytes, at a rune boundary, and reads at most scan
+// bytes of s; cut reports that it stopped before s's end.
+//
+// spaced is the same text with a space where each run of dropped runes was, for the rules only,
+// and at maps each of its bytes to the offset in out it stands at.
+func squeezeSpace(s string, n, scan int) (out, spaced string, at []int, cut bool) {
+	var b, sp strings.Builder
+	inRun, runBreak, dropped := false, false, false
+	put := func(c byte) { // a byte of both
+		at = append(at, b.Len())
+		b.WriteByte(c)
+		sp.WriteByte(c)
 	}
-	for _, r := range s {
-		if b.Len() >= n {
-			break
+	flush := func() {
+		switch {
+		case inRun && runBreak:
+			put('\n')
+		case inRun:
+			put(' ')
+		case dropped:
+			at = append(at, b.Len())
+			sp.WriteByte(' ')
 		}
-		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+		inRun, runBreak, dropped = false, false, false
+	}
+	done := func(cut bool) (string, string, []int, bool) { return b.String(), sp.String(), at, cut }
+	for i, r := range s {
+		if b.Len() >= n || i >= scan {
+			return done(true)
+		}
+		if isSeparatorSpace(r) {
 			inRun = true
-			runBreak = runBreak || r == '\n' || r == '\r'
+			runBreak = runBreak || r == '\n' || r == '\r' || r == 0x2028 || r == 0x2029
+			continue
+		}
+		if !unicode.IsGraphic(r) && r != 0x1b {
+			dropped = true // dropped by scrubRunes: it neither shows nor separates
 			continue
 		}
 		flush()
 		if b.Len()+utf8.RuneLen(r) > n {
-			break
+			return done(true)
 		}
-		b.WriteRune(r)
+		var buf [utf8.UTFMax]byte
+		for _, c := range buf[:utf8.EncodeRune(buf[:], r)] {
+			put(c)
+		}
 	}
 	if b.Len() < n {
 		flush()
 	}
-	return b.String()
+	return done(false)
 }
 
-// titleRawBytes is how much of a title's raw text the secret rules see.
-const titleRawBytes = 64 << 10
+// titleRawBytes is how much of a title's raw text the secret rules see, and titleScanBytes how
+// much of it the squeeze reads to fill that.
+const (
+	titleRawBytes  = 64 << 10
+	titleScanBytes = 4 * titleRawBytes
+)
 
 // titleRedactor holds no state; one is shared by every title.
 var titleRedactor = content.New()
@@ -309,12 +354,9 @@ func capTitle(s string) string {
 		return strings.TrimSpace(s)
 	}
 	t := string(r[:MaxTitleLen])
-	// A key the cut leaves short is a key: replaced, and the marker cut in turn if it must be.
+	// A key the cut leaves short is a key: replaced, the marker kept whole and in sight.
 	if red, ok := content.RedactCutKey(t); ok {
-		if rr := []rune(red); len(rr) > MaxTitleLen {
-			red = string(rr[:MaxTitleLen])
-		}
-		t = red
+		return fitEndMarker(red)
 	}
 	// A marker cut short at the end: "…[REDACTED:api_k", or any piece of "[REDACTED:" down to
 	// its "[".
@@ -324,6 +366,30 @@ func capTitle(s string) string {
 		}
 	}
 	return strings.TrimSpace(t)
+}
+
+// fitEndMarker is t, which ends in a redaction marker, cut to MaxTitleLen runes by shortening
+// what comes before the marker, so the marker stays whole and in sight: a word replaced is shown
+// as replaced.
+func fitEndMarker(t string) string {
+	r := []rune(t)
+	if len(r) <= MaxTitleLen {
+		return strings.TrimSpace(t)
+	}
+	j := strings.LastIndex(t, "[REDACTED:")
+	if j < 0 {
+		return strings.TrimSpace(string(r[:MaxTitleLen]))
+	}
+	mark := t[j:]
+	room := MaxTitleLen - utf8.RuneCountInString(mark)
+	pre := []rune(t[:j])
+	if room <= 0 {
+		return strings.TrimSpace(string(r[:MaxTitleLen]))
+	}
+	if len(pre) > room {
+		pre = pre[:room]
+	}
+	return strings.TrimSpace(string(pre)) + mark
 }
 
 // RedactStoredTitles runs the secret rules over the titles in m, which may have been harvested
@@ -338,7 +404,11 @@ func RedactStoredTitles(m map[string]SessionMetadata) {
 		}
 		red, _ := titleRedactor.StringSkipping(e.Title)
 		if utf8.RuneCountInString(e.Title) == MaxTitleLen {
-			red, _ = content.RedactCutKey(red)
+			if c, ok := content.RedactCutKey(red); ok {
+				e.Title = fitEndMarker(c)
+				m[id] = e
+				continue
+			}
 		}
 		if red != e.Title {
 			e.Title = capTitle(red)

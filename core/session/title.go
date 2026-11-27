@@ -876,35 +876,45 @@ func between(s, open, closing string) string {
 //     of a value: "DB_PASSWORD=Sunflower\nDB_HOST=db" is a password, but folded to
 //     "DB_PASSWORD=Sunflower DB_HOST=db" a word of letters followed by more words reads as prose.
 //
-// Still bounded, so still safe under the lock: the window, not the candidate, is what the rules
-// scan. Before the window is taken, each run of whitespace is squeezed to one character (a line
-// break where the run held one, so the rules still see it), so the window counts what the fold
-// will show: "fix" + 1274 spaces + a key is not cut to "fix ghp".
+// BOUNDED, so still safe under the lock: the rules see at most titleRawBytes, and the squeeze
+// before them reads at most titleScanBytes of the candidate, however much whitespace it holds.
+// The squeeze makes each run of whitespace one character (a line break where the run held one,
+// so the rules still see it), so the window counts what the fold will show: "fix" + 1274 spaces
+// (or no-break spaces, or U+3000) + a key is not cut to "fix ghp". Where the squeeze cut, a key
+// cut short at the window's end is replaced (content.RedactCutKey).
 //
 // The rules skip what would hide a key from them and not from a reader (StringSkipping): an ANSI
 // escape, a zero-width or format character, or a combining mark inside it. They run again after
-// the fold, and a key the final clip cuts short is replaced too (content.RedactCutKey).
+// the fold, and a key the final clip cuts short is replaced too.
 func sanitizeTitle(s string) string {
 	s = strings.TrimLeftFunc(s, func(r rune) bool { return unicode.IsSpace(r) || model.IsControlRune(r) })
 	if s == "" {
 		return ""
 	}
-	raw, _ := titleRedactor.StringSkipping(squeezeSpace(s, titleRawBytes))
+	sq, cut := squeezeSpace(s, titleRawBytes, titleScanBytes)
+	raw, _ := titleRedactor.StringSkipping(sq)
+	if cut {
+		raw, _ = content.RedactCutKey(raw)
+	}
 	t := foldTitleTo(raw, titleWindow)
 	t, _ = titleRedactor.StringSkipping(t)
 	return clipTitleRunes(t)
 }
 
 // titleWindow is how many runes sanitizeTitle folds: room for a key that starts near the end of
-// the title. titleRawBytes is the raw text the rules see, at most 4 bytes for each of those runes.
+// the title. titleRawBytes is the raw text the rules see, at most 4 bytes for each of those runes;
+// titleScanBytes how much of the candidate the squeeze reads to fill it.
 const (
-	titleWindow   = 4 * maxTitleLen
-	titleRawBytes = 4 * titleWindow
+	titleWindow    = 4 * maxTitleLen
+	titleRawBytes  = 4 * titleWindow
+	titleScanBytes = 16 * titleRawBytes
 )
 
-// squeezeSpace is s with each run of whitespace made one character, "\n" where the run held a
-// line break and " " elsewhere, cut to at most n bytes at a rune boundary.
-func squeezeSpace(s string, n int) string {
+// squeezeSpace is s with each run of whitespace (the fold's: unicode.IsSpace, and NUL) made one
+// character, "\n" where the run held a line break and " " elsewhere. It writes at most n bytes,
+// at a rune boundary, and reads at most scan bytes of s; cut reports that it stopped before s's
+// end.
+func squeezeSpace(s string, n, scan int) (out string, cut bool) {
 	var b strings.Builder
 	b.Grow(min(len(s), n))
 	inRun, runBreak := false, false
@@ -918,25 +928,25 @@ func squeezeSpace(s string, n int) string {
 			inRun, runBreak = false, false
 		}
 	}
-	for _, r := range s {
-		if b.Len() >= n {
-			break
+	for i, r := range s {
+		if b.Len() >= n || i >= scan {
+			return b.String(), true
 		}
-		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+		if unicode.IsSpace(r) || r == 0 {
 			inRun = true
-			runBreak = runBreak || r == '\n' || r == '\r'
+			runBreak = runBreak || r == '\n' || r == '\r' || r == 0x85 || r == 0x2028 || r == 0x2029
 			continue
 		}
 		flush()
 		if b.Len()+utf8.RuneLen(r) > n {
-			break
+			return b.String(), true
 		}
 		b.WriteRune(r)
 	}
 	if b.Len() < n {
 		flush()
 	}
-	return b.String()
+	return b.String(), false
 }
 
 // dropSeveredMarker removes a redaction marker a clip cut short at t's end: "…[REDACTED:api_k",
@@ -965,7 +975,9 @@ func redactStoredTitle(t string) string {
 	}
 	r, _ := titleRedactor.StringSkipping(t)
 	if utf8.RuneCountInString(t) == maxTitleLen {
-		r, _ = content.RedactCutKey(r)
+		if c, ok := content.RedactCutKey(r); ok {
+			return fitEndMarker(c, maxTitleLen)
+		}
 	}
 	if r == t {
 		return t
@@ -982,9 +994,27 @@ func clipTitleRunes(t string) string {
 		return strings.TrimRight(t, " ")
 	}
 	if r, ok := content.RedactCutKey(cut); ok {
-		cut = cutRunes(r, maxTitleLen) // the marker may itself be cut, and then is dropped below
+		return fitEndMarker(r, maxTitleLen)
 	}
 	return strings.TrimRight(dropSeveredMarker(cut), " ")
+}
+
+// fitEndMarker is t, which ends in a redaction marker, cut to n runes by shortening what comes
+// before the marker, so the marker stays whole and in sight: a word replaced is shown as replaced.
+func fitEndMarker(t string, n int) string {
+	if utf8.RuneCountInString(t) <= n {
+		return t
+	}
+	j := strings.LastIndex(t, "[REDACTED:")
+	if j < 0 {
+		return strings.TrimRight(dropSeveredMarker(cutRunes(t, n)), " ")
+	}
+	mark := t[j:]
+	room := n - utf8.RuneCountInString(mark)
+	if room <= 0 {
+		return strings.TrimRight(dropSeveredMarker(cutRunes(t, n)), " ")
+	}
+	return strings.TrimRight(cutRunes(t[:j], room), " ") + mark
 }
 
 // cutRunes is t cut to at most n runes.

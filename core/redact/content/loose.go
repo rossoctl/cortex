@@ -94,13 +94,22 @@ func ansiLen(s string) int {
 // key a clip cut short, too short for its rule to find.
 var keyFragmentAtEnd = regexp.MustCompile(`(?:^|[^A-Za-z0-9_-])((?:gh[pousr]_|github_pat_|sk-|AKIA|ASIA|AIza|xox[abeprs][.-]|xapp-|glpat-|gldt-|hf_|npm_|pypi-|eyJ)[A-Za-z0-9_.-]*)$`)
 
-// RedactCutKey replaces a key fragment at the end of s, which a clip cut short, with the api_key
-// marker. Only for text known to be cut there: in whole text, "sk-" and "eyJ" at the end are not
-// a key.
+// assignmentAtEnd is a name, an assignment and the start of a value, at the end of a text:
+// "DB_PASSWORD=Sun" a clip cut short.
+var assignmentAtEnd = regexp.MustCompile(`(?:^|[^A-Za-z0-9_.-])([A-Za-z_][A-Za-z0-9_.-]*)["']?[ \t]*(?::=|[:=])[ \t]*["']?([^\s"']+)$`)
+
+// RedactCutKey replaces what a clip cut short at the end of s and is too short for its rule: a
+// key's known prefix and what follows it, with the api_key marker, or the start of a value
+// assigned to a secret's name ("DB_PASSWORD=Sun"), with its tier's marker. Only for text known to
+// be cut there: in whole text, "sk-" and "eyJ" at the end are not a key.
 func RedactCutKey(s string) (string, bool) {
-	m := keyFragmentAtEnd.FindStringSubmatchIndex(s)
-	if m == nil {
-		return s, false
+	if m := keyFragmentAtEnd.FindStringSubmatchIndex(s); m != nil {
+		return s[:m[2]] + marker(catAPIKey), true
 	}
-	return s[:m[2]] + marker(catAPIKey), true
+	if m := assignmentAtEnd.FindStringSubmatchIndex(s); m != nil {
+		if t := nameTier(s[m[2]:m[3]]); t != tierNone {
+			return s[:m[4]] + marker(t.cat()), true
+		}
+	}
+	return s, false
 }

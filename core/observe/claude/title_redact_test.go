@@ -73,6 +73,36 @@ func TestClipTitle_ReviewProbes(t *testing.T) {
 	}
 }
 
+// From the last review of the titles, on the harvest's side: the squeeze treats every rune as
+// normalizing will, a key cut at the window's edge is replaced, a cut assignment's value is
+// replaced, and a replaced word stays in sight as a marker.
+func TestClipTitle_LastReviewProbes(t *testing.T) {
+	key := fakeKey()
+	for name, sp := range map[string]string{"nbsp": " ", "form feed": "\f", "nul": "\x00", "ideographic": "　"} {
+		if got := clipTitle("fix" + strings.Repeat(sp, 70000) + key); strings.Contains(got, "gh"+"p") {
+			t.Errorf("%s run: %q holds the key", name, got)
+		}
+	}
+	// Markup that normalizing strips fills the window; the key after it is cut at the edge.
+	block := "<system-reminder>reminder text</system-reminder>"
+	pad := strings.Repeat(block, (64<<10-12)/len(block))
+	if got := clipTitle(pad + "fix " + key); strings.Contains(got, "gh"+"p") || strings.Contains(got, "GGGG") {
+		t.Errorf("a key at the window's edge: %q", got)
+	}
+	r := []rune(strings.Repeat("word ", 12) + "DB_PASSWORD=Sunflower")
+	m := map[string]SessionMetadata{
+		"a": {Title: string(r[:MaxTitleLen])},
+		"b": {Title: string([]rune(strings.Repeat("word ", 15) + "sk-" + "learning")[:MaxTitleLen])},
+	}
+	RedactStoredTitles(m)
+	if strings.Contains(m["a"].Title, "Sun") {
+		t.Errorf("a cut assignment: %q", m["a"].Title)
+	}
+	if got := m["b"].Title; !strings.HasSuffix(got, "[REDACTED:api_key]") || utf8.RuneCountInString(got) > MaxTitleLen {
+		t.Errorf("a word replaced at the cut: %q, want the marker in sight", got)
+	}
+}
+
 // Titles harvested before the rules applied are redacted as the file is read; the rest of an
 // entry, and a clean title, are left as they were.
 func TestRedactStoredTitles(t *testing.T) {

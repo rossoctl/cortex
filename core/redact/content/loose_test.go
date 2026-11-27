@@ -41,6 +41,9 @@ func TestRedactCutKey(t *testing.T) {
 		"push the branch":             "push the branch",
 		"see gh" + "p_GxGx7 and more": "see gh" + "p_GxGx7 and more",
 		"install mask-" + "rcnn":      "install mask-" + "rcnn",
+		"set DB_PASSWORD=Sun":         "set DB_PASSWORD=[REDACTED:password]",
+		"api_key: \"ab":               "api_key: \"[REDACTED:secret_value]",
+		"set retries=12":              "set retries=12",
 	} {
 		if got, _ := RedactCutKey(in); got != want {
 			t.Errorf("RedactCutKey(%q) = %q, want %q", in, got, want)
