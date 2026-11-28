@@ -61,10 +61,24 @@ func TestWaitBootedOut_RealLaunchd(t *testing.T) {
 	requireRealLaunchd(t)
 	skip := launchdSkip(t)
 	uid := strconv.Itoa(os.Getuid())
-	// One label per test process: test runs at the same time on one machine share
-	// the gui domain, and one label made them boot out and bootstrap each other's job.
-	label := "io.rossoctl.cortex.test.bootout." + strconv.Itoa(os.Getpid())
+	label := "io.rossoctl.cortex.test.bootout"
 	target := "gui/" + uid + "/" + label
+	// Test runs at the same time on one machine share the gui domain, and on one label
+	// they boot out and bootstrap each other's job. A label per process does not fix
+	// that: a run killed at its timeout skips t.Cleanup, and no later run removes its
+	// KeepAlive job. So one run at a time holds the fixed label, and the bootout below
+	// removes what a killed run left. The kernel drops the lock when a process exits.
+	lock, err := os.OpenFile(filepath.Join("/tmp", label+".lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lock.Close() })
+	if held, err := lockFile(lock); err != nil {
+		t.Fatal(err)
+	} else if held {
+		skip("another test run holds %s", label)
+		return
+	}
 	dir := t.TempDir()
 
 	// A job that is deliberately slow to die, like the supervisor.
