@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 )
 
@@ -11,6 +12,10 @@ type PluginName string
 
 // ProfileName names one shipped artifact's plugin set.
 type ProfileName string
+
+// DriverName is a host integration's build-tag suffix: `include_driver_<name>`
+// links the code that speaks that host's protocol into cmd/cortex.
+type DriverName string
 
 // The profiles that exist. Kept as an explicit list rather than derived from
 // membership below, so a typo in a membership entry is a missing profile the
@@ -24,10 +29,14 @@ const (
 	// ProfileFullCpex is full plus the cpex plugin. CI's go-ci-cpex job builds
 	// it. Build with the `cpex` tag alongside these.
 	ProfileFullCpex ProfileName = "fullcpex"
+	// ProfileHostegress is the shared egress proxy on a MOCA host. It is the one
+	// profile that carries the moca driver.
+	ProfileHostegress ProfileName = "hostegress"
 )
 
 var allProfiles = []ProfileName{
 	ProfileLocal, ProfileFull, ProfileLite, ProfileEnvoy, ProfileCpex, ProfileFullCpex,
+	ProfileHostegress,
 }
 
 // membership is the single source of truth for plugin packaging: every plugin has
@@ -39,13 +48,15 @@ var allProfiles = []ProfileName{
 //
 // Artifact contents:
 //
-//	local     desktop cortex — the three parsers, tool-prune, context-guru and script
-//	full      authbridge image, Kubernetes proxy-sidecar, release tarballs,
-//	          make dev-install — all seventeen
-//	lite      authbridge-lite image — sidecar minimum
-//	envoy     authbridge-envoy image
-//	cpex      authbridge-cpex image
-//	fullcpex  full plus cpex — the go-ci-cpex CI job, a cgo build
+//	local       desktop cortex — the three parsers, tool-prune, context-guru and script
+//	full        authbridge image, Kubernetes proxy-sidecar, release tarballs,
+//	            make dev-install — all seventeen
+//	lite        authbridge-lite image — sidecar minimum
+//	envoy       authbridge-envoy image
+//	cpex        authbridge-cpex image
+//	fullcpex    full plus cpex — the go-ci-cpex CI job, a cgo build
+//	hostegress  the MOCA host's egress proxy, built by CI only — static-inject and
+//	            the moca driver
 var membership = map[PluginName][]ProfileName{
 	"a2aparser":       {ProfileLocal, ProfileFull, ProfileFullCpex, ProfileEnvoy, ProfileCpex},
 	"inferenceparser": {ProfileLocal, ProfileFull, ProfileFullCpex, ProfileEnvoy, ProfileCpex},
@@ -82,7 +93,7 @@ var membership = map[PluginName][]ProfileName{
 	// Linked is not active: it changes no traffic until a pipeline names it.
 	"tokenexchangeaiac":   {ProfileFull, ProfileFullCpex, ProfileLite, ProfileEnvoy, ProfileCpex},
 	"litellm_budgettrack": {ProfileFull, ProfileFullCpex, ProfileLite, ProfileEnvoy},
-	"staticinject":        {ProfileFull, ProfileFullCpex, ProfileLite, ProfileEnvoy},
+	"staticinject":        {ProfileFull, ProfileFullCpex, ProfileLite, ProfileEnvoy, ProfileHostegress},
 
 	// Needs cgo and the `cpex` build tag, so only the cpex builds carry it.
 	"cpex": {ProfileCpex, ProfileFullCpex},
@@ -98,8 +109,16 @@ var membership = map[PluginName][]ProfileName{
 	"sessionbudget": {},
 }
 
-// Tags returns the include_plugin_* build tags for a named profile, sorted so the
-// output is stable across runs and diffable in CI logs.
+// drivers lists the profiles that carry each driver, as membership does for
+// plugins. A driver serves one host's control protocol, so it belongs only in
+// the profile built for that host.
+var drivers = map[DriverName][]ProfileName{
+	// core/listener/vmcontrol and the MOCA_* settings in cmd/cortex.
+	"moca": {ProfileHostegress},
+}
+
+// Tags returns the include_plugin_* and include_driver_* build tags for a named
+// profile, sorted so the output is stable across runs and diffable in CI logs.
 func Tags(profile ProfileName) ([]string, error) {
 	if !isKnownProfile(profile) {
 		return nil, fmt.Errorf("unknown profile %q (known: %v)", profile, known())
@@ -113,11 +132,16 @@ func Tags(profile ProfileName) ([]string, error) {
 			}
 		}
 	}
+	for driver, carriedBy := range drivers {
+		if slices.Contains(carriedBy, profile) {
+			tags = append(tags, "include_driver_"+string(driver))
+		}
+	}
 	// Fail closed on an empty profile: an empty CSV becomes `go build -tags ""`,
 	// which under an all-opt-in convention links no plugins at all and would ship
 	// a proxy that refuses every config it is handed.
 	if len(tags) == 0 {
-		return nil, fmt.Errorf("profile %q carries no plugins", profile)
+		return nil, fmt.Errorf("profile %q carries no plugins or drivers", profile)
 	}
 	sort.Strings(tags)
 	return tags, nil

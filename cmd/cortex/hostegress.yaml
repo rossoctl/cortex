@@ -1,0 +1,13 @@
+# The hostegress build's config when it starts with no --config, as moca starts its
+# egress proxy: from the environment alone. Every listener is on loopback.
+mode: proxy-sidecar
+listener:
+  roles: [forward]
+  forward_proxy_addr: 127.0.0.1:0
+  transparent_proxy_addr: 127.0.0.1:0
+  session_api_addr: 127.0.0.1:0
+  health_addr: 127.0.0.1:0
+  egress_guard: {enabled: true}
+stats: {address: 127.0.0.1:0}
+session: {enabled: false}
+pipeline: {outbound: {plugins: []}}

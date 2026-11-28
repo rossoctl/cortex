@@ -12,6 +12,18 @@ identity**: which listener accepted a connection says which VM is calling, and
 VMs come and go every few seconds, so listeners appear and disappear without a
 restart.
 
+**Only the `hostegress` build links it.** `cmd/cortex`'s driver files carry
+`include_driver_moca`, which only the `hostegress` profile emits. Every other
+build, laptop and sidecar alike, compiles `cmd/cortex/vmcontrol_off.go` instead
+and ignores the variables below. To run `cmd/cortex`'s driver tests:
+`go test -tags "$(go -C ../../scripts/profile-tags run . hostegress)" ./...`
+from `cmd/cortex`. With `MOCA_EGRESS_CONTROL_SOCK` and `MOCA_EGRESS_ALLOW`
+set, that build needs no `--config`: it starts from
+`cmd/cortex/hostegress.yaml` (see
+[`cmd/README.md`](../../../cmd/README.md#configuration)). It reads none of
+the moca conformance harness's other variables (`MOCA_EGRESS_RESOLVER`,
+`MOCA_EGRESS_PERMIT_CIDRS`, the timeouts).
+
 **Environment (env-only for now — the conformance harness's channel; operator
 YAML follows when there is an operator to configure it):**
 

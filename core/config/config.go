@@ -1323,6 +1323,12 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading config: %w", err)
 	}
+	return Parse(data)
+}
+
+// Parse is Load for a config already in memory: the same expansion, defaults and
+// validation.
+func Parse(data []byte) (*Config, error) {
 	expanded := os.Expand(string(data), func(key string) string {
 		if val, ok := os.LookupEnv(key); ok {
 			return val

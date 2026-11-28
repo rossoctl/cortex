@@ -43,6 +43,23 @@ The session-events API at `:9094` is documented in
 ConfigMap contracts in
 [`cortex-demos/CLAUDE.md`](https://github.com/rossoctl/cortex-demos/blob/main/CLAUDE.md#configmaps-and-secrets-expected-at-runtime).
 
+The [hostegress build](#hostegress-build) also starts with no `--config` when
+`MOCA_EGRESS_CONTROL_SOCK` is set, and needs no `PATH` or `HOME`. It then
+requires `MOCA_EGRESS_CONTROL_UIDS` and, as moca's own egress proxy does,
+`MOCA_EGRESS_ALLOW`, whose entries here are `host:port`. It runs a built-in
+config ([`cortex/hostegress.yaml`](cortex/hostegress.yaml)): the forward proxy
+with the egress guard on, no session store, no hot-reload, and every listener
+on a loopback port the kernel picks. Any local process can reach that forward
+proxy, beside the VM listeners. On `SIGTERM` it stops at once, as moca's
+egress proxy does: it closes every listener and open connection, then exits 0.
+The socket, the uids and the allow list have no defaults here, so whatever
+starts it sets each one explicitly.
+
+Every `cortex` build sends systemd `READY=1` once it serves, when
+`NOTIFY_SOCKET` is set, so it can run as a `Type=notify` unit. Under
+`--supervise` the proxy child sends it, so such a unit needs
+`NotifyAccess=all`.
+
 ## Ports
 
 **Proxy-sidecar (`cortex`, and its `authbridge-lite` and `authbridge-cpex` image variants):**
@@ -122,6 +139,19 @@ local single-host setups typically pin them all to `127.0.0.1`. `cortex
   minimum). Same listener layout, but without parsers/OPA — agentop
   will only see denial events and basic auth-level invocations, not
   full A2A/MCP/Inference protocol context.
+
+## hostegress build
+
+`hostegress` is `cortex` built with the `hostegress` profile: the shared egress
+proxy on a MOCA host. It is the one build that links the moca driver
+(`include_driver_moca`), the VM control channel that
+[`core/listener/vmcontrol`](../core/listener/vmcontrol/CLAUDE.md) describes, and
+it carries `static-inject`. CI builds and tests it; nothing publishes it yet.
+The channel runs on Unix only: a non-Unix `hostegress` build exits at startup
+when `MOCA_EGRESS_CONTROL_SOCK` is set. Every other `cortex` build ignores
+the VM control channel's variables (`MOCA_EGRESS_CONTROL_*`, `MOCA_TENANCY`,
+`MOCA_EGRESS_MAX_*`), and warns at startup when `MOCA_EGRESS_CONTROL_SOCK` is
+set.
 
 ## cpex builds
 

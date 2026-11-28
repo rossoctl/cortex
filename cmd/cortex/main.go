@@ -463,8 +463,26 @@ func main() {
 		log.Fatal("--write-config only applies with --local")
 	}
 
+	// builtin is the config of a start from the environment alone (builtinConfig), with no
+	// file to load, watch or reload.
+	var builtin []byte
+	configName := *configPath
 	if *configPath == "" {
-		log.Fatal("--config is required (or use --local for a built-in local config)")
+		b, ok, err := builtinConfig(os.Getenv, net.InterfaceAddrs)
+		if !ok {
+			log.Fatal("--config is required (or use --local for a built-in local config)")
+		}
+		if err != nil {
+			log.Fatal(err)
+		}
+		builtin, configName = b, "built-in host-egress"
+		slog.Info("no --config: using the built-in host-egress config")
+	}
+	loadConfig := func() (*config.Config, error) {
+		if builtin != nil {
+			return config.Parse(builtin)
+		}
+		return config.Load(*configPath)
 	}
 	localInstall = startedFromLocalInstall(*configPath)
 
@@ -484,11 +502,11 @@ func main() {
 	// hot-reload). The Provider is captured by buildPipelines via closure
 	// so reload-time pipeline rebuilds inject the same Provider into
 	// freshly constructed plugin instances.
-	bootCfg, err := config.Load(*configPath)
+	bootCfg, err := loadConfig()
 	if err != nil {
-		log.Fatalf("failed to load config %q: %v", *configPath, err)
+		log.Fatalf("failed to load config %q: %v", configName, err)
 	}
-	slog.Debug("config loaded", "configPath", *configPath)
+	slog.Debug("config loaded", "configPath", configName)
 
 	// Build the SPIFFE Provider only when something actually consumes it —
 	// top-level mTLS (X509Source for the listeners) or a plugin whose identity
@@ -559,7 +577,7 @@ func main() {
 	// on every no-push path, same as stopMetricsPush being a no-op on those paths.
 	var pushMP metric.MeterProvider
 	buildPipelines := func() (*pipeline.Pipeline, *pipeline.Pipeline, *config.Config, error) {
-		c, err := config.Load(*configPath)
+		c, err := loadConfig()
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -707,8 +725,11 @@ func main() {
 	rld := reloader.New(*configPath, inboundH, outboundH, buildPipelines, cfg,
 		reloader.WithOnCommit(applyPricing),
 		reloader.WithExtraWatch(scriptFolders, scriptFingerprint))
-	if err := rld.Start(ctx); err != nil {
-		log.Fatalf("reloader: %v", err)
+	// A built-in config has no file to watch.
+	if builtin == nil {
+		if err := rld.Start(ctx); err != nil {
+			log.Fatalf("reloader: %v", err)
+		}
 	}
 	// After the first config is applied, so the list is combined with it from the start.
 	if localInstall && cfg.Pricing.BundledEnabled() {
@@ -1123,8 +1144,9 @@ func main() {
 	// The transparent (enforce-redirect) listener rides with the forward proxy;
 	// declared here so shutdown can close it whether or not the forward role ran.
 	var transparentLn *net.TCPListener
-	// The MOCA SBX VM control channel (env-only, #1477): nil unless
-	// MOCA_EGRESS_CONTROL_SOCK is set. Like transparentLn, closed on shutdown.
+	// The MOCA SBX VM control channel (env-only, #1477): nil unless this is the
+	// hostegress build and MOCA_EGRESS_CONTROL_SOCK is set. Like transparentLn,
+	// closed on shutdown.
 	var vmCtrl vmControlServer
 	ctrlCfg, ctrlErr := resolveControlConfig(os.Getenv)
 	if ctrlErr != nil {
@@ -1290,9 +1312,7 @@ func main() {
 			transparentLn = startTransparentProxy(fpSrv, listeners.takeTCP("transparent-proxy"))
 		}
 	}
-	if ctrlCfg.Socket != "" && vmCtrl == nil {
-		fatalf("vm control: %s is set but the forward proxy role is not enabled", envControlSock)
-	}
+	checkVMControlStarted(ctrlCfg, vmCtrl)
 
 	_ = mtlsMetrics // TODO Phase 2: surface metrics through /stats
 
@@ -1361,6 +1381,11 @@ func main() {
 	if err := listeners.claimed(); err != nil {
 		fatalf("%v", err)
 	}
+	// Every server serves and the VM control socket is bound: a systemd Type=notify unit,
+	// and whatever is ordered After= it, starts now.
+	if err := bootstrap.NotifyReady(); err != nil {
+		slog.Warn("could not tell systemd the proxy is ready", "error", err)
+	}
 
 	sig := <-sigCh
 	stopping := time.Now()
@@ -1370,8 +1395,9 @@ func main() {
 	// open request — and one stream that never ends held it to the 15s deadline, past
 	// launchd's 5s exit timeout, which orphaned this process on its ports. It never covered
 	// the traffic that matters either: a bridged HTTPS tunnel is hijacked, and Shutdown does
-	// not track hijacked connections, so only plain-HTTP requests were ever waited for.
-	drain := !localInstall
+	// not track hijacked connections, so only plain-HTTP requests were ever waited for. A
+	// start from the built-in config stops at once too, as moca's own egress proxy does.
+	drain := !localInstall && builtin == nil
 	slog.Info("shutting down", "signal", sig, "drain", drain)
 
 	// Without a drain only the plugins' Stop is left to bound, and the whole stop has to fit
