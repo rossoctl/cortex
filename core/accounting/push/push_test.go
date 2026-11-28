@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -571,5 +572,37 @@ func TestStart_RefusesCredentialsInTheURL(t *testing.T) {
 		if strings.Contains(out, secret) {
 			t.Errorf("the error or the log quotes %q:\n%s", secret, out)
 		}
+	}
+}
+
+// fakeExporter returns the next error from errs on each Export.
+type fakeExporter struct {
+	sdkmetric.Exporter
+	errs []error
+}
+
+func (f *fakeExporter) Export(context.Context, *metricdata.ResourceMetrics) error {
+	err := f.errs[0]
+	f.errs = f.errs[1:]
+	return err
+}
+
+// The first accepted export logs one INFO line, and so does the first one after a failure. An
+// accepted export that follows an accepted one logs nothing.
+func TestExporter_LogsTheFirstAcceptedPushAndRecovery(t *testing.T) {
+	logs := captureLogs(t)
+	down := errors.New("collector down")
+	e := &exporter{Exporter: &fakeExporter{errs: []error{nil, nil, down, down, nil, nil}}, url: "https://c.example/cortex"}
+	want := []int{1, 1, 1, 1, 2, 2} // INFO lines after each export
+	for i, w := range want {
+		if err := e.Export(context.Background(), &metricdata.ResourceMetrics{}); err != nil {
+			t.Fatalf("export %d: %v, want nil", i, err)
+		}
+		if n := logs.count(slog.LevelInfo, "metrics push works"); n != w {
+			t.Fatalf("after export %d: %d INFO lines, want %d:\n%s", i, n, w, logs.all())
+		}
+	}
+	if n := logs.count(slog.LevelWarn, "metrics push failed"); n != 1 {
+		t.Errorf("%d WARN lines, want 1:\n%s", n, logs.all())
 	}
 }

@@ -834,6 +834,15 @@ The next upgrade adds it (see [the upgrade migrations](#the-upgrade-migrations))
    over the file.
 4. Run `agentop service restart`.
 
+**To check that the push works:** look in `~/.cortex/proxy.log`.
+
+- `metrics push works` shows once, on the first push that the collector accepts. It shows
+  again on the first accepted push after a failure.
+- `metrics push failed` shows when a push fails, at most once a minute. Cortex keeps the
+  counters and sends them with the next push.
+
+A push that works after one that worked logs nothing.
+
 The block is not hot-reloaded. If you save a change to it while the proxy runs, the reloader
 refuses the whole save until the restart.
 
