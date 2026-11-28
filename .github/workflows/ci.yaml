@@ -350,7 +350,7 @@ jobs:
       # silently yields nothing would flow into `go build -tags ""`.
       - name: Every profile resolves
         run: |
-          for profile in local full lite envoy cpex fullcpex; do
+          for profile in local full lite envoy cpex fullcpex hostegress; do
             tags=$(go run . "${profile}")
             [ -n "${tags}" ] || { echo "profile ${profile} resolved to no tags"; exit 1; }
             echo "${profile}: ${tags}"
@@ -463,17 +463,31 @@ jobs:
       # what a caller who forgets -tags gets — but the shipped artifacts are the
       # profiles, so build AND test each one here. build.yaml only exercises them
       # on tag/main pushes; this catches a profile-only regression on the PR.
+      # hostegress is built only here, and is the one profile that may link the
+      # moca driver: the driver's cmd/cortex tests run only in this loop, and its
+      # darwin and windows files compile only in its cross-builds.
       - name: Build + test each shipped profile
         if: matrix.binary == 'cortex' || matrix.binary == 'cortex-envoy'
         run: |
           case "${{ matrix.binary }}" in
-            cortex) profiles="local full lite" ;;
+            cortex) profiles="local full lite hostegress" ;;
             cortex-envoy) profiles="envoy" ;;
           esac
           for profile in ${profiles}; do
             echo "::group::profile ${profile}"
             TAGS=$(go -C ../../scripts/profile-tags run . "${profile}")
+            go vet -tags "${TAGS}" ./...
             go build -v -tags "${TAGS}" ./...
+            if [ "${profile}" = hostegress ]; then
+              GOOS=darwin go build -o /dev/null -tags "${TAGS}" .
+              GOOS=windows go build -o /dev/null -tags "${TAGS}" .
+            else
+              # A here-string, not a pipe, so the check holds under pipefail too.
+              deps=$(go list -deps -tags "${TAGS}" .)
+              if grep -q core/listener/vmcontrol <<<"${deps}"; then
+                echo "profile ${profile} links core/listener/vmcontrol"; exit 1
+              fi
+            fi
             go test -race -coverprofile=cover.out -tags "${TAGS}" ./...
             echo "coverage (profile ${profile}): $(go tool cover -func=cover.out | tail -1)"
             echo "::endgroup::"

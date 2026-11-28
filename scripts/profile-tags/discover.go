@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -73,4 +74,61 @@ func extractIncludeSuffix(path string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// skipDir reports directories no guard should descend into. The in-repo worktree
+// directories matter most: worktrees hold other branches, and scanning them would
+// fail this module's tests based on code that is not in this tree.
+func skipDir(path string) bool {
+	name := filepath.Base(path)
+	switch name {
+	case ".git", "vendor", "node_modules", ".worktrees", ".venv":
+		return true
+	}
+	return name == "worktrees" && filepath.Base(filepath.Dir(path)) == ".claude"
+}
+
+// driverTagPattern matches `include_driver_<name>` anywhere in a //go:build
+// directive: driver files combine it with other constraints, such as `unix &&`.
+var driverTagPattern = regexp.MustCompile(`include_driver_(\w+)`)
+
+// discoverDrivers returns every driver name a //go:build directive under dir
+// names, negated or not, so a stub for builds without a driver counts too.
+func discoverDrivers(dir string) ([]DriverName, error) {
+	seen := map[DriverName]bool{}
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if skipDir(path) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if filepath.Ext(path) != ".go" {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.HasPrefix(line, "//go:build") {
+				for _, m := range driverTagPattern.FindAllStringSubmatch(line, -1) {
+					seen[DriverName(m[1])] = true
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walk %s: %w", dir, err)
+	}
+	out := make([]DriverName, 0, len(seen))
+	for n := range seen {
+		out = append(out, n)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out, nil
 }

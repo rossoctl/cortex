@@ -1,3 +1,5 @@
+//go:build include_driver_moca
+
 package main
 
 import (

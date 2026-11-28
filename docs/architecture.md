@@ -413,6 +413,7 @@ declarative profile per shipped artifact and emits its tags:
 | `lite` | `authbridge-lite` image | sidecar minimum: jwt-validation, token-exchange, litellm-budget-track, static-inject |
 | `envoy` | `authbridge-envoy` image | envoy-sidecar set |
 | `cpex` | `authbridge-cpex` image | cpex set |
+| `hostegress` | MOCA host egress proxy, built by CI only | `static-inject`, plus the `moca` driver (`include_driver_moca`) |
 
 `session-budget` belongs to no profile — it is heavy (roughly 6 MiB) and is
 linked only on request. `context-guru` is heavy too (roughly 16 MiB), but

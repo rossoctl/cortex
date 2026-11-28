@@ -123,6 +123,19 @@ local single-host setups typically pin them all to `127.0.0.1`. `cortex
   will only see denial events and basic auth-level invocations, not
   full A2A/MCP/Inference protocol context.
 
+## hostegress build
+
+`hostegress` is `cortex` built with the `hostegress` profile: the shared egress
+proxy on a MOCA host. It is the one build that links the moca driver
+(`include_driver_moca`), the VM control channel that
+[`core/listener/vmcontrol`](../core/listener/vmcontrol/CLAUDE.md) describes, and
+it carries `static-inject`. CI builds and tests it; nothing publishes it yet.
+The channel runs on Unix only: a non-Unix `hostegress` build exits at startup
+when `MOCA_EGRESS_CONTROL_SOCK` is set. Every other `cortex` build ignores
+the VM control channel's variables (`MOCA_EGRESS_CONTROL_*`, `MOCA_TENANCY`,
+`MOCA_EGRESS_MAX_*`), and warns at startup when `MOCA_EGRESS_CONTROL_SOCK` is
+set.
+
 ## cpex builds
 
 The `cpex` plugin links `libcpex_ffi.a` through cgo, so it is only in builds

@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -30,11 +32,11 @@ const legacyTagEscape = "allow-legacy-plugin-tag"
 // core/plugins/injection_coverage_test.go for the pattern.
 var blankPluginImport = regexp.MustCompile(`_\s+"github\.com/rossoctl/cortex/core/plugins/(\w+)"`)
 
-// profileInvocations match the shapes a call site uses to name a profile. All
-// three deliberately require the name to start with a letter, so a shell
+// profileInvocations match the shapes a call site uses to name a profile. Each
+// deliberately requires the name to start with a letter, so a shell
 // indirection (`"${profile}"`, `"$1"`) does not match — those values live in
-// loops this cannot evaluate, and the loop's literal list is caught by the third
-// pattern instead.
+// loops this cannot evaluate, and the loop's literal list is caught by the last
+// two patterns instead.
 var profileInvocations = []*regexp.Regexp{
 	// Direct: go -C .../profile-tags run . full
 	regexp.MustCompile(`profile-tags run \. "?([a-z][a-z0-9_]*)`),
@@ -42,19 +44,13 @@ var profileInvocations = []*regexp.Regexp{
 	regexp.MustCompile(`profile_tags ([a-z][a-z0-9_]*)`),
 	// The loop list in ci.yaml: profiles="local full lite"
 	regexp.MustCompile(`profiles="([a-z0-9_ ]+)"`),
+	// A literal loop: for profile in cpex fullcpex; do
+	regexp.MustCompile(`for profile in ([a-z][a-z0-9_ ]*); do`),
 }
 
-// skipDir reports directories no guard should descend into. The in-repo worktree
-// directories matter most: worktrees hold other branches, and scanning them would
-// fail this module's tests based on code that is not in this tree.
-func skipDir(path string) bool {
-	name := filepath.Base(path)
-	switch name {
-	case ".git", "vendor", "node_modules", ".worktrees", ".venv":
-		return true
-	}
-	return name == "worktrees" && filepath.Base(filepath.Dir(path)) == ".claude"
-}
+// resolvesLoop captures the profile list of ci.yaml's "Every profile resolves"
+// step.
+var resolvesLoop = regexp.MustCompile(`(?s)name: Every profile resolves\n.*?for profile in ([a-z0-9_ ]+); do`)
 
 // buildFile reports whether a file can plausibly carry a build tag or name a
 // profile: the workflow, shell, make and container surfaces that drive builds.
@@ -377,9 +373,9 @@ func TestNoStaleMembershipEntries(t *testing.T) {
 	}
 }
 
-// TestMembershipNamesKnownProfiles catches a typo in a membership entry. Because
-// Tags filters rather than looks up, an unknown profile name there would not
-// error — it would simply carry the plugin nowhere.
+// TestMembershipNamesKnownProfiles catches a typo in a membership or drivers
+// entry. Because Tags filters rather than looks up, an unknown profile name there
+// would not error — it would simply carry the plugin or driver nowhere.
 func TestMembershipNamesKnownProfiles(t *testing.T) {
 	for plugin, carriedBy := range membership {
 		for _, p := range carriedBy {
@@ -387,6 +383,57 @@ func TestMembershipNamesKnownProfiles(t *testing.T) {
 				t.Errorf("plugin %q names profile %q, which is not defined (known: %v)",
 					plugin, p, known())
 			}
+		}
+	}
+	for driver, carriedBy := range drivers {
+		for _, p := range carriedBy {
+			if !isKnownProfile(p) {
+				t.Errorf("driver %q names profile %q, which is not defined (known: %v)",
+					driver, p, known())
+			}
+		}
+	}
+}
+
+// TestDriversMatchTheTree keeps drivers and the build directives under cmd/ in
+// step. A driver tag with no entry links into no artifact, and an entry with no
+// tag yields `-tags include_driver_gone`, which Go accepts silently.
+func TestDriversMatchTheTree(t *testing.T) {
+	found, err := discoverDrivers(cmdDir)
+	if err != nil {
+		t.Fatalf("discoverDrivers: %v", err)
+	}
+	if len(found) == 0 {
+		t.Fatal("no include_driver_* directive under " + cmdDir + " — the convention changed " +
+			"and this guard went blind")
+	}
+	exists := map[DriverName]bool{}
+	for _, n := range found {
+		exists[n] = true
+		if _, ok := drivers[n]; !ok {
+			t.Errorf("driver %q is named in a //go:build directive under %s but has no "+
+				"drivers entry, so no profile links it", n, cmdDir)
+		}
+	}
+	for driver := range drivers {
+		if !exists[driver] {
+			t.Errorf("drivers names %q, which no //go:build directive under %s uses",
+				driver, cmdDir)
+		}
+	}
+}
+
+// TestOnlyHostegressCarriesMoca keeps the moca driver out of every artifact but
+// the one built for a MOCA host: it serves a control socket from the
+// environment, which no laptop, sidecar or cpex build should do.
+func TestOnlyHostegressCarriesMoca(t *testing.T) {
+	for _, p := range allProfiles {
+		tags, err := Tags(p)
+		if err != nil {
+			t.Fatalf("Tags(%s): %v", p, err)
+		}
+		if got := slices.Contains(tags, "include_driver_moca"); got != (p == ProfileHostegress) {
+			t.Errorf("profile %s carries the moca driver: %v, want %v", p, got, p == ProfileHostegress)
 		}
 	}
 }
@@ -448,5 +495,25 @@ func TestCallSitesUseKnownProfiles(t *testing.T) {
 	if checked == 0 {
 		t.Error("no profile-tags call sites found — either the invocation shape changed " +
 			"or CI stopped resolving profiles, and this guard went blind")
+	}
+}
+
+// TestEveryProfileResolvesInCI keeps CI's "Every profile resolves" loop naming
+// every profile. TestCallSitesUseKnownProfiles checks only that the names it
+// lists exist, so a profile left out of the loop is never resolved on a PR.
+func TestEveryProfileResolvesInCI(t *testing.T) {
+	path := filepath.Join(repoRoot, ".github", "workflows", "ci.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	m := resolvesLoop.FindSubmatch(data)
+	if m == nil {
+		t.Fatalf("no \"Every profile resolves\" loop in %s — this guard went blind", path)
+	}
+	got := strings.Fields(string(m[1]))
+	sort.Strings(got)
+	if want := known(); !slices.Equal(got, want) {
+		t.Errorf("%s resolves %v, want every profile %v", path, got, want)
 	}
 }
