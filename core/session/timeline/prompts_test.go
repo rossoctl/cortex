@@ -231,6 +231,41 @@ func TestPromptsInterruptAndRejection(t *testing.T) {
 	}
 }
 
+// From the check of 6eefaa9b: a prompt after an interrupt or with a rejection keeps its think time
+// (only a message typed while tools ran has none); text before the interrupt line, or a
+// compaction request after it, or a reason that is only a reminder, starts no prompt.
+func TestPromptsInterruptThinkTimeAndPhantoms(t *testing.T) {
+	var r rec
+	c := conv{user("tidy the config")}
+	r.turn("", 0, 1, c, nil, "tool_use", pipeline.InferenceToolCall{ID: "t1", Name: "Edit"})
+	cancelled := func(id string) pipeline.InferenceToolResult {
+		return pipeline.InferenceToolResult{ToolUseID: id, IsError: true, Content: rejectedIntro + " The tool use was rejected."}
+	}
+	c = c.with(pipeline.InferenceMessage{Role: "assistant", ToolUseIDs: "t1"},
+		user("[Request interrupted by user for tool use]\nno, keep the old names"))
+	r.turn("", 100, 1, c, []pipeline.InferenceToolResult{cancelled("t1")}, "tool_use", pipeline.InferenceToolCall{ID: "t2", Name: "Edit"})
+	withReason := pipeline.InferenceToolResult{ToolUseID: "t2", IsError: true, Content: rejectedIntro + " " + rejectedReason + "\nonly the dev file"}
+	c = c.with(pipeline.InferenceMessage{Role: "assistant", ToolUseIDs: "t2"}, toolResultMsg())
+	r.turn("", 200, 1, c, []pipeline.InferenceToolResult{cancelled("t1"), withReason}, "tool_use", pipeline.InferenceToolCall{ID: "t3", Name: "Skill"})
+	// Phantoms: tool text before the interrupt line, a compaction request after it, a reason that
+	// is only a reminder.
+	for i, phantom := range []string{
+		"Tool loaded.\n[Request interrupted by user for tool use]",
+		"Base directory for this skill: /x/skills/y\n\n# Steps\n[Request interrupted by user for tool use]",
+		"[Request interrupted by user]\n" + compactionRequest + " Summarize.",
+	} {
+		id := "p" + string(rune('a'+i))
+		c = c.with(pipeline.InferenceMessage{Role: "assistant", ToolUseIDs: id}, user(phantom))
+		r.turn("", float64(300+10*i), 1, c, []pipeline.InferenceToolResult{cancelled(id)}, "tool_use", pipeline.InferenceToolCall{ID: "q", Name: "Bash"})
+	}
+	reminderOnly := pipeline.InferenceToolResult{ToolUseID: "q", IsError: true,
+		Content: rejectedIntro + " " + rejectedReason + "\n<system-reminder>todo list</system-reminder>"}
+	c = c.with(pipeline.InferenceMessage{Role: "assistant", ToolUseIDs: "q"}, toolResultMsg())
+	r.turn("", 400, 1, c, []pipeline.InferenceToolResult{reminderOnly}, "end_turn")
+	tl := Build("s", claudeCodeEvents(r.events), time.Time{})
+	wantPrompts(t, tl, []float64{0, 100, 200}, []int64{0, 99000, 99000})
+}
+
 // The pieces on their own.
 func TestHumanTextReview2(t *testing.T) {
 	for in, want := range map[string]string{

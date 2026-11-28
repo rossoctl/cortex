@@ -158,7 +158,12 @@ func humanText(s string) string {
 			b.WriteString(line)
 		}
 	}
-	return strings.TrimSpace(b.String())
+	// Again after the lines: an injected line can stand before a summary or its request.
+	t := strings.TrimSpace(b.String())
+	if strings.HasPrefix(t, compactionSummary) || strings.HasPrefix(t, compactionRequest) {
+		return ""
+	}
+	return t
 }
 
 // stripTag removes each open...close block from s, pairing them by depth: real messages nest
@@ -281,13 +286,33 @@ func startsPrompt(msgs []model.InferenceMessage, prefix int, results []model.Inf
 	if !queuedMessage(msgs) {
 		return humanText(msgs[i].Content) != ""
 	}
-	if queuedText(msgs[i].Content) != "" {
-		return true
-	}
-	if strings.Contains(msgs[i].Content, interruptLine) && humanText(msgs[i].Content) != "" {
+	if queuedText(msgs[i].Content) != "" || afterInterrupt(msgs[i].Content) != "" {
 		return true
 	}
 	return rejectedWithReason(msgs[i-1].ToolUseIDs, results)
+}
+
+// queuedPrompt reports whether the newest user message is a prompt typed while tools ran, in its
+// wrapper: its time before was the tools', so it gets no think time. An interrupt or a
+// rejection is no such prompt: the person stopped the tools, and their time is theirs.
+func queuedPrompt(msgs []model.InferenceMessage) bool {
+	i := newestUser(msgs)
+	return queuedMessage(msgs) && queuedText(msgs[i].Content) != ""
+}
+
+// afterInterrupt is what the person typed after an interrupt: the human text after the last
+// interrupt line, or "". Only after it: what comes before is the cancelled tools' (a "Tool
+// loaded.", a skill's body).
+func afterInterrupt(s string) string {
+	k := strings.LastIndex(s, interruptLine)
+	if k < 0 {
+		return ""
+	}
+	rest := s[k:]
+	if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
+		return humanText(rest[nl+1:])
+	}
+	return ""
 }
 
 // interruptLine starts the line Claude Code writes when the person interrupts ("[Request
@@ -311,7 +336,7 @@ func rejectedWithReason(ids string, results []model.InferenceToolResult) bool {
 		if !r.IsError || !strings.HasPrefix(strings.TrimSpace(r.Content), rejectedIntro) || !slices.Contains(strings.Split(ids, ", "), r.ToolUseID) {
 			continue
 		}
-		if _, reason, ok := strings.Cut(r.Content, rejectedReason); ok && strings.TrimSpace(reason) != "" {
+		if _, reason, ok := strings.Cut(r.Content, rejectedReason); ok && humanText(reason) != "" {
 			return true
 		}
 	}

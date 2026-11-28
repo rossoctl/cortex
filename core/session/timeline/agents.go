@@ -166,7 +166,7 @@ func buildAgents(t *Timeline, events []model.SessionEvent) {
 
 		turn := Turn{Agent: c.agent, Start: c.req.At, Resent: resent, Seq: c.req.Seq, Model: inf.Model, requestID: c.req.RequestID}
 		if c.agent == MainAgent && claudeCodeCall(c.req) {
-			mains = append(mains, promptCall{turn: len(t.Turns), starts: startsPrompt(msgs, k, inf.ToolResults), side: isSuggestionCall(msgs), queued: queuedMessage(msgs)})
+			mains = append(mains, promptCall{turn: len(t.Turns), starts: startsPrompt(msgs, k, inf.ToolResults), side: isSuggestionCall(msgs), queued: queuedPrompt(msgs)})
 		}
 		if c.resp == nil {
 			t.Turns = append(t.Turns, turn)
