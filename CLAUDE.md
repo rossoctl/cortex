@@ -112,7 +112,8 @@ Read the file before you change code in its directory:
 ## Checks before you push
 
 - Go: from each module that you touched, run `GOWORK=off go vet ./...` and `gofmt -l .`.
-  Give `gofmt` a path: a bare `gofmt -l` reads stdin and exits 0. Only `vet` is a CI gate.
+  Give `gofmt` a path: a bare `gofmt -l` reads stdin and exits 0.
+  Of the two, only `vet` is a CI gate: CI's `go fmt` rewrites files and exits 0.
 - If a change deletes a package or the last import of a dependency, run
   `go mod tidy -diff` in every module. CI gates on it.
 - `cmd/agentop` tests are slow. While you work, run
