@@ -59,15 +59,17 @@ func TestFalsePositives_RandomBase64(t *testing.T) {
 	}
 }
 
-// randomImageJSON is an Anthropic request with an image block of about n bytes of base64, from a
-// fixed seed. With wrap > 0 the data is cut into lines of wrap characters, as MIME base64 is:
-// each line is then a run the encoded rule decodes, the worst case for that rule.
+// randomImageJSON is an Anthropic request with an image block of about n bytes of base64 (a PNG
+// header, as real image data has, then random bytes), from a fixed seed. With wrap > 0 the data
+// is cut into lines of wrap characters, as MIME base64 is: each line is then a run the encoded
+// rule decodes, the worst case for that rule.
 func randomImageJSON(n int, wrap ...int) string {
 	rng := rand.New(rand.NewPCG(1, 2))
 	raw := make([]byte, n*3/4)
 	for i := range raw {
 		raw[i] = byte(rng.Uint32())
 	}
+	copy(raw, pngHeader)
 	data := base64.StdEncoding.EncodeToString(raw)
 	if len(wrap) > 0 {
 		var b strings.Builder

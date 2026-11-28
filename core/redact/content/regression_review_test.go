@@ -1,6 +1,7 @@
 package content
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -32,6 +33,24 @@ func TestRegression_QueryStringRescan(t *testing.T) {
 		"?return_url=https://c.example.io/" + a + "?redirect_url=https://d.example.io/" + a + "?password=" + pw
 	if out, _ := redact(in); strings.Contains(out, pw) {
 		t.Errorf("leaked 4 deep: %q", out)
+	}
+	// The same with secret-named nested keys, so each level is a rescan of its own, and segments
+	// long enough that the floor is small: this fails if rescanBudgetPer drops to 1 (one rescan
+	// per run).
+	long := strings.Repeat("a", 4000)
+	in = "auth_url=https://a.example.io/" + long + "?token_url=https://b.example.io/" + long +
+		"?auth_redirect=https://c.example.io/" + long + "?token_uri=https://d.example.io/" + long + "?password=" + pw
+	if out, _ := redact(in); strings.Contains(out, pw) {
+		t.Errorf("leaked 4 deep with secret-named keys")
+	}
+	// Short runs get the floor: junk glued to the URL, or many sibling redirect parameters.
+	for name, in := range map[string]string{
+		"glued junk":        "see " + strings.Repeat("token=?", 5) + "auth_url=https://host/" + a + "?password=" + pw,
+		"sibling redirects": "auth_url=https://sso.example.io/" + strings.Repeat("?auth_cb=https://app.example.io/"+b[:40], 12) + "?password=" + pw,
+	} {
+		if out, _ := redact(in); strings.Contains(out, pw) {
+			t.Errorf("%s: leaked", name)
+		}
 	}
 	// Each run of rescanned text has its own budget: junk before a later URL does not use it up.
 	for _, n := range []int{1000, 5000, 50000} {
@@ -71,6 +90,32 @@ func TestRegression_UnicodeEscapeInArmorHeader(t *testing.T) {
 
 // mysql's -p takes its password attached: bare, single- or double-quoted, or double-quoted with
 // escaped quotes in raw JSON. "-p" alone (mysql prompts) and quotes that are JSON's are kept.
+// String on compact raw JSON with mysql's quoted password before a redirect stays valid JSON, with
+// the secret gone.
+func TestRegression_MysqlRedirectInCompactJSON(t *testing.T) {
+	pw := hntPassword()
+	for _, in := range []string{
+		`[[["mysql -p"]],[["<x>"]]]`,
+		`[["mysql -p\"` + pw + `\"<in.sql"],["<x>"]]`,
+		`{"cmds":[["mysql -u root -p\"` + pw + `\">out.sql"]],"next":[["<y>"]]}`,
+		`[["mysqldump -p'` + pw + `'>a.sql"],[">b"]]`,
+		// the same gap in JSON inside a JSON string (#2125 review)
+		`{"body":"[[[\"mysql -p\"]],[[\"<x>\"]]]"}`,
+	} {
+		out, _ := New().String(in)
+		if !json.Valid([]byte(out)) || strings.Contains(out, pw) {
+			t.Errorf("%s -> %s: want valid JSON without the password", in, out)
+		}
+	}
+	// An escaped password before a redirect may start or end with what is no string gap.
+	for _, p := range []string{"Secret9(" + "x", "Secret9:" + "x", ":Secret9" + "x"} {
+		in := `{"cmd":"mysql -u root -p\"` + p + `\"<dump.sql"}`
+		if out, _ := New().String(in); strings.Contains(out, p) || !json.Valid([]byte(out)) {
+			t.Errorf("%s -> %s: want the password gone", in, out)
+		}
+	}
+}
+
 func TestRegression_MysqlQuotedPassword(t *testing.T) {
 	pw := "Sup3r" + "S3cret!"
 	for _, tc := range []struct{ in, want string }{
@@ -104,6 +149,23 @@ func TestRegression_MysqlQuotedPassword(t *testing.T) {
 		{`["mysql -p'abcd", "efgh'"]`, `["mysql -p'abcd", "efgh'"]`},
 		{`{"t":"Run \"mysql -p\" and 'x'"}`, `{"t":"Run \"mysql -p\" and 'x'"}`},
 		{`cmd = 'mysql -p"' + x + '"'`, `cmd = 'mysql -p"' + x + '"'`},
+		{`{"code":"cmd = 'mysql -p\"' + x + '\"'"}`, `{"code":"cmd = 'mysql -p\"' + x + '\"'"}`},
+		// ... while a raw-JSON password an outer single quote closes is still found
+		{`{"cmd":"sh -c 'mysql -u root -p\"` + pw + `'\" db'"}`, `{"cmd":"sh -c 'mysql -u root -p\"[REDACTED:password]\" db'"}`},
+		// a redirect right after the closing quote ends the argument too
+		{"mysqldump -u root -p'" + pw + "'>out.sql", "mysqldump -u root -p'[REDACTED:password]'>out.sql"},
+		{`mysql -p"` + pw + `"<in.sql`, `mysql -p"[REDACTED:password]"<in.sql`},
+		// ... but the gap between two strings of compact raw JSON is not a password
+		{`[[["mysql -p"]],[["<x>"]]]`, `[[["mysql -p"]],[["<x>"]]]`},
+		{`run("mysql -p",fn("<x"))`, `run("mysql -p",fn("<x"))`},
+		{`f("mysql -p")("<x")`, `f("mysql -p")("<x")`},
+		// ... while a password may start or end with a bracket
+		{`mysql -p"(Secret9)"<in.sql`, `mysql -p"[REDACTED:password]"<in.sql`},
+		{`mysqldump -u root -p"[abc123]">out.sql`, `mysqldump -u root -p"[REDACTED:password]">out.sql`},
+		// ... but quoted code before a "<" or ">" is not a password
+		{`if (s == 'mysql -p') x = '<none>'`, `if (s == 'mysql -p') x = '<none>'`},
+		{`assert cmd.startswith('mysql -p') and '>' in cmd`, `assert cmd.startswith('mysql -p') and '>' in cmd`},
+		{`cmd = 'mysqldump -u root -p' + pw + '>backup.sql'`, `cmd = 'mysqldump -u root -p' + pw + '>backup.sql'`},
 		// a double-quoted password may still start or end with a single quote
 		{`mysql -p"'` + pw + `"`, `mysql -p"[REDACTED:password]"`},
 		{`mysql -p"` + pw + `'" db`, `mysql -p"[REDACTED:password]" db`},

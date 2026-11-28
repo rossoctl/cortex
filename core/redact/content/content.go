@@ -6,7 +6,8 @@
 //
 // THE RULES SEE ONE DECODED TEXT VALUE AT A TIME: a JSON string's content, a block of streamed
 // text, an error message. They know nothing of JSON quoting or SSE framing; the layers that do
-// (a JSON scanner, SSE reassembly) call Find on each value and splice the result back. Find
+// (a JSON scanner, SSE reassembly) call Find on each value and splice the result back. Find,
+// String and Bytes are methods on a *Redactor (New); String and Bytes also return Stats. Find
 // returns edits, byte ranges in the text it was given, so a caller can map a redaction back onto
 // the bytes it came from (an SSE delta boundary, say) and build its output once.
 //
@@ -36,6 +37,11 @@ import (
 type Edit struct {
 	Start, End int
 	Cat        string
+	// Quote, when set, is written on both sides of the marker: the edit replaces a bare number
+	// that is a JSON member's value ("password":12345678), and the marker must be a JSON string
+	// there, `"` in raw JSON or `\"` in JSON inside a JSON string. So the text stays valid JSON
+	// wherever it was, and the number is redacted whether or not the JSON layer sees it.
+	Quote string
 }
 
 // Context is what a caller knows about where a text value sits.
@@ -89,7 +95,9 @@ func Apply(text string, edits []Edit) string {
 	last := 0
 	for _, e := range edits {
 		b.WriteString(text[last:e.Start])
+		b.WriteString(e.Quote)
 		b.WriteString(marker(e.Cat))
+		b.WriteString(e.Quote)
 		last = e.End
 	}
 	b.WriteString(text[last:])
@@ -151,6 +159,12 @@ func merge(edits []Edit) []Edit {
 		if e.Start >= cur.End {
 			out = append(out, e)
 			continue
+		}
+		switch {
+		case e.End > cur.End:
+			cur.Quote = "" // a wider span is no longer the number alone
+		case e.Start == cur.Start && e.End == cur.End && cur.Quote == "":
+			cur.Quote = e.Quote // the same span: a quote either edit needs is kept
 		}
 		cur.End = max(cur.End, e.End)
 		if priority[e.Cat] > priority[cur.Cat] {

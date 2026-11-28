@@ -186,6 +186,16 @@ func TestURLPasswords(t *testing.T) {
 		{"https://user:pw1234@host/path/x@y=z", "https://user:[REDACTED:password]@host/path/x@y=z"},                                                // an "@" in the path: the host stays
 		{"https://u:" + mixed(12) + "@host/pkg@1.0+local", "https://u:[REDACTED:password]@host/pkg@1.0+local"},                                     // the same
 		{"https://user:Secr3tPw@host.example.com/a/b@v1|grep x", "https://user:[REDACTED:password]@host.example.com/a/b@v1|grep x"},                // a shell pipe after the path
+		// a password with "@" that ends in "/": what follows its "@" is no host, so "/@" is the host's
+		{"postgres://u:p@" + "ss/@db", "postgres://u:[REDACTED:password]@db"},
+		// ... but a host's path of several segments before a "/@" keeps the host
+		{"https://u:pw" + "12345@nexus/repository/npm/@scope/pkg", "https://u:[REDACTED:password]@nexus/repository/npm/@scope/pkg"},
+		{"https://user:pw" + "12345@host#/@y", "https://user:[REDACTED:password]@host#/@y"},
+		{"https://alice:" + fill("a", 16) + "@registry.npmjs.org:443/@babel/core", "https://alice:[REDACTED:password]@registry.npmjs.org:443/@babel/core"},
+		// KNOWN over-redaction (the safe side): a dotless host before a "/@" path is taken as
+		// the password's, and loses its name
+		{"https://user:pw" + "12345@localhost/@scope/pkg", "https://user:[REDACTED:password]@scope/pkg"},
+		{"amqp://guest:pw" + "12345@rabbitmq/@vhost", "amqp://guest:[REDACTED:password]@vhost"},
 
 		{`{"dsn":"amqp://guest:` + fill("g", 9) + `@mq/vhost","n":1}`, `{"dsn":"amqp://guest:[REDACTED:password]@mq/vhost","n":1}`},
 	} {

@@ -109,6 +109,9 @@ func TestNameTier(t *testing.T) {
 		{"pass1", tierNone}, {"test_pass2", tierNone}, {"auth0", tierNone}, {"AUTH0_CLIENT_ID", tierNone},
 		// ... but "pass" in a name in capitals is a password: DB_PASS1, PASS2
 		{"DB_PASS1", tierPassword}, {"PASS2", tierPassword},
+		// plurals that name secrets; "tokens" counts (max_tokens, above)
+		{"passwords", tierPassword}, {"db_passwords", tierPassword}, {"api_keys", tierSecret}, {"apiKeys", tierSecret},
+		{"secrets", tierSecret}, {"prompt_tokens", tierNone}, {"cached_tokens", tierNone},
 	} {
 		if got := nameTier(tc.name); got != tc.want {
 			t.Errorf("nameTier(%q) = %d, want %d", tc.name, got, tc.want)

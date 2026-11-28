@@ -4,6 +4,7 @@ import (
 	"math"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // THE KEYWORD RULE: a secret-named key assigned a secret-shaped value, in text ("password=x",
@@ -35,9 +36,14 @@ const valueChars = "[^\\s'\"`,;&(){}\\[\\]<>\\\\]"
 // double-quoted, single-quoted or bare. RE2 has no backreference to match a closing quote to its
 // opening one, so the four quotings are four alternatives; the value is group 2, 3, 4 or 5. A
 // quoted value runs to its closing quote, spaces and punctuation included; it cannot hold a
-// backslash or a line break, so it cannot run out of its JSON string.
+// backslash or a line break, so it cannot run out of its JSON string. JSON's "\n", "\r" and "\t"
+// escapes may stand at either end inside the quotes (a value copied with its newline, in a raw
+// body): they are outside the value, and kept.
 var keywordPattern = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_.-]*)(?:\\?["'])?[ \t]*(?::=|=>|[:=])[ \t]*` +
-	`(?:\\"([^"\\\r\n]+)\\"|"([^"\\\r\n]+)"|'([^'\\\r\n]+)'|(` + valueChars + `+))`)
+	`(?:\\"([^"\\\r\n]+)\\"|"` + jsonBreaks + `([^"\\\r\n]+)` + jsonBreaks + `"|'` + jsonBreaks + `([^'\\\r\n]+)` + jsonBreaks + `'|(` + valueChars + `+))`)
+
+// jsonBreaks is any run of JSON's line-break and tab escapes.
+const jsonBreaks = `(?:\\[nrt])*`
 
 type tier int
 
@@ -65,9 +71,13 @@ const (
 )
 
 var (
-	passwordWords = set("password", "passwd", "pwd", "pass", "passphrase", "passcode")
-	secretWords   = set("secret", "secrets", "token", "credential", "credentials", "auth", "authorization", "cookie",
-		"bearer", "apikey", "accesskey", "privatekey", "secretkey", "signingkey", "masterkey", "encryptionkey")
+	// The plurals that name secrets are listed too ("passwords", "api_keys"), but not "tokens":
+	// in model traffic that is a count (max_tokens, prompt_tokens).
+	passwordWords = set("password", "passwd", "pwd", "pass", "passphrase", "passcode",
+		"passwords", "passwds", "passphrases", "passcodes")
+	secretWords = set("secret", "secrets", "token", "credential", "credentials", "auth", "authorization", "cookie",
+		"bearer", "apikey", "accesskey", "privatekey", "secretkey", "signingkey", "masterkey", "encryptionkey",
+		"apikeys", "accesskeys", "privatekeys", "secretkeys", "signingkeys")
 	// secretSuffixes classify a one-word name such as "authtoken" or "dbpassword".
 	secretSuffixes   = []string{"token", "secret", "apikey"}
 	passwordSuffixes = []string{"password", "passwd"}
@@ -118,6 +128,12 @@ func nameTier(name string) tier {
 func wordTier(parts []string, envName bool) tier {
 	t := tierNone
 	for i, p := range parts {
+		// "pass" before a number or a metric's word is the eval metric or a test's outcome, not a
+		// password: pass@1, pass@10, "Pass Rate", "Pass/Fail", pass_count. Not in a name in
+		// capitals, where DB_PASS_1 is an environment variable's password.
+		if p == "pass" && i+1 < len(parts) && (!envName && isDigits(parts[i+1]) || passMetricWords[parts[i+1]]) {
+			continue
+		}
 		words := []string{p}
 		if i+1 < len(parts) {
 			words = append(words, p+parts[i+1])
@@ -139,6 +155,13 @@ func wordTier(parts []string, envName bool) tier {
 	return t
 }
 
+// passMetricWords after "pass" make it a test's outcome or a rate, not a password.
+var passMetricWords = set("rate", "rates", "fail", "failed", "passed", "through", "count", "counts", "k", "at")
+
+func isDigits(s string) bool {
+	return s != "" && strings.Trim(s, "0123456789") == ""
+}
+
 func hasSuffixAny(w string, suffixes []string) bool {
 	for _, s := range suffixes {
 		if strings.HasSuffix(w, s) {
@@ -148,8 +171,19 @@ func hasSuffixAny(w string, suffixes []string) bool {
 	return false
 }
 
-// splitName splits a name into lowercase words.
+// splitName splits a name into lowercase words: at any ASCII byte that is not a letter or a
+// digit ("_", "-", ".", a space: "API Key", "Root Pass" are names too, as JSON keys and in
+// headers), and at case changes.
 func splitName(name string) []string {
+	// Unicode spaces (a no-break space, U+3000) split a name as a space does.
+	if strings.IndexFunc(name, func(r rune) bool { return r >= 0x80 && unicode.IsSpace(r) }) >= 0 {
+		name = strings.Map(func(r rune) rune {
+			if unicode.IsSpace(r) {
+				return ' '
+			}
+			return r
+		}, name)
+	}
 	var parts []string
 	start := 0
 	flush := func(end int) {
@@ -159,7 +193,7 @@ func splitName(name string) []string {
 	}
 	for i := 0; i < len(name); i++ {
 		c := name[i]
-		if c == '_' || c == '-' || c == '.' {
+		if c < 0x80 && !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9') {
 			flush(i)
 			start = i + 1
 			continue
@@ -194,6 +228,11 @@ func isNameByte(c byte) bool { return isTokenByte(c) || c == '.' }
 // rescanBudgetPer is how many times its own length a run of rescanned text may be scanned
 // again (findKeywords): enough for URLs nested 4 deep.
 const rescanBudgetPer = 4
+
+// rescanBudgetFloor is added to each new run's budget, so a short run (a URL glued to a few
+// "key=?" or many sibling redirect parameters) is not cut short. Runs are at least longRejected
+// bytes, so the floors add at most 16 times the text.
+const rescanBudgetFloor = 4 << 10
 
 // findKeywords runs the keyword rule at each trigger position (sorted).
 func findKeywords(text string, at []int, out []Edit) []Edit {
@@ -258,7 +297,7 @@ func findKeywords(text string, at []int, out []Edit) []Edit {
 			// within the run's rescan budget.
 			if q := strings.IndexByte(text[vs:ve], '?'); q >= 0 {
 				if vs >= runEnd {
-					runEnd, rescanBudget = ve, rescanBudgetPer*(ve-vs) // a new run
+					runEnd, rescanBudget = ve, rescanBudgetPer*(ve-vs)+rescanBudgetFloor // a new run
 				} else if ve > runEnd {
 					rescanBudget += rescanBudgetPer * (ve - runEnd) // the run grows
 					runEnd = ve
@@ -270,7 +309,14 @@ func findKeywords(text string, at []int, out []Edit) []Edit {
 			}
 		}
 		if ok {
-			out = append(out, Edit{Start: vs, End: ve, Cat: t.cat()})
+			e := Edit{Start: vs, End: ve, Cat: t.cat()}
+			if mode == valueBare && jsonNumber.MatchString(text[vs:ve]) {
+				// A number that is a JSON member's value ("password":12345678, also 12345678.5,
+				// -12345678 or 1e9): the marker is written as a JSON string, so a JSON text stays
+				// JSON (Edit.Quote).
+				e.Quote = jsonMemberQuote(text, vs)
+			}
+			out = append(out, e)
 		}
 	}
 	return out
@@ -429,8 +475,10 @@ func keyedValue(text, key string) (Edit, bool) {
 	if t == tierNone {
 		return Edit{}, false
 	}
-	start := len(text) - len(strings.TrimLeft(text, " \t"))
-	v := strings.TrimRight(text[start:], " \t")
+	// Line breaks around the value are trimmed like spaces, and kept in the output: a value
+	// copied with its newline ("hunter2\n") is the same secret.
+	start := len(text) - len(strings.TrimLeft(text, " \t\r\n"))
+	v := strings.TrimRight(text[start:], " \t\r\n")
 	for _, scheme := range []string{"bearer ", "basic ", "token ", "digest ", "negotiate ", "ntlm "} {
 		if t != tierPassword && len(v) > len(scheme) && strings.EqualFold(v[:len(scheme)], scheme) {
 			// An explicit credential scheme: the token after it is the secret, whatever its
@@ -541,11 +589,13 @@ func isReference(v string) bool {
 		name := leadingName(v[1:])
 		if rest := v[1+len(name):]; rest != "" && (strings.IndexByte("/:.-}{[", rest[0]) < 0 ||
 			// ":" not before a digit: "$Winter:2024" is a password. "-" after a shell variable's
-			// name, in lowercase or capitals ("$pass-suffix" is $pass, then "-suffix";
-			// "$DB_PASS-2024"), but before a digit only in capitals ("$Summer-2024", "$pass-2fa");
-			// after a mixed-case word only as PHP's "->" ("$Summer-Fun!" is a password).
+			// name: in capitals, any ("$DB_PASS-2024"); in lowercase, before a plain lowercase
+			// word (plainWordAfterDash: "$pass-suffix" is $pass, then "-suffix", but
+			// "$money-Bags7!" and "$pass-2fa" are passwords); after a mixed-case word, only as PHP's "->"
+			// ("$Summer-Fun!" is a password).
 			len(rest) > 1 && (rest[0] == ':' && rest[1] >= '0' && rest[1] <= '9' || rest[0] == '-' && strings.ToUpper(name) != name &&
-				(rest[1] >= '0' && rest[1] <= '9' || strings.ToLower(name) != name && rest[1] != '>' && rest[1] != '$' && rest[1] != '{'))) {
+				(rest[1] >= '0' && rest[1] <= '9' || rest[1] != '>' && rest[1] != '$' &&
+					(strings.ToLower(name) != name || !plainWordAfterDash(rest[1:]))))) {
 			return false
 		}
 		if strings.TrimRight(name, "0123456789") != name && strings.ToUpper(name) != name {
@@ -619,6 +669,17 @@ func variableName(s string) bool {
 	return strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_") == "" && wordLike(s)
 }
 
+// plainWordAfterDash reports whether s, what follows "$name-", starts with a plain lowercase word
+// up to a path's or a variable's separator ("dir/$name", "path:8080", "x${env}", "suffix"), as a
+// shell variable's literal suffix does. Capitals, digits or symbols in it ("Bags7!", "banana7",
+// "you~123", "def(Gh1)") read as a password's.
+func plainWordAfterDash(s string) bool {
+	if k := strings.IndexAny(s, "/:.${}"); k >= 0 {
+		s = s[:k]
+	}
+	return strings.Trim(s, "abcdefghijklmnopqrstuvwxyz-_") == ""
+}
+
 // camelTypeName reports whether a type-name-shaped v splits into words, as a type's name does
 // ("NSSecureTextField", "PasswordStrengthValidator"): each piece, cut before a capital that
 // starts a lowercase run, is an acronym of up to eight capitals (acronyms run together:
@@ -662,6 +723,34 @@ var envNamePattern = regexp.MustCompile(`^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$`)
 // isHex reports whether v is hex digits only, in one case.
 func isHex(v string) bool {
 	return strings.Trim(v, "0123456789abcdef") == "" || strings.Trim(v, "0123456789ABCDEF") == ""
+}
+
+func allDigits(v string) bool { return v != "" && strings.Trim(v, "0123456789") == "" }
+
+// jsonNumber is a JSON number, as RFC 8259 writes one.
+var jsonNumber = regexp.MustCompile(`^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$`)
+
+// jsonMemberQuote returns the quote a JSON member's value starting at vs needs, when vs follows
+// a quoted key and ":" (`"password": 12345678`): `"`, or the key's own escaped quote in JSON
+// inside a JSON string (`\"password\":12345678` gives `\"`). "" when vs is no member's value.
+func jsonMemberQuote(text string, vs int) string {
+	i := vs - 1
+	for i >= 0 && (text[i] == ' ' || text[i] == '\t') {
+		i--
+	}
+	if i < 0 || text[i] != ':' {
+		return ""
+	}
+	for i--; i >= 0 && (text[i] == ' ' || text[i] == '\t'); i-- {
+	}
+	if i < 0 || text[i] != '"' {
+		return ""
+	}
+	j := i
+	for j > 0 && text[j-1] == '\\' {
+		j--
+	}
+	return text[j : i+1]
 }
 
 // tokenShaped reports whether v looks like a generated token rather than words or an

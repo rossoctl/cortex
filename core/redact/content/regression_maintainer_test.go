@@ -1,6 +1,7 @@
 package content
 
 import (
+	"bytes"
 	"encoding/base64"
 	"strings"
 	"testing"
@@ -82,6 +83,68 @@ func TestRegression_WrappedBlockBelowALongLine(t *testing.T) {
 		if out, st := redact(in); st[catEncoded] == 0 || strings.Contains(out, lines[1]) {
 			t.Errorf("%s above: the block was not found: %q (%v)", name, out, st)
 		}
+	}
+}
+
+// A wrapped block's last line, followed by a line of its own width (a digest, a second value), is
+// still the block's last line when the secret crosses into it (Hai's sweep on #2068): .env bodies
+// of 60 to 90 bytes ending in a token, wrapped at 64 and 76, with each tail after the second line.
+func TestRegression_WrappedLastLineBeforeASibling(t *testing.T) {
+	gh := fakes()["github"]
+	wide := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x9c, 0x41, 0xe7}, 16)) // 64 wide
+	cases := 0
+	for n := 60; n <= 90; n++ {
+		k := n - len("A=\nGITHUB_TOKEN="+gh)
+		if k < 1 {
+			continue
+		}
+		enc := base64.StdEncoding.EncodeToString([]byte("A=" + strings.Repeat("x", k) + "\nGITHUB_TOKEN=" + gh))
+		for _, w := range []int{64, 76} {
+			l := len(enc) % w
+			if l < 16 || l%4 != 0 || strings.HasSuffix(enc, "=") || len(enc) <= w {
+				continue // the same-width rule applies only to an unpadded last line of 16 or more
+			}
+			var lines []string
+			for i := 0; i < len(enc); i += w {
+				lines = append(lines, enc[i:min(len(enc), i+w)])
+			}
+			// A digest-like second value as wide as the last line.
+			sibling := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0xd2, 0x07, 0x5b}, l/4))
+			for _, tail := range []string{"", "\n", "\nPORT=8080", "\n" + wide + "\n" + wide} {
+				in := strings.Join(lines, "\n") + "\n" + sibling + tail
+				cases++
+				out, _ := redact(in)
+				if strings.Contains(out, lines[len(lines)-1]) || !strings.Contains(out, sibling) {
+					t.Errorf("n=%d w=%d tail=%q: the last line must go, the sibling stay: %q", n, w, tail, out)
+				}
+			}
+		}
+	}
+	if cases < 20 {
+		t.Fatalf("only %d cases: the sweep no longer reaches the shape", cases)
+	}
+
+	// The block below a taken line is decoded too (findEncoded scans on from that line): a one-line
+	// value with a secret of its own, above a 64-wide block, does not hide the block.
+	one := base64.StdEncoding.EncodeToString([]byte("API_TOKEN=" + gh + strings.Repeat("\nX=ab", 57)))[:76]
+	env := base64.StdEncoding.EncodeToString([]byte("DB_HOST=db.internal.example\nAPI_TOKEN=" + fakes()["github"] + "\nLOG_LEVEL=info\nREGION=eu\n"))
+	var lines []string
+	for i := 0; i < len(env); i += 64 {
+		lines = append(lines, env[i:min(len(env), i+64)])
+	}
+	if out, _ := redact(one + "\n" + strings.Join(lines, "\n") + "\n"); strings.Contains(out, one) || strings.Contains(out, lines[1]) {
+		t.Errorf("a one-line secret above a block: both must go: %q", out)
+	}
+	// Even when the one-line secret is a keyword value that runs on into the block's first line
+	// (no line end after "password=…"), the block below is decoded on its own too.
+	one = base64.StdEncoding.EncodeToString([]byte("A=" + strings.Repeat("x", 37) + "\npassword=Xy7Kq9Lp"))
+	env = base64.StdEncoding.EncodeToString([]byte("dbhost=db\nyyyyyyyyyyAPI_TOKEN=" + gh + "\nLOG=info\nREGION=eu-west-1\n"))
+	lines = lines[:0]
+	for i := 0; i < len(env); i += 64 {
+		lines = append(lines, env[i:min(len(env), i+64)])
+	}
+	if out, _ := redact(one + "\n" + strings.Join(lines, "\n") + "\n"); strings.Contains(out, lines[0]) || strings.Contains(out, lines[1]) {
+		t.Errorf("a keyword secret above a block: the block must go: %q", out)
 	}
 }
 
@@ -284,9 +347,17 @@ func TestRegression_DollarDashAndColon(t *testing.T) {
 		{"password=$Winter:" + "2024", "Winter:2024"},
 		{`{"password":"$Summer-` + `2024"}`, "Summer-2024"},
 		{"password=$Summer-" + "Fun!", "Summer-Fun"},
+		// a mixed-case word before "-{", and "~" or "(" in what follows the dash (#2124 reviews)
+		{`{"password":"$Admin-` + `{Secret9}"}`, "Admin-{Secret9}"},
+		{"password=$love-" + "you~123", "love-you~123"},
+		{`{"password":"$abc-` + `def(Gh1)"}`, "abc-def(Gh1)"},
 		{"password=$Qwerty-" + "x9Lm#Tz", "Qwerty-x9Lm"},
 		{`{"password":"$Monkey-` + `Banana7!"}`, "Monkey-Banana7"},
 		{"password=$pass-" + "2fa9Kq", "pass-2fa9Kq"},
+		// A lowercase word, a dash and more than a plain lowercase word (clawgenti on #2068).
+		{`{"password":"$money-` + `Bags7!"}`, "money-Bags7"},
+		{"password=$monkey-" + "banana7", "monkey-banana7"},
+		{`{"db_password":"$admin-` + `Secret#9"}`, "admin-Secret"},
 	} {
 		if out, _ := redact(tc.in); strings.Contains(out, tc.secret) {
 			t.Errorf("%q: leaked: %q", tc.in, out)
@@ -295,7 +366,8 @@ func TestRegression_DollarDashAndColon(t *testing.T) {
 	for _, in := range []string{"$password = $this->password;", `{"password":"$this->password"}`, "$pass = $user->getPassword()",
 		"$password = $env:DB_PASSWORD", "password=$HOME/.pw", "password=$DB_USER:$DB_PASS", "password=$DB_PASS-backup",
 		"PASSWORD=$PG_PASS-$SUFFIX", "password=$pass-suffix", "password=$password-file", "PASSWORD=$db_pass-backup",
-		"password=$DB_PASS-2024"} {
+		"password=$DB_PASS-2024", "password=$tmp-dir/$name", "password=$out-dir/build-2024", "password=$root-dir/Foo",
+		"password=$cfg-path:8080", "password=$base-x${env}", `{"password":"$db-pass}"}`, "password=$pass-{suffix}", "password=$work-dir/~/x"} {
 		if out, st := redact(in); out != in || len(st) != 0 {
 			t.Errorf("%q changed: %q", in, out)
 		}
