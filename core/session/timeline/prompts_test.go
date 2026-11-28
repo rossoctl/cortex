@@ -266,6 +266,27 @@ func TestPromptsInterruptThinkTimeAndPhantoms(t *testing.T) {
 	wantPrompts(t, tl, []float64{0, 100, 200}, []int64{0, 99000, 99000})
 }
 
+// From CodeRabbit on 73cc076a: an interrupt marker quoted inside a tool's text is no interrupt
+// line, so the text after it is no prompt; and two prompts that start at the same instant each
+// keep their own calls, told apart by the request sequence.
+func TestPromptsInlineInterruptAndEqualStarts(t *testing.T) {
+	if got := afterInterrupt("Troubleshooting [Request interrupted by user for tool use]\nstep two of the skill"); got != "" {
+		t.Errorf("an inline marker started a prompt: %q", got)
+	}
+	if got := afterInterrupt("Tool loaded.\n  [Request interrupted by user for tool use]\nkeep going"); got != "keep going" {
+		t.Errorf("an interrupt line (indented): %q", got)
+	}
+	var r rec
+	c := conv{user("first")}
+	r.turn("", 0, 1, c, nil, "end_turn")
+	c = c.with(assistant("ok"), user("second"))
+	r.turn("", 0, 2, c, nil, "end_turn") // the same start instant, the next request
+	tl := Build("s", claudeCodeEvents(r.events), time.Time{})
+	if len(tl.Prompts) != 2 || tl.Prompts[0].LastSeq != tl.Prompts[0].FirstSeq || tl.Prompts[0].End == nil {
+		t.Errorf("prompts = %+v, want the first to keep its own call", tl.Prompts)
+	}
+}
+
 // The pieces on their own.
 func TestHumanTextReview2(t *testing.T) {
 	for in, want := range map[string]string{

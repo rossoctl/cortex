@@ -304,7 +304,20 @@ func queuedPrompt(msgs []model.InferenceMessage) bool {
 // interrupt line, or "". Only after it: what comes before is the cancelled tools' (a "Tool
 // loaded.", a skill's body).
 func afterInterrupt(s string) string {
-	k := strings.LastIndex(s, interruptLine)
+	// The last interrupt LINE: the marker at the start of a line, not quoted inside a tool's
+	// text ("Troubleshooting [Request interrupted by user for tool use]" in a skill's body).
+	k := -1
+	for end := len(s); ; {
+		j := strings.LastIndex(s[:end], interruptLine)
+		if j < 0 {
+			break
+		}
+		if ls := strings.LastIndexByte(s[:j], '\n') + 1; strings.TrimSpace(s[ls:j]) == "" {
+			k = j
+			break
+		}
+		end = j
+	}
 	if k < 0 {
 		return ""
 	}
@@ -385,14 +398,17 @@ func buildPrompts(t *Timeline, mains []promptCall) {
 		return
 	}
 	// Each turn's prompt: the latest prompt started at or before it. The prompts are in start
-	// order, so this is a binary search.
-	promptAt := func(at time.Time) int {
-		return sort.Search(len(ps), func(i int) bool { return ps[i].Start.After(at) })
+	// order, so this is a binary search. Two requests can share a start time; then the request
+	// sequence decides, so a turn goes to the prompt whose first call came at or before it.
+	promptAt := func(at time.Time, seq uint64) int {
+		return sort.Search(len(ps), func(i int) bool {
+			return ps[i].Start.After(at) || ps[i].Start.Equal(at) && ps[i].FirstSeq > seq
+		})
 	}
 	stillOpen := map[int]bool{}
 	for i := range t.Turns {
 		tu := &t.Turns[i]
-		n := promptAt(tu.Start)
+		n := promptAt(tu.Start, tu.Seq)
 		if n == 0 || side[i] {
 			continue
 		}

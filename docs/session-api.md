@@ -225,7 +225,7 @@ value is ignored, so an older proxy answers with the event alone.
 
 ## `GET /v1/sessions/{id}/timeline` — agents, tools and hosts on one time axis
 
-**This is the endpoint for per-tool and per-call timings, and it carries no prompt text.**
+**This is the endpoint for per-tool and per-call timings, and it carries no message bodies** (a tool's `preview` can repeat text from the prompt).
 Each `tools[]` entry is a named span with `start`, `end` and a `preview` of the
 tool's own argument; each `turns[]` entry is one model call. Both are derived from
 the events, so neither needs the message bodies — reach for this rather than a
