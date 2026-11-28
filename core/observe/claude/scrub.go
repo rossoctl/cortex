@@ -289,9 +289,12 @@ func clipTitle(s string) string {
 // and at maps each of its bytes to the offset in out it stands at. dropAt are the offsets in out
 // where a run of dropped runes stood.
 //
-// ESC and BEL are kept, though scrubRunes drops them: they start and end an ANSI sequence, which
-// stripANSI removes whole before scrubRunes runs. Without BEL an OSC title sequence
-// ("\x1b]0;window\x07") would run on and take the rest of the title with it.
+// ANSI SEQUENCES ARE TAKEN OUT HERE, as stripANSI will take them out, so the rules see what will
+// be shown: a CSI, an OSC or other string sequence to its BEL or ST (or the end), a charset
+// selection's three bytes. Each is a dropped run. A LONE ESC, one that starts none of those, is
+// dropped by itself and the character after it kept: stripANSI would take that character too
+// (as "ESC c"), and inside a key that leaves one too short for its rule, shown all but whole. A
+// BEL that ends no sequence is dropped like any control.
 func squeezeSpace(s string, n, scan int) (out, spaced string, at, dropAt []int, cut bool) {
 	var b, sp strings.Builder
 	inRun, runBreak, dropped := false, false, false
@@ -316,16 +319,24 @@ func squeezeSpace(s string, n, scan int) (out, spaced string, at, dropAt []int, 
 	done := func(cut bool) (string, string, []int, []int, bool) {
 		return b.String(), sp.String(), at, dropAt, cut
 	}
-	for i, r := range s {
+	for i := 0; i < len(s); {
 		if b.Len() >= n || i >= scan {
 			return done(true)
 		}
+		if s[i] == 0x1b {
+			// The sequence's length as stripANSI takes it; 1 for a lone ESC.
+			dropped = true
+			i += ansiSpan(s[i:])
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		i += size
 		if isSeparatorSpace(r) {
 			inRun = true
 			runBreak = runBreak || r == '\n' || r == '\r' || r == 0x2028 || r == 0x2029
 			continue
 		}
-		if !unicode.IsGraphic(r) && r != 0x1b && r != 0x07 {
+		if !unicode.IsGraphic(r) {
 			dropped = true // dropped by scrubRunes: it neither shows nor separates
 			continue
 		}
@@ -342,6 +353,38 @@ func squeezeSpace(s string, n, scan int) (out, spaced string, at, dropAt []int, 
 		flush()
 	}
 	return done(false)
+}
+
+// ansiSpan is the length of the escape sequence s starts with (s[0] is ESC), as stripANSI takes
+// it: a CSI to its final byte, a string sequence (OSC, DCS, SOS, PM, APC) to its BEL or ST, a
+// charset selection's three bytes, each to the end of s if it does not finish. A lone ESC, which
+// starts none of these, is 1: only the ESC goes (see squeezeSpace).
+func ansiSpan(s string) int {
+	if len(s) < 2 {
+		return len(s)
+	}
+	switch s[1] {
+	case '[':
+		for j := 2; j < len(s); j++ {
+			if s[j] >= '@' && s[j] <= '~' {
+				return j + 1
+			}
+		}
+		return len(s)
+	case ']', 'P', 'X', '^', '_':
+		for j := 2; j < len(s); j++ {
+			if s[j] == 0x07 {
+				return j + 1
+			}
+			if s[j] == 0x1b && j+1 < len(s) && s[j+1] == '\\' {
+				return j + 2
+			}
+		}
+		return len(s)
+	case '(', ')', '*', '+', '-', '.', '/', '%', '#', ' ':
+		return min(3, len(s))
+	}
+	return 1
 }
 
 // mappedEdits runs the rules on probe, a copy of s with bytes added, and returns what they find

@@ -130,6 +130,16 @@ func TestClipTitle_BotReviewProbes(t *testing.T) {
 			t.Errorf("%s: %q holds the key", name, got)
 		}
 	}
+	// A lone BEL or ESC inside a key, glued to the word before: found too.
+	for name, in := range map[string]string{
+		"bel glued and split": "fix\x07" + key[:10] + "\x07" + key[10:],
+		"lone esc":            "fix " + key[:10] + "\x1b" + key[10:],
+		"esc glued and split": "fix\x1b" + key[:10] + "\x1b" + key[10:],
+	} {
+		if got := clipTitle(in); strings.Contains(got, "GGGG") || strings.Contains(got, "gh"+"p") {
+			t.Errorf("%s: %q holds the key", name, got)
+		}
+	}
 	if got := clipTitle("hello \x1b]0;window\x07 fix login"); got != "hello fix login" {
 		t.Errorf("an OSC ended by BEL: %q, want %q", got, "hello fix login")
 	}
