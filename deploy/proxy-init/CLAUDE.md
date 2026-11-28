@@ -1,6 +1,6 @@
 # deploy/proxy-init — agent notes
 
-Loaded by Claude Code when you read a file in this directory. The repo-wide rules are in the root [`CLAUDE.md`](../../CLAUDE.md). Port numbers are in its Important Port Mapping table.
+Loaded by Claude Code when you read a file in this directory. The repo-wide rules are in the root [`CLAUDE.md`](../../CLAUDE.md). Port numbers are in [`cmd/README.md`](../../cmd/README.md#ports).
 
 ## init-iptables.sh
 

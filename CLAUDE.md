@@ -37,8 +37,9 @@ git diff --no-index CLAUDE.md .claude/worktrees/<topic>/CLAUDE.md
 **Worktrees do not isolate the running Cortex.** All sessions share one
 `~/.cortex/config.yaml` and one proxy on `:47600`, and every session's `HTTPS_PROXY`
 points at that proxy. `agentop service restart` and `make dev-install` restart the proxy and
-cut every attached session. `agentop setup` and `agentop service install` can restart it
-when they have something to change. Coordinate before you run any of them.
+cut every attached session. `agentop setup`, `agentop service install` and
+`scripts/install.sh` (which runs `agentop setup`) can restart it when they have something
+to change. Coordinate before you run any of them.
 
 ## Commits and PRs
 
@@ -52,8 +53,10 @@ when they have something to change. Coordinate before you run any of them.
 ## Naming: Cortex is the product, AuthBridge is the sidecar
 
 The renames Kagenti → Rossoctl and abctl → agentop are complete. A new `kagenti` or `abctl`
-string outside `docs/superpowers/` (a frozen archive) is a mistake, except in code that
-removes a pre-rename binary.
+string outside `docs/superpowers/` (old records there are frozen, but
+new plans and specs still go there) is a mistake. The exceptions are code that removes a
+pre-rename binary, and the v0.4 file name `kagenti-extensions_<ver>_checksums.txt` that
+install-stats still counts.
 
 AuthBridge → Cortex is partial on purpose. Say **Cortex** for the product and its binaries
 (`cortex`, `cortex-envoy`, `cortex-cpex`). Say **AuthBridge** for the injected sidecar
