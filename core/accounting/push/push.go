@@ -9,7 +9,8 @@
 //
 // A failed export never reaches a request: the counters are read on the periodic reader's own
 // goroutine, the failure increments llm.proxy.export_failures, and a WARN is logged at most once
-// a minute.
+// a minute. The first export the collector accepts, and the first one after a failure, logs one
+// INFO line, so the log shows that the push works.
 package push
 
 import (
@@ -199,10 +200,19 @@ type exporter struct {
 
 	mu       sync.Mutex
 	lastWarn time.Time
+	working  bool // the last export was accepted
 }
 
 func (e *exporter) Export(ctx context.Context, rm *metricdata.ResourceMetrics) error {
 	err := e.Exporter.Export(ctx, rm)
+	e.mu.Lock()
+	recovered := err == nil && !e.working
+	e.working = err == nil
+	e.mu.Unlock()
+	if recovered {
+		slog.Info("metrics push works; the collector accepted a push (logged on the first push and after a failure)",
+			"url", e.url)
+	}
 	if err == nil {
 		return nil
 	}
