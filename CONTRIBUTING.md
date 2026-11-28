@@ -539,6 +539,33 @@ Smaller pull requests are typically easier to review and merge. If your pull req
   `go test -race ./...`.
 - Apache 2.0 license header in all Go files
 
+### Tests and time
+A test that waits on the clock passes on a quiet laptop and fails on a loaded CI
+runner. Tests wait on events:
+- **Block on the event that ends the wait**: a channel the fake closes, or a hook
+  the code calls. No `time.Sleep`, no polling loop, no `Eventually`.
+- **A hang is the failure.** No `time.After` guard beside the wait. Locally,
+  `go test -timeout 2m` ends a hung test with every goroutine's stack. CI passes no
+  `-timeout`, so there go test's 10m default ends it, or the job's limit if sooner.
+- **Assert on what happened, not how long it took.** A `time.Since(start) > d`
+  bound is a flake. To show a call does not wait for X, hold X until the call has
+  returned.
+- **Keep timers out with `time.Hour`, and make them expire with 0 or a deadline
+  already past.** A 1ns context can still be live when it is first checked. A
+  timeout that is the behaviour under test is an expired one, not a 200ms one.
+- **Drive periodic work through a seam**: inject the tick channel or the clock.
+  Existing seams to copy: `archive.WithTicks`, sessionbudget's `refreshOn`, the
+  ledger writer's `syncQueued`, evolve's `joinHook`, and agentop's
+  `readyOnFirstAnswer`.
+- **Mutation-check each fix.** Put the bug back and see the test fail or hang.
+
+The `check-test-timing` pre-commit hook flags these in every `_test.go` file, in
+CI too. It judges a duration where it is written: in a timer call's arguments, or
+where a timeout, wait or deadline is set. A duration passed through any other
+variable is out of its sight. Reporting an elapsed time in a log call is fine. A
+line that needs real time, such as a live integration test, carries
+`// timing: <reason>`.
+
 ### Python Code (keycloak_sync.py, sparc-service)
 - Python 3.12+ syntax (type hints with `str | None`)
 - Dependencies of the root scripts go in `requirements.txt` as bounded

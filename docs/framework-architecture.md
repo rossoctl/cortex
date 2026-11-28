@@ -911,8 +911,15 @@ hosts; ports are stripped before matching. Any change requires a pod restart,
 like every other `listener.*` field. Do **not** add hosts here that need IBAC
 or token-exchange policy applied — bypass means bypass. It exists for traffic
 whose recording floods the session store and crowds out the user intent a
-guardrail needs (see the intent pin in the session store gotcha in
-[`CLAUDE.md`](../CLAUDE.md#gotchas-and-known-issues)).
+guardrail needs.
+
+The session store has a backstop, the intent pin, but only when
+`session.max_events` is set. The store then pins the most recent inbound A2A
+request against FIFO eviction. Only the latest intent is pinned, so stale
+intents cannot fill the buffer. IBAC's `pctx.LastIntent()` can still find no
+event after a delete, a `max_sessions` eviction, a `ttl` expiry, a restart, or
+before the first inbound request. Use `skip_hosts` first when the noisy traffic
+is identifiable infrastructure.
 
 #### Forwarding WebSocket upgrades
 

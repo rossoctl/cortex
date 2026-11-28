@@ -186,7 +186,8 @@ that ever happened.
 
 The default `session:` config sets `max_sessions` to 100. Past that, Cortex evicts the
 least-recently-updated session. `max_events` and `ttl` are unlimited, so Cortex does not
-trim an individual session. Tune these values in your config; see `CLAUDE.md`.
+trim an individual session. Tune these values in your config; see
+[the `session:` options](framework-architecture.md#operator-configuration-session).
 
 A dump cannot recover a session that was already evicted. Nothing survives a restart.
 

@@ -10,7 +10,7 @@ A duration is judged where it is written: in a timer call's arguments, which may
 span lines, or where a timeout, wait or deadline is set. A duration passed
 through any other variable is out of the hook's sight.
 
-The rules are in CLAUDE.md, "Tests and time".
+The rules are in CONTRIBUTING.md, "Tests and time".
 """
 
 import os
@@ -183,7 +183,7 @@ def main(paths):
             "\nThese tests depend on timing, so a slow CI runner can fail them. Wait on\n"
             "events instead: when the code has none to wait on, add a test hook it calls,\n"
             "or inject its clock or tick channel. Rules and examples:\n"
-            "https://github.com/rossoctl/cortex/blob/main/CLAUDE.md#tests-and-time\n"
+            "https://github.com/rossoctl/cortex/blob/main/CONTRIBUTING.md#tests-and-time\n"
             "\n"
             "A test that drives a real service, or measures how a cost scales, needs the\n"
             "clock: mark that line with `// timing: <reason>`, on it or just above it."

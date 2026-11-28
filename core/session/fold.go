@@ -176,7 +176,7 @@ func firstAgentLabel(earlier, agents []sessionAgent, known bool) string {
 // "" FOR EVERYTHING ELSE, AND THE CALLERS KEEP WHAT THEY HAD. A session's events are not all
 // turns: a bridged CONNECT's tunnel-open lands between an inference request and its response, and
 // MCP calls and responses interleave too. Clearing the field on any of them would blank a
-// session's server on most of its rows — the intern table's lesson (CLAUDE.md, the session store gotcha).
+// session's server on most of its rows — the intern table's lesson (the comment in Interner.InternEvent, intern.go).
 func inferenceHostOf(e *model.SessionEvent) string {
 	if e.Phase != model.SessionRequest || e.Inference == nil {
 		return ""
