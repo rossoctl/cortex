@@ -1,6 +1,7 @@
 package timeline
 
 import (
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -263,16 +264,58 @@ func newestUser(msgs []model.InferenceMessage) int {
 
 // startsPrompt reports whether a request's newest user message was added since the agent's
 // previous call (at index prefix or later, prefix being the messages the two share) and holds
-// human text: beside tool results, only inside the queued-message wrapper.
-func startsPrompt(msgs []model.InferenceMessage, prefix int) bool {
+// human text. Beside tool results, the person's text is one of three:
+//   - inside the queued-message wrapper (typed while the tools ran);
+//   - after an interrupt: Claude Code's "[Request interrupted by user" line, then what the person
+//     typed, in the same message as the cancelled call's result;
+//   - a rejected call's reason: the result says the person did not want the tool used, then
+//     "the user said:" and their words (results are the request's, matched to this message's
+//     calls).
+//
+// Anything else there came with the tools: "Tool loaded.", a skill's body.
+func startsPrompt(msgs []model.InferenceMessage, prefix int, results []model.InferenceToolResult) bool {
 	i := newestUser(msgs)
 	if i < 0 || i < prefix {
 		return false
 	}
-	if queuedMessage(msgs) {
-		return queuedText(msgs[i].Content) != ""
+	if !queuedMessage(msgs) {
+		return humanText(msgs[i].Content) != ""
 	}
-	return humanText(msgs[i].Content) != ""
+	if queuedText(msgs[i].Content) != "" {
+		return true
+	}
+	if strings.Contains(msgs[i].Content, interruptLine) && humanText(msgs[i].Content) != "" {
+		return true
+	}
+	return rejectedWithReason(msgs[i-1].ToolUseIDs, results)
+}
+
+// interruptLine starts the line Claude Code writes when the person interrupts ("[Request
+// interrupted by user]", "... for tool use]"); it is an injected line itself.
+const interruptLine = "[Request interrupted by user"
+
+// rejectedIntro starts the result Claude Code sends for a tool call the person rejected;
+// rejectedReason introduces what they said with it, when they said anything.
+const (
+	rejectedIntro  = "The user doesn't want to proceed with this tool use."
+	rejectedReason = "the user said:"
+)
+
+// rejectedWithReason reports whether a result for one of the calls ids names (", "-joined) is a
+// rejection that carries the person's words.
+func rejectedWithReason(ids string, results []model.InferenceToolResult) bool {
+	if ids == "" {
+		return false
+	}
+	for _, r := range results {
+		if !r.IsError || !strings.HasPrefix(strings.TrimSpace(r.Content), rejectedIntro) || !slices.Contains(strings.Split(ids, ", "), r.ToolUseID) {
+			continue
+		}
+		if _, reason, ok := strings.Cut(r.Content, rejectedReason); ok && strings.TrimSpace(reason) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // isSuggestionCall reports whether the newest user message asks for a suggestion.

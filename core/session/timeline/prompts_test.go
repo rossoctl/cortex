@@ -201,6 +201,36 @@ func TestPromptsReview2Shapes(t *testing.T) {
 	wantPrompts(t, tl, []float64{0, 60, 70}, []int64{0, 9000, 0})
 }
 
+// From the bot review of 23f727af: what the person types after an interrupt, or with a rejected
+// tool call, starts a prompt, though it comes beside a tool's result; a rejection with no words,
+// and a tool's own text, do not. Synthetic, in the shapes Claude Code sends.
+func TestPromptsInterruptAndRejection(t *testing.T) {
+	var r rec
+	c := conv{user("tidy the config")}
+	r.turn("", 0, 1, c, nil, "tool_use", pipeline.InferenceToolCall{ID: "t1", Name: "Edit"})
+	rejected := pipeline.InferenceToolResult{ToolUseID: "t1", IsError: true,
+		Content: rejectedIntro + " The tool use was rejected. STOP what you are doing and wait for the user to tell you how to proceed."}
+	// Interrupted: the result, the interrupt line, then the person's words: a prompt at 10s.
+	c = c.with(pipeline.InferenceMessage{Role: "assistant", ToolUseIDs: "t1"},
+		user("[Request interrupted by user for tool use]\nno, keep the old key names"))
+	r.turn("", 10, 1, c, []pipeline.InferenceToolResult{rejected}, "tool_use", pipeline.InferenceToolCall{ID: "t2", Name: "Edit"})
+	// Rejected with a reason, in the result itself: a prompt at 20s.
+	withReason := pipeline.InferenceToolResult{ToolUseID: "t2", IsError: true,
+		Content: rejectedIntro + " To tell you how to proceed, " + rejectedReason + "\nonly touch the dev file"}
+	c = c.with(pipeline.InferenceMessage{Role: "assistant", ToolUseIDs: "t2"}, toolResultMsg())
+	r.turn("", 20, 1, c, []pipeline.InferenceToolResult{rejected, withReason}, "tool_use", pipeline.InferenceToolCall{ID: "t3", Name: "Edit"})
+	// Rejected with no words, and a tool's own text: no prompt.
+	silent := pipeline.InferenceToolResult{ToolUseID: "t3", IsError: true, Content: rejectedIntro + " The tool use was rejected."}
+	c = c.with(pipeline.InferenceMessage{Role: "assistant", ToolUseIDs: "t3"}, toolResultMsg())
+	r.turn("", 30, 1, c, []pipeline.InferenceToolResult{rejected, withReason, silent}, "tool_use", pipeline.InferenceToolCall{ID: "t4", Name: "ToolSearch"})
+	c = c.with(pipeline.InferenceMessage{Role: "assistant", ToolUseIDs: "t4"}, user("Tool loaded."))
+	r.turn("", 40, 1, c, []pipeline.InferenceToolResult{rejected, withReason, silent, result("t4", "")}, "end_turn")
+	tl := Build("s", claudeCodeEvents(r.events), time.Time{})
+	if len(tl.Prompts) != 3 || !tl.Prompts[1].Start.Equal(at(10)) || !tl.Prompts[2].Start.Equal(at(20)) {
+		t.Fatalf("prompts = %+v, want starts at 0, 10 and 20s", tl.Prompts)
+	}
+}
+
 // The pieces on their own.
 func TestHumanTextReview2(t *testing.T) {
 	for in, want := range map[string]string{
