@@ -44,6 +44,9 @@ func TestRedactCutKey(t *testing.T) {
 		"set DB_PASSWORD=Sun":         "set DB_PASSWORD=[REDACTED:password]",
 		"api_key: \"ab":               "api_key: \"[REDACTED:secret_value]",
 		"set retries=12":              "set retries=12",
+		"key sk" + "_live_ab":         "key [REDACTED:api_key]",
+		"key rk" + "_test_ab":         "key [REDACTED:api_key]",
+		"key dapi1f":                  "key [REDACTED:api_key]",
 	} {
 		if got, _ := RedactCutKey(in); got != want {
 			t.Errorf("RedactCutKey(%q) = %q, want %q", in, got, want)

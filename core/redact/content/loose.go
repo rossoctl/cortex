@@ -90,9 +90,21 @@ func ansiLen(s string) int {
 	return 0
 }
 
+// keyPrefixes are the known prefixes of the provider keys in apiKeys (rules.go), and a JWT's
+// "eyJ": kept in step with that list.
+const keyPrefixes = `gh[pousr]_|github_pat_|sk-|[sr]k_(?:live|test)_|AKIA|ASIA|ABIA|ACCA|AIza|xox[abeprs][.-]|xapp-|` +
+	`glpat-|gldt-|hf_|npm_|pypi-|SG\.|dapi|eyJ`
+
 // keyFragmentAtEnd is a provider key's known prefix and what follows it, at the end of a text: a
 // key a clip cut short, too short for its rule to find.
-var keyFragmentAtEnd = regexp.MustCompile(`(?:^|[^A-Za-z0-9_-])((?:gh[pousr]_|github_pat_|sk-|AKIA|ASIA|AIza|xox[abeprs][.-]|xapp-|glpat-|gldt-|hf_|npm_|pypi-|eyJ)[A-Za-z0-9_.-]*)$`)
+var keyFragmentAtEnd = regexp.MustCompile(`(?:^|[^A-Za-z0-9_-])((?:` + keyPrefixes + `)[A-Za-z0-9_.-]*)$`)
+
+// keyPrefixAtStart matches a known key prefix at the start of a text.
+var keyPrefixAtStart = regexp.MustCompile(`^(?:` + keyPrefixes + `)`)
+
+// KeyPrefixAt reports whether a known provider key's prefix starts s: where a cleaner dropped a
+// rune just before it, a reader sees the key start there, glued to the word before.
+func KeyPrefixAt(s string) bool { return keyPrefixAtStart.MatchString(s) }
 
 // assignmentAtEnd is a name, an assignment and the start of a value, at the end of a text:
 // "DB_PASSWORD=Sun" a clip cut short.

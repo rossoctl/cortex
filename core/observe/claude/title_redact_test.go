@@ -117,6 +117,31 @@ func TestClipTitle_FitEndMarkerKeepsEarlierMarkersWhole(t *testing.T) {
 	}
 }
 
+// From the bot reviews of d39ec00c: a key split by one dropped control and glued to a word by
+// another is found; an OSC title sequence ended by BEL takes nothing after it; a Stripe key cut
+// at the end is replaced.
+func TestClipTitle_BotReviewProbes(t *testing.T) {
+	key := fakeKey()
+	for name, in := range map[string]string{
+		"nul glued and split": "fix\x00" + key[:10] + "\x00" + key[10:],
+		"vt glued and split":  "fix\v" + key[:10] + "\v" + key[10:],
+	} {
+		if got := clipTitle(in); strings.Contains(got, "GGGG") || strings.Contains(got, "gh"+"p") {
+			t.Errorf("%s: %q holds the key", name, got)
+		}
+	}
+	if got := clipTitle("hello \x1b]0;window\x07 fix login"); got != "hello fix login" {
+		t.Errorf("an OSC ended by BEL: %q, want %q", got, "hello fix login")
+	}
+	stripe := "sk" + "_live_" + strings.Repeat("S", 30)
+	r := []rune(strings.Repeat("word ", 14) + stripe)
+	m := map[string]SessionMetadata{"s": {Title: string(r[:MaxTitleLen])}}
+	RedactStoredTitles(m)
+	if strings.Contains(m["s"].Title, "_live_") {
+		t.Errorf("a cut Stripe key: %q", m["s"].Title)
+	}
+}
+
 // Titles harvested before the rules applied are redacted as the file is read; the rest of an
 // entry, and a clean title, are left as they were.
 func TestRedactStoredTitles(t *testing.T) {

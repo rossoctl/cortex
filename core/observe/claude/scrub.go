@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -256,21 +257,19 @@ func scrubRunes(s string) string {
 // again on the normalized text, as normalizing can put a key back together other ways too (markup
 // stripped from inside it). A key the cut leaves short is replaced (content.RedactCutKey).
 func clipTitle(s string) string {
-	sq, spaced, at, cut := squeezeSpace(s, titleRawBytes, titleScanBytes)
+	sq, spaced, at, dropAt, cut := squeezeSpace(s, titleRawBytes, titleScanBytes)
 	// The rules first read the spaced copy, where each dropped rune is a space: dropping a form
 	// feed or a NUL glues what is on either side ("fix" and a key), and a key glued to a word has
 	// no boundary before it. What they find there is replaced in the squeezed text.
-	if edits := titleRedactor.Find(spaced, content.Context{}); len(edits) > 0 {
-		for i := range edits {
-			edits[i].Start = at[edits[i].Start]
-			if edits[i].End < len(at) {
-				edits[i].End = at[edits[i].End]
-			} else {
-				edits[i].End = len(sq)
-			}
-		}
-		sq = content.Apply(sq, edits)
+	// And a copy with a space only where a dropped run stood just before a key's known prefix:
+	// a key split by a second dropped rune ("fix\x00ghp_..\x00..") is whole in the squeezed text
+	// but glued to the word, and split in the spaced copy. Both are mapped onto the squeezed text
+	// and applied together.
+	edits := mappedEdits(sq, spaced, at)
+	if marked, at2 := spaceBeforeKeys(sq, dropAt); at2 != nil {
+		edits = append(edits, mappedEdits(sq, marked, at2)...)
 	}
+	sq = content.Apply(sq, mergeEdits(edits))
 	red, _ := titleRedactor.StringSkipping(sq)
 	if cut {
 		red, _ = content.RedactCutKey(red)
@@ -287,8 +286,13 @@ func clipTitle(s string) string {
 // bytes of s; cut reports that it stopped before s's end.
 //
 // spaced is the same text with a space where each run of dropped runes was, for the rules only,
-// and at maps each of its bytes to the offset in out it stands at.
-func squeezeSpace(s string, n, scan int) (out, spaced string, at []int, cut bool) {
+// and at maps each of its bytes to the offset in out it stands at. dropAt are the offsets in out
+// where a run of dropped runes stood.
+//
+// ESC and BEL are kept, though scrubRunes drops them: they start and end an ANSI sequence, which
+// stripANSI removes whole before scrubRunes runs. Without BEL an OSC title sequence
+// ("\x1b]0;window\x07") would run on and take the rest of the title with it.
+func squeezeSpace(s string, n, scan int) (out, spaced string, at, dropAt []int, cut bool) {
 	var b, sp strings.Builder
 	inRun, runBreak, dropped := false, false, false
 	put := func(c byte) { // a byte of both
@@ -305,10 +309,13 @@ func squeezeSpace(s string, n, scan int) (out, spaced string, at []int, cut bool
 		case dropped:
 			at = append(at, b.Len())
 			sp.WriteByte(' ')
+			dropAt = append(dropAt, b.Len())
 		}
 		inRun, runBreak, dropped = false, false, false
 	}
-	done := func(cut bool) (string, string, []int, bool) { return b.String(), sp.String(), at, cut }
+	done := func(cut bool) (string, string, []int, []int, bool) {
+		return b.String(), sp.String(), at, dropAt, cut
+	}
 	for i, r := range s {
 		if b.Len() >= n || i >= scan {
 			return done(true)
@@ -318,7 +325,7 @@ func squeezeSpace(s string, n, scan int) (out, spaced string, at []int, cut bool
 			runBreak = runBreak || r == '\n' || r == '\r' || r == 0x2028 || r == 0x2029
 			continue
 		}
-		if !unicode.IsGraphic(r) && r != 0x1b {
+		if !unicode.IsGraphic(r) && r != 0x1b && r != 0x07 {
 			dropped = true // dropped by scrubRunes: it neither shows nor separates
 			continue
 		}
@@ -335,6 +342,70 @@ func squeezeSpace(s string, n, scan int) (out, spaced string, at []int, cut bool
 		flush()
 	}
 	return done(false)
+}
+
+// mappedEdits runs the rules on probe, a copy of s with bytes added, and returns what they find
+// as edits of s: at maps each byte of probe to the offset in s it stands at.
+func mappedEdits(s, probe string, at []int) []content.Edit {
+	edits := titleRedactor.Find(probe, content.Context{})
+	for i := range edits {
+		edits[i].Start = at[edits[i].Start]
+		if edits[i].End < len(at) {
+			edits[i].End = at[edits[i].End]
+		} else {
+			edits[i].End = len(s)
+		}
+	}
+	return edits
+}
+
+// mergeEdits sorts edits and joins those that overlap, as Apply needs them.
+func mergeEdits(edits []content.Edit) []content.Edit {
+	if len(edits) < 2 {
+		return edits
+	}
+	sort.Slice(edits, func(i, j int) bool { return edits[i].Start < edits[j].Start })
+	out := edits[:1]
+	for _, e := range edits[1:] {
+		if last := &out[len(out)-1]; e.Start < last.End {
+			last.End = max(last.End, e.End)
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// spaceBeforeKeys is s with a space added at each of dropAt that a known key prefix follows,
+// right after a letter or a digit, and the map of its bytes to offsets in s.
+func spaceBeforeKeys(s string, dropAt []int) (string, []int) {
+	var b strings.Builder
+	var at []int
+	last := 0
+	for _, p := range dropAt {
+		if p <= 0 || p > len(s) || !isWordByte(s[p-1]) || !content.KeyPrefixAt(s[p:]) {
+			continue
+		}
+		for k := last; k < p; k++ {
+			at = append(at, k)
+		}
+		b.WriteString(s[last:p])
+		at = append(at, p)
+		b.WriteByte(' ')
+		last = p
+	}
+	if last == 0 && b.Len() == 0 {
+		return s, nil
+	}
+	for k := last; k < len(s); k++ {
+		at = append(at, k)
+	}
+	b.WriteString(s[last:])
+	return b.String(), at
+}
+
+func isWordByte(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c >= 0x80
 }
 
 // titleRawBytes is how much of a title's raw text the secret rules see, and titleScanBytes how
