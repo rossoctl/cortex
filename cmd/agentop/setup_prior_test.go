@@ -378,7 +378,7 @@ func failingUnload(t *testing.T, loaded string) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if b, _ := os.ReadFile(fake); !strings.Contains(string(b), loaded) { //nolint:gosec
+		if b, _ := os.ReadFile(fake); !isFakeSupervisorStub(b, loaded) { //nolint:gosec
 			t.Fatalf("%s on PATH is not fakeSupervisor's", fake)
 		}
 		installStub(t, w.tool, `#!/bin/sh
@@ -567,7 +567,7 @@ func asyncTeardown(t *testing.T, loaded string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b, _ := os.ReadFile(fake); !strings.Contains(string(b), loaded) { //nolint:gosec
+	if b, _ := os.ReadFile(fake); !isFakeSupervisorStub(b, loaded) { //nolint:gosec
 		t.Fatalf("%s on PATH is not fakeSupervisor's", fake)
 	}
 	leaving, looked := loaded+".leaving", loaded+".looked"

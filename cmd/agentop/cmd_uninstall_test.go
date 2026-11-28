@@ -427,7 +427,7 @@ func slowTeardown(t *testing.T, loaded string, polls int) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b, _ := os.ReadFile(fake); !strings.Contains(string(b), loaded) { //nolint:gosec // the scene's stub
+	if b, _ := os.ReadFile(fake); !isFakeSupervisorStub(b, loaded) { //nolint:gosec // the scene's stub
 		t.Fatalf("%s on PATH is not fakeSupervisor's", fake)
 	}
 	tearing := filepath.Join(t.TempDir(), "tearing")

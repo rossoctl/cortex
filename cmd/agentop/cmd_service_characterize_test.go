@@ -36,35 +36,48 @@ func fakeSupervisor(t *testing.T) string {
 	t.Helper()
 	skipSceneInShort(t)
 	loaded := filepath.Join(t.TempDir(), "loaded")
+	// The stubs read the path from the environment, so their text is the same in
+	// every test, and linkStub can reuse one file.
+	t.Setenv("FAKE_SUPERVISOR_LOADED", loaded)
 	installStub(t, "launchctl", `#!/bin/sh
 case "$1" in
   print)
     case "$2" in
-      */*/*) if [ -f '`+loaded+`' ]; then echo 'state = running'; exit 0; fi
+      */*/*) if [ -f "$FAKE_SUPERVISOR_LOADED" ]; then echo 'state = running'; exit 0; fi
              echo 'Could not find service' >&2; exit 113 ;;
     esac
     exit 0 ;;
-  bootstrap) : > '`+loaded+`' ;;
-  bootout) if [ -f '`+loaded+`' ]; then rm -f '`+loaded+`'; exit 0; fi
+  bootstrap) : > "$FAKE_SUPERVISOR_LOADED" ;;
+  bootout) if [ -f "$FAKE_SUPERVISOR_LOADED" ]; then rm -f "$FAKE_SUPERVISOR_LOADED"; exit 0; fi
            echo 'Boot-out failed: 3: No such process' >&2; exit 3 ;;
-  enable) rm -f '`+loaded+`.disabled' ;;
-  disable) : > '`+loaded+`.disabled' ;;
-  print-disabled) if [ -f '`+loaded+`.disabled' ]; then printf '\t"io.rossoctl.cortex" => disabled\n'; fi ;;
+  enable) rm -f "$FAKE_SUPERVISOR_LOADED.disabled" ;;
+  disable) : > "$FAKE_SUPERVISOR_LOADED.disabled" ;;
+  print-disabled) if [ -f "$FAKE_SUPERVISOR_LOADED.disabled" ]; then printf '\t"io.rossoctl.cortex" => disabled\n'; fi ;;
 esac
 exit 0
 `)
 	installStub(t, "systemctl", `#!/bin/sh
 case "$*" in
-  *is-active*) if [ -f '`+loaded+`' ]; then echo active; exit 0; fi; echo inactive; exit 3 ;;
-  *is-enabled*) if [ -f '`+loaded+`' ]; then echo enabled; exit 0; fi; echo disabled; exit 1 ;;
-  *restart*) : > '`+loaded+`' ;;
-  *disable*) rm -f '`+loaded+`' ;;
+  *is-active*) if [ -f "$FAKE_SUPERVISOR_LOADED" ]; then echo active; exit 0; fi; echo inactive; exit 3 ;;
+  *is-enabled*) if [ -f "$FAKE_SUPERVISOR_LOADED" ]; then echo enabled; exit 0; fi; echo disabled; exit 1 ;;
+  *restart*) : > "$FAKE_SUPERVISOR_LOADED" ;;
+  *disable*) rm -f "$FAKE_SUPERVISOR_LOADED" ;;
 esac
 exit 0
 `)
 	installStub(t, "loginctl", "#!/bin/sh\necho Linger=yes\n")
 	installFalse(t, "lsof")
 	return loaded
+}
+
+// isFakeSupervisorStub reports whether b, a launchctl or systemctl stub, is the one
+// fakeSupervisor installed with this loaded path, or a wrapper that names the path,
+// as asyncTeardown's does.
+func isFakeSupervisorStub(b []byte, loaded string) bool {
+	if strings.Contains(string(b), loaded) {
+		return true
+	}
+	return strings.Contains(string(b), "$FAKE_SUPERVISOR_LOADED") && os.Getenv("FAKE_SUPERVISOR_LOADED") == loaded
 }
 
 // fakeNoSupervisor makes both platforms' supervisors unreachable, the way a

@@ -55,9 +55,7 @@ func installStub(t *testing.T, name, body string) {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(body), 0o700); err != nil { //nolint:gosec
-		t.Fatal(err)
-	}
+	linkStub(t, path, body)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	if got, err := exec.LookPath(name); err != nil || got != path {
 		t.Fatalf("stub not reachable: LookPath(%q) = %q, %v; want %q", name, got, err, path)

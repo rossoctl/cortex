@@ -16,7 +16,7 @@ import (
 func configEnv(t *testing.T) *setupEnv {
 	t.Helper()
 	env := newTestSetupEnv(t)
-	writeExe(t, filepath.Join(env.binDir, "cortex"), cortexStub("127.0.0.1:1"))
+	writeExe(t, filepath.Join(env.binDir, "cortex"), cortexStub(t, "127.0.0.1:1"))
 	return env
 }
 

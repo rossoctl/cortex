@@ -42,7 +42,7 @@ func newSetupScene(t *testing.T, healthz http.HandlerFunc) setupScene {
 	testhome.Set(t, home)
 	t.Setenv("SHELL", "/bin/zsh")
 	stubTerminal(t, true, "y\n")
-	return setupScene{home: home, stage: stageDir(t, cortexStub(strings.TrimPrefix(srv.URL, "http://"))), loaded: loaded}
+	return setupScene{home: home, stage: stageDir(t, cortexStub(t, strings.TrimPrefix(srv.URL, "http://"))), loaded: loaded}
 }
 
 func stubTerminal(t *testing.T, has bool, answer string) {

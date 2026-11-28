@@ -569,6 +569,7 @@ func TestMain(m *testing.M) {
 	cleanup := testhome.Isolate()
 	code := m.Run()
 	cleanup()
+	removeStubCache()
 	os.Exit(code)
 }
 
