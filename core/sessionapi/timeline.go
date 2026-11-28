@@ -269,6 +269,7 @@ func clone(tl *timeline.Timeline) *timeline.Timeline {
 	cp.Returns = slices.Clone(tl.Returns)
 	cp.Hosts = slices.Clone(tl.Hosts)
 	cp.Jobs = slices.Clone(tl.Jobs)
+	cp.Prompts = slices.Clone(tl.Prompts) // Clip rewrites it in place too
 	return &cp
 }
 

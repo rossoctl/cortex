@@ -145,6 +145,7 @@ func buildAgents(t *Timeline, events []model.SessionEvent) {
 	agents := map[string]*agentState{}
 	var order []string
 	var calBytes, calTokens int64 // sums over the turns that set t.bytesPerToken
+	var mains []promptCall        // the main agent's calls, for buildPrompts
 
 	for _, c := range calls {
 		inf := c.req.Inference
@@ -164,6 +165,9 @@ func buildAgents(t *Timeline, events []model.SessionEvent) {
 		st.prev = msgs
 
 		turn := Turn{Agent: c.agent, Start: c.req.At, Resent: resent, Seq: c.req.Seq, Model: inf.Model, requestID: c.req.RequestID}
+		if c.agent == MainAgent && claudeCodeCall(c.req) {
+			mains = append(mains, promptCall{turn: len(t.Turns), starts: startsPrompt(msgs, k, inf.ToolResults), side: isSuggestionCall(msgs), queued: queuedPrompt(msgs)})
+		}
 		if c.resp == nil {
 			t.Turns = append(t.Turns, turn)
 			continue
@@ -222,6 +226,7 @@ func buildAgents(t *Timeline, events []model.SessionEvent) {
 		known[a.ID] = true
 	}
 	t.Returns = slices.DeleteFunc(t.Returns, func(r Return) bool { return !known[r.Agent] || r.Agent == r.Into })
+	buildPrompts(t, mains)
 }
 
 // linkAgents builds the agent tree. A subagent is linked to the Agent call that started it by

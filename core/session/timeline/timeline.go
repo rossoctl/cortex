@@ -61,6 +61,9 @@ type Timeline struct {
 	Hosts     []Host    `json:"hosts"`
 	// Jobs are background shell commands. Omitted when empty, so an older agentop never sees it.
 	Jobs []Job `json:"jobs,omitempty"`
+	// Prompts group the turns by the human instruction that caused them (prompts.go). Omitted
+	// when empty, so an older agentop never sees it.
+	Prompts []Prompt `json:"prompts,omitempty"`
 
 	// scanned counts the message bytes searched for returns, so a test can pin that only
 	// messages new to an agent are read.
@@ -327,6 +330,7 @@ func (t *Timeline) Clip(from, to time.Time) {
 	t.Returns = slices.DeleteFunc(t.Returns, func(s Return) bool { return !in(s.At, &s.At) })
 	t.Hosts = slices.DeleteFunc(t.Hosts, func(s Host) bool { return !in(s.Start, s.End) })
 	t.Jobs = slices.DeleteFunc(t.Jobs, func(s Job) bool { return !in(s.Start, s.End) })
+	t.Prompts = slices.DeleteFunc(t.Prompts, func(s Prompt) bool { return !in(s.Start, s.End) })
 }
 
 // HostKey is the row a host lands in: lowercased, with the default HTTPS port dropped, so a

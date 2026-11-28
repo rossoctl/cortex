@@ -170,7 +170,7 @@ you get `toolCallCount` but no tool names. With `--full` you get the names and t
 arguments. You also get every prompt, completion and tool result, which is usually more
 than the question needs.
 
-`GET /v1/sessions/{id}/timeline` answers it directly, and carries no prompts. It returns
+`GET /v1/sessions/{id}/timeline` answers it directly, and carries no message bodies (a tool's `preview` can repeat text from the prompt). It returns
 named tool spans. Each span has `start`, `end` and a `preview` of the tool's own argument:
 the Bash command, the file path, or the URL. It also returns one span per model call.
 

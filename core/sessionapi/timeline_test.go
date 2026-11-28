@@ -129,6 +129,46 @@ func TestTimelineCacheFollowsTheNewestEvent(t *testing.T) {
 	}
 }
 
+// A clipped read does not reach the cached prompts: Clip rewrites them in place, so the cache
+// hands out a copy (clone). Two Claude Code prompts 30 minutes apart, read whole, clipped, whole.
+func TestTimelineCacheKeepsPromptsAcrossAClippedRead(t *testing.T) {
+	ts, store := newTestServer(t)
+	base := time.Now().Add(-time.Hour)
+	cc := &pipeline.EventClient{Name: "claude-code"}
+	msgs := []pipeline.InferenceMessage{{Role: "user", Content: "first task"}}
+	for i, at := range []time.Time{base, base.Add(30 * time.Minute)} {
+		if i == 1 {
+			msgs = append(msgs, pipeline.InferenceMessage{Role: "assistant", Content: "done"}, pipeline.InferenceMessage{Role: "user", Content: "second task"})
+		}
+		rid := "p" + string(rune('1'+i))
+		store.Append("s1", pipeline.SessionEvent{At: at, Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, RequestID: rid, Host: "llm.example",
+			Client: cc, Inference: &pipeline.InferenceExtension{AgentRole: pipeline.AgentRoleMain, Tools: []pipeline.InferenceTool{{Name: "Bash"}}, Messages: slices.Clone(msgs)}})
+		store.Append("s1", pipeline.SessionEvent{At: at.Add(time.Second), Direction: pipeline.Outbound, Phase: pipeline.SessionResponse, RequestID: rid, Host: "llm.example",
+			Client: cc, StatusCode: 200, Duration: time.Second, Inference: &pipeline.InferenceExtension{FinishReason: "end_turn"}})
+	}
+	want := func(tl *timeline.Timeline, n int) {
+		t.Helper()
+		if len(tl.Prompts) != n {
+			t.Fatalf("prompts = %+v, want %d", tl.Prompts, n)
+		}
+		for _, p := range tl.Prompts {
+			if p.Index == 0 || p.FirstSeq == 0 || p.Start.IsZero() || p.End == nil {
+				t.Errorf("a damaged prompt: %+v", p)
+			}
+		}
+	}
+	tl, _ := getTimeline(t, ts.URL, "s1", "")
+	want(tl, 2)
+	from := url.QueryEscape(base.Add(20 * time.Minute).Format(time.RFC3339))
+	tl, _ = getTimeline(t, ts.URL, "s1", "?from="+from)
+	want(tl, 1)
+	if tl.Prompts[0].Index != 2 {
+		t.Errorf("the clipped window's prompt = %+v, want the session's index 2", tl.Prompts[0])
+	}
+	tl, _ = getTimeline(t, ts.URL, "s1", "")
+	want(tl, 2)
+}
+
 // A session past the read bound says so.
 func TestTimelineSaysWhenItIsTruncated(t *testing.T) {
 	store := session.New(0, 0, 0) // uncapped: newTestServer's store holds only 100 events
