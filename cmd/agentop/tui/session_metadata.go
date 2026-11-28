@@ -109,6 +109,7 @@ func LoadSessionMetadata(path string) map[string]SessionMetadata {
 		// callers to reason about, so normalise it.
 		return out
 	}
+	claude.RedactStoredTitles(m) // a title harvested before the secret rules applied
 	return m
 }
 

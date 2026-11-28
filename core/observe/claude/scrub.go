@@ -1,9 +1,12 @@
 package claude
 
 import (
+	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/rossoctl/cortex/core/redact/content"
 )
 
 // MaxCwdLen caps the cwd fallback, in RUNES.
@@ -239,13 +242,300 @@ func scrubRunes(s string) string {
 // neighbour: combining marks, modifiers, joiners and regional indicators are all gone, so one rune
 // is one grapheme and the slice cannot land inside a cluster. Without that a cut could leave a
 // dangling accent or half a flag.
+//
+// SECRETS ARE REDACTED (#1921) on the RAW text, before normalizeTitle and the cut, for the
+// reasons core/session's sanitizeTitle gives: a key starting inside the title but running past the
+// cut is seen whole, and the rules read a line break as the end of a value, which normalizing
+// turns into a space ("PASSWORD=Sunflower\nHOST=db" would read as prose). The window is generous,
+// as the harvest runs off the viewer's path and markup can fill the start of a prompt. The text
+// is first squeezed as normalizeTitle will treat it (squeezeSpace), so a long run of spaces or of
+// runes it drops cannot push a key out of the window; where the squeeze cut, a key cut short at
+// the window's end is replaced (content.RedactCutKey). A marker the cut would sever is dropped.
+//
+// The rules skip what would hide a key from them and that normalizing removes (StringSkipping):
+// an ANSI escape, a zero-width or format character, a combining mark inside it. And they run
+// again on the normalized text, as normalizing can put a key back together other ways too (markup
+// stripped from inside it). A key the cut leaves short is replaced (content.RedactCutKey).
 func clipTitle(s string) string {
-	s = normalizeTitle(s)
+	sq, spaced, at, dropAt, cut := squeezeSpace(s, titleRawBytes, titleScanBytes)
+	// The rules first read the spaced copy, where each dropped rune is a space: dropping a form
+	// feed or a NUL glues what is on either side ("fix" and a key), and a key glued to a word has
+	// no boundary before it. What they find there is replaced in the squeezed text.
+	// And a copy with a space only where a dropped run stood just before a key's known prefix:
+	// a key split by a second dropped rune ("fix\x00ghp_..\x00..") is whole in the squeezed text
+	// but glued to the word, and split in the spaced copy. Both are mapped onto the squeezed text
+	// and applied together.
+	edits := mappedEdits(sq, spaced, at)
+	if marked, at2 := spaceBeforeKeys(sq, dropAt); at2 != nil {
+		edits = append(edits, mappedEdits(sq, marked, at2)...)
+	}
+	sq = content.Apply(sq, mergeEdits(edits))
+	red, _ := titleRedactor.StringSkipping(sq)
+	if cut {
+		red, _ = content.RedactCutKey(red)
+	}
+	red, _ = titleRedactor.StringSkipping(normalizeTitle(red))
+	return capTitle(red)
+}
+
+// squeezeSpace is s as scrubRunes will treat it, as far as the window goes: each run of separator
+// spaces (isSeparatorSpace, which scrubRunes folds) made one character, "\n" where the run held a
+// line break and " " elsewhere; every other non-printing rune (which scrubRunes drops: U+000B,
+// U+000C, U+0085, NUL, format characters) left out, but ESC, which starts an ANSI sequence the
+// later passes read whole. It writes at most n bytes, at a rune boundary, and reads at most scan
+// bytes of s; cut reports that it stopped before s's end.
+//
+// spaced is the same text with a space where each run of dropped runes was, for the rules only,
+// and at maps each of its bytes to the offset in out it stands at. dropAt are the offsets in out
+// where a run of dropped runes stood.
+//
+// ANSI SEQUENCES ARE TAKEN OUT HERE, as stripANSI will take them out, so the rules see what will
+// be shown: a CSI, an OSC or other string sequence to its BEL or ST (or the end), a charset
+// selection's three bytes. Each is a dropped run. A LONE ESC, one that starts none of those, is
+// dropped by itself and the character after it kept: stripANSI would take that character too
+// (as "ESC c"), and inside a key that leaves one too short for its rule, shown all but whole. A
+// BEL that ends no sequence is dropped like any control.
+func squeezeSpace(s string, n, scan int) (out, spaced string, at, dropAt []int, cut bool) {
+	var b, sp strings.Builder
+	inRun, runBreak, dropped := false, false, false
+	put := func(c byte) { // a byte of both
+		at = append(at, b.Len())
+		b.WriteByte(c)
+		sp.WriteByte(c)
+	}
+	flush := func() {
+		switch {
+		case inRun && runBreak:
+			put('\n')
+		case inRun:
+			put(' ')
+		case dropped:
+			at = append(at, b.Len())
+			sp.WriteByte(' ')
+			dropAt = append(dropAt, b.Len())
+		}
+		inRun, runBreak, dropped = false, false, false
+	}
+	done := func(cut bool) (string, string, []int, []int, bool) {
+		return b.String(), sp.String(), at, dropAt, cut
+	}
+	for i := 0; i < len(s); {
+		if b.Len() >= n || i >= scan {
+			return done(true)
+		}
+		if s[i] == 0x1b {
+			// The sequence's length as stripANSI takes it; 1 for a lone ESC.
+			dropped = true
+			i += ansiSpan(s[i:])
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		i += size
+		if isSeparatorSpace(r) {
+			inRun = true
+			runBreak = runBreak || r == '\n' || r == '\r' || r == 0x2028 || r == 0x2029
+			continue
+		}
+		if !unicode.IsGraphic(r) {
+			dropped = true // dropped by scrubRunes: it neither shows nor separates
+			continue
+		}
+		flush()
+		if b.Len()+utf8.RuneLen(r) > n {
+			return done(true)
+		}
+		var buf [utf8.UTFMax]byte
+		for _, c := range buf[:utf8.EncodeRune(buf[:], r)] {
+			put(c)
+		}
+	}
+	if b.Len() < n {
+		flush()
+	}
+	return done(false)
+}
+
+// ansiSpan is the length of the escape sequence s starts with (s[0] is ESC), as stripANSI takes
+// it: a CSI to its final byte, a string sequence (OSC, DCS, SOS, PM, APC) to its BEL or ST, a
+// charset selection's three bytes, each to the end of s if it does not finish. A lone ESC, which
+// starts none of these, is 1: only the ESC goes (see squeezeSpace).
+func ansiSpan(s string) int {
+	if len(s) < 2 {
+		return len(s)
+	}
+	switch s[1] {
+	case '[':
+		for j := 2; j < len(s); j++ {
+			if s[j] >= '@' && s[j] <= '~' {
+				return j + 1
+			}
+		}
+		return len(s)
+	case ']', 'P', 'X', '^', '_':
+		for j := 2; j < len(s); j++ {
+			if s[j] == 0x07 {
+				return j + 1
+			}
+			if s[j] == 0x1b && j+1 < len(s) && s[j+1] == '\\' {
+				return j + 2
+			}
+		}
+		return len(s)
+	case '(', ')', '*', '+', '-', '.', '/', '%', '#', ' ':
+		return min(3, len(s))
+	}
+	return 1
+}
+
+// mappedEdits runs the rules on probe, a copy of s with bytes added, and returns what they find
+// as edits of s: at maps each byte of probe to the offset in s it stands at.
+func mappedEdits(s, probe string, at []int) []content.Edit {
+	edits := titleRedactor.Find(probe, content.Context{})
+	for i := range edits {
+		edits[i].Start = at[edits[i].Start]
+		if edits[i].End < len(at) {
+			edits[i].End = at[edits[i].End]
+		} else {
+			edits[i].End = len(s)
+		}
+	}
+	return edits
+}
+
+// mergeEdits sorts edits and joins those that overlap, as Apply needs them.
+func mergeEdits(edits []content.Edit) []content.Edit {
+	if len(edits) < 2 {
+		return edits
+	}
+	sort.Slice(edits, func(i, j int) bool { return edits[i].Start < edits[j].Start })
+	out := edits[:1]
+	for _, e := range edits[1:] {
+		if last := &out[len(out)-1]; e.Start < last.End {
+			last.End = max(last.End, e.End)
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// spaceBeforeKeys is s with a space added at each of dropAt that a known key prefix follows,
+// right after a letter or a digit, and the map of its bytes to offsets in s.
+func spaceBeforeKeys(s string, dropAt []int) (string, []int) {
+	var b strings.Builder
+	var at []int
+	last := 0
+	for _, p := range dropAt {
+		if p <= 0 || p > len(s) || !isWordByte(s[p-1]) || !content.KeyPrefixAt(s[p:]) {
+			continue
+		}
+		for k := last; k < p; k++ {
+			at = append(at, k)
+		}
+		b.WriteString(s[last:p])
+		at = append(at, p)
+		b.WriteByte(' ')
+		last = p
+	}
+	if last == 0 && b.Len() == 0 {
+		return s, nil
+	}
+	for k := last; k < len(s); k++ {
+		at = append(at, k)
+	}
+	b.WriteString(s[last:])
+	return b.String(), at
+}
+
+func isWordByte(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c >= 0x80
+}
+
+// titleRawBytes is how much of a title's raw text the secret rules see, and titleScanBytes how
+// much of it the squeeze reads to fill that.
+const (
+	titleRawBytes  = 64 << 10
+	titleScanBytes = 4 * titleRawBytes
+)
+
+// titleRedactor holds no state; one is shared by every title.
+var titleRedactor = content.New()
+
+// capTitle cuts s to MaxTitleLen runes, dropping a redaction marker the cut would sever.
+func capTitle(s string) string {
 	r := []rune(s)
 	if len(r) <= MaxTitleLen {
-		return s
+		return strings.TrimSpace(s)
 	}
-	return strings.TrimSpace(string(r[:MaxTitleLen]))
+	t := string(r[:MaxTitleLen])
+	// A key the cut leaves short is a key: replaced, the marker kept whole and in sight.
+	if red, ok := content.RedactCutKey(t); ok {
+		return fitEndMarker(red)
+	}
+	return strings.TrimSpace(dropSeveredMarker(t))
+}
+
+// fitEndMarker is t, which ends in a redaction marker, cut to MaxTitleLen runes by shortening
+// what comes before the marker, so the marker stays whole and in sight: a word replaced is shown
+// as replaced.
+func fitEndMarker(t string) string {
+	r := []rune(t)
+	if len(r) <= MaxTitleLen {
+		return strings.TrimSpace(t)
+	}
+	j := strings.LastIndex(t, "[REDACTED:")
+	if j < 0 {
+		return strings.TrimSpace(string(r[:MaxTitleLen]))
+	}
+	mark := t[j:]
+	room := MaxTitleLen - utf8.RuneCountInString(mark)
+	pre := []rune(t[:j])
+	if room <= 0 {
+		return strings.TrimSpace(string(r[:MaxTitleLen]))
+	}
+	if len(pre) > room {
+		pre = pre[:room]
+	}
+	// Shortening can cut an earlier marker in turn: drop what is left of it.
+	return strings.TrimSpace(dropSeveredMarker(string(pre))) + mark
+}
+
+// dropSeveredMarker removes a redaction marker a cut left short at t's end: "…[REDACTED:api_k",
+// or any piece of "[REDACTED:" down to its "[", which would read as a broken word.
+func dropSeveredMarker(t string) string {
+	j := strings.LastIndexByte(t, '[')
+	if j < 0 || strings.Contains(t[j:], "]") {
+		return t
+	}
+	if tail := t[j:]; strings.HasPrefix("[REDACTED:", tail) || strings.HasPrefix(tail, "[REDACTED:") {
+		return t[:j]
+	}
+	return t
+}
+
+// RedactStoredTitles runs the secret rules over the titles in m, which may have been harvested
+// before they applied. Both readers of the metadata file call it, so an old title is shown
+// redacted at once and the next harvest saves it so. A stored title of MaxTitleLen runes was cut
+// there by the old clip, so a key prefix at its end ("… ghp_Gx7Gx7") is a key cut short: the
+// harvest skips unchanged transcripts, so it would never be rebuilt.
+func RedactStoredTitles(m map[string]SessionMetadata) {
+	for id, e := range m {
+		if e.Title == "" {
+			continue
+		}
+		red, _ := titleRedactor.StringSkipping(e.Title)
+		if utf8.RuneCountInString(e.Title) == MaxTitleLen {
+			if c, ok := content.RedactCutKey(red); ok {
+				e.Title = fitEndMarker(c)
+				m[id] = e
+				continue
+			}
+		}
+		if red != e.Title {
+			e.Title = capTitle(red)
+			m[id] = e
+		}
+	}
 }
 
 // stripANSI removes a CSI/OSC escape sequence together with its parameters.

@@ -635,6 +635,7 @@ func ReadMetadata(path string) (map[string]SessionMetadata, error) {
 	if m == nil {
 		return map[string]SessionMetadata{}, nil
 	}
+	RedactStoredTitles(m)
 	return m, nil
 }
 

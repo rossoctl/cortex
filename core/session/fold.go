@@ -32,8 +32,9 @@ import (
 func applyTitle(rank int, title string, candRank int, candText string) (int, string) {
 	if candText != "" && (candRank < rank || (candRank == rank && candRank == rankRename)) {
 		// sanitizeTitle IS SAFE UNDER THE STORE'S LOCK, where appendLocked calls this, because it
-		// is O(maxTitleLen) rather than O(candidate): it stops at 80 emitted runes, so a 190KB
-		// candidate costs 328ns, not 916µs.
+		// is bounded rather than O(candidate): the secret rules see titleRawBytes of it and the
+		// fold stops at titleWindow emitted runes, so a 190KB candidate costs what a 1.3KB one
+		// does. (Before the secret rules it stopped at 80 runes: 328ns against 916µs unbounded.)
 		//
 		// A CALL-COUNTING ARGUMENT IS NOT ENOUGH HERE, which is why the cap and not the count is
 		// what this rests on. "At most once per rank improvement" bounds the fold at three times
@@ -571,7 +572,7 @@ func (f *SummaryFold) UnmarshalJSON(b []byte) error {
 		}},
 		units:           j.Units,
 		titleRank:       rankNone,
-		title:           j.Title,
+		title:           redactStoredTitle(j.Title), // written before the secret rules applied, maybe
 		restoredContext: j.PromptContext,
 		inferenceHost:   j.InferenceHost,
 		inferenceServer: string(j.InferenceServer),

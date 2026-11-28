@@ -3,9 +3,11 @@ package session
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/rossoctl/cortex/core/capabilities"
 	"github.com/rossoctl/cortex/core/model"
+	"github.com/rossoctl/cortex/core/redact/content"
 )
 
 // maxTitleLen caps a title, in RUNES — a user message is unbounded (the largest measured event
@@ -863,15 +865,182 @@ func between(s, open, closing string) string {
 // its base, leaving a dangling accent. core/observe/claude's clip is exempt because its scrubRunes
 // drops every combining mark first; this one keeps them, so "café" survives and the cut is the
 // price. Grapheme clusters need a segmentation library core/ does not have.
+//
+// SECRETS ARE REDACTED (#1921): a title is the first thing a person typed, shown in agentop and
+// served by the session API, and a pasted key there is a key on every screen that shows the list.
+// The secret rules (core/redact/content) run on the RAW text, before the fold, on a window of
+// titleRawBytes wider than the title; the result is then folded and clipped.
+//   - Wider: a key that starts inside the title but runs past rune 80 is seen whole, where a rule
+//     run on the clipped title would see too short a piece to match and leave it.
+//   - Raw: the fold turns a line break into a space, and the rules read a line break as the end
+//     of a value: "DB_PASSWORD=Sunflower\nDB_HOST=db" is a password, but folded to
+//     "DB_PASSWORD=Sunflower DB_HOST=db" a word of letters followed by more words reads as prose.
+//
+// BOUNDED, so still safe under the lock: the rules see at most titleRawBytes, and the squeeze
+// before them reads at most titleScanBytes of the candidate, however much whitespace it holds.
+// The squeeze makes each run of whitespace one character (a line break where the run held one,
+// so the rules still see it), so the window counts what the fold will show: "fix" + 1274 spaces
+// (or no-break spaces, or U+3000) + a key is not cut to "fix ghp". Where the squeeze cut, a key
+// cut short at the window's end is replaced (content.RedactCutKey).
+//
+// The rules skip what would hide a key from them and not from a reader (StringSkipping): an ANSI
+// escape, a zero-width or format character, or a combining mark inside it. They run again after
+// the fold, and a key the final clip cuts short is replaced too.
 func sanitizeTitle(s string) string {
+	s = strings.TrimLeftFunc(s, func(r rune) bool { return unicode.IsSpace(r) || model.IsControlRune(r) })
+	if s == "" {
+		return ""
+	}
+	sq, cut := squeezeSpace(s, titleRawBytes, titleScanBytes)
+	raw, _ := titleRedactor.StringSkipping(sq)
+	if cut {
+		raw, _ = content.RedactCutKey(raw)
+	}
+	t := foldTitleTo(raw, titleWindow)
+	t, _ = titleRedactor.StringSkipping(t)
+	return clipTitleRunes(t)
+}
+
+// titleWindow is how many runes sanitizeTitle folds: room for a key that starts near the end of
+// the title. titleRawBytes is the raw text the rules see, at most 4 bytes for each of those runes;
+// titleScanBytes how much of the candidate the squeeze reads to fill it.
+const (
+	titleWindow    = 4 * maxTitleLen
+	titleRawBytes  = 4 * titleWindow
+	titleScanBytes = 16 * titleRawBytes
+)
+
+// squeezeSpace is s with each run of whitespace (the fold's: unicode.IsSpace, and NUL) made one
+// character, "\n" where the run held a line break and " " elsewhere. It writes at most n bytes,
+// at a rune boundary, and reads at most scan bytes of s; cut reports that it stopped before s's
+// end.
+func squeezeSpace(s string, n, scan int) (out string, cut bool) {
+	var b strings.Builder
+	b.Grow(min(len(s), n))
+	inRun, runBreak := false, false
+	flush := func() {
+		if inRun {
+			if runBreak {
+				b.WriteByte('\n')
+			} else {
+				b.WriteByte(' ')
+			}
+			inRun, runBreak = false, false
+		}
+	}
+	for i, r := range s {
+		if b.Len() >= n || i >= scan {
+			return b.String(), true
+		}
+		if unicode.IsSpace(r) || r == 0 {
+			inRun = true
+			runBreak = runBreak || r == '\n' || r == '\r' || r == 0x85 || r == 0x2028 || r == 0x2029
+			continue
+		}
+		flush()
+		if b.Len()+utf8.RuneLen(r) > n {
+			return b.String(), true
+		}
+		b.WriteRune(r)
+	}
+	if b.Len() < n {
+		flush()
+	}
+	return b.String(), false
+}
+
+// dropSeveredMarker removes a redaction marker a clip cut short at t's end: "…[REDACTED:api_k",
+// or any piece of "[REDACTED:" down to its "[", which would read as a broken word.
+func dropSeveredMarker(t string) string {
+	j := strings.LastIndexByte(t, '[')
+	if j < 0 || strings.Contains(t[j:], "]") {
+		return t
+	}
+	if tail := t[j:]; strings.HasPrefix("[REDACTED:", tail) || strings.HasPrefix(tail, "[REDACTED:") {
+		return t[:j]
+	}
+	return t
+}
+
+// titleRedactor holds no state; one is shared by every title.
+var titleRedactor = content.New()
+
+// redactStoredTitle is the secret rules over a title stored before they applied, read back from
+// an archived summary: it is already folded and clipped, so only the rules and the clip remain.
+// A stored title of maxTitleLen runes was cut there, so a key prefix at its end (the old clip's
+// "… ghp_Gx7Gx7") is a key cut short and is replaced too.
+func redactStoredTitle(t string) string {
+	if t == "" {
+		return ""
+	}
+	r, _ := titleRedactor.StringSkipping(t)
+	if utf8.RuneCountInString(t) == maxTitleLen {
+		if c, ok := content.RedactCutKey(r); ok {
+			return fitEndMarker(c, maxTitleLen)
+		}
+	}
+	if r == t {
+		return t
+	}
+	return clipTitleRunes(r)
+}
+
+// clipTitleRunes cuts a folded title to maxTitleLen runes. Where it cuts, a key prefix left at the
+// end is a key cut short and is replaced (content.RedactCutKey), and a redaction marker the cut
+// would sever ("…[REDACTED:api_k") is dropped, as it would read as a broken word.
+func clipTitleRunes(t string) string {
+	cut := cutRunes(t, maxTitleLen)
+	if cut == t {
+		return strings.TrimRight(t, " ")
+	}
+	if r, ok := content.RedactCutKey(cut); ok {
+		return fitEndMarker(r, maxTitleLen)
+	}
+	return strings.TrimRight(dropSeveredMarker(cut), " ")
+}
+
+// fitEndMarker is t, which ends in a redaction marker, cut to n runes by shortening what comes
+// before the marker, so the marker stays whole and in sight: a word replaced is shown as replaced.
+func fitEndMarker(t string, n int) string {
+	if utf8.RuneCountInString(t) <= n {
+		return t
+	}
+	j := strings.LastIndex(t, "[REDACTED:")
+	if j < 0 {
+		return strings.TrimRight(dropSeveredMarker(cutRunes(t, n)), " ")
+	}
+	mark := t[j:]
+	room := n - utf8.RuneCountInString(mark)
+	if room <= 0 {
+		return strings.TrimRight(dropSeveredMarker(cutRunes(t, n)), " ")
+	}
+	// Shortening can cut an earlier marker in turn: drop what is left of it.
+	return strings.TrimRight(dropSeveredMarker(cutRunes(t[:j], room)), " ") + mark
+}
+
+// cutRunes is t cut to at most n runes.
+func cutRunes(t string, n int) string {
+	i := 0
+	for j := range t {
+		if i == n {
+			return t[:j]
+		}
+		i++
+	}
+	return t
+}
+
+// foldTitleTo is sanitizeTitle's fold: whitespace and control runes become at most one space, and
+// it stops after limit emitted runes.
+func foldTitleTo(s string, limit int) string {
 	var b strings.Builder
 	// Sized to the OUTPUT, not the input. 4 bytes per rune is the max UTF-8 encoding, so this is
 	// one allocation for any input, where b.Grow(len(s)) was proportional to a hostile message.
-	b.Grow(maxTitleLen * 4)
+	b.Grow(limit * 4)
 	emitted := 0
 	prevSpace := true // drops leading whitespace
 	for _, r := range s {
-		if emitted == maxTitleLen {
+		if emitted == limit {
 			break
 		}
 		// TWO PREDICATES, and each catches runes the other misses. model.IsControlRune covers
@@ -893,9 +1062,9 @@ func sanitizeTitle(s string) string {
 		prevSpace = false
 		emitted++
 	}
-	// TrimRight, not clipTitle: the loop cannot emit more than maxTitleLen runes, so there is
-	// nothing left to clip. The trim is still needed because the stop can land just after a
-	// folded space, exactly as the old cut could.
+	// TrimRight, not clipTitle: the loop cannot emit more than limit runes, so there is nothing
+	// left to clip. The trim is still needed because the stop can land just after a folded space,
+	// exactly as the old cut could.
 	return strings.TrimRight(b.String(), " ")
 }
 
